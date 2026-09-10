@@ -228,6 +228,11 @@ export function buildSpec(prompt: string, overrides: PromptOverrides = {}): Song
     overrides.vocals === 'none' ||
     (overrides.vocals === undefined && INSTRUMENTAL_WORDS.some((w) => text.includes(w)))
 
+  // A song has a singer on it unless the listener asked for one that does not.
+  // The genre decides *how* it is delivered — sung, rapped, chanted — but never
+  // whether there is a voice at all: a request for "lo-fi" is a request for a
+  // sound, not an instruction to drop the vocal, and silently returning a
+  // backing track is the single most confusing thing this could do.
   let vocals: VocalStyle
   if (overrides.vocals) {
     vocals = overrides.vocals
@@ -235,6 +240,8 @@ export function buildSpec(prompt: string, overrides: PromptOverrides = {}): Song
     vocals = 'none'
   } else if (RAP_WORDS.some((w) => text.includes(w))) {
     vocals = 'rap'
+  } else if (genre.vocalStyle === 'none') {
+    vocals = 'sung'
   } else {
     vocals = genre.vocalStyle
   }

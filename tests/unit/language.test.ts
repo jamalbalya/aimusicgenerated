@@ -12,6 +12,7 @@ import { scoreToMidi } from '../../src/engine/export/midi'
 import { scoreToLrc, scoreToSrt, timedLyricLines } from '../../src/engine/export/subtitles'
 import { buildSpec } from '../../src/engine/compose/prompt'
 import { composeSong } from '../../src/engine/compose/composer'
+import { renderScore } from '../../src/engine/synth/render'
 import { sumStems, isVocalStem } from '../../src/lib/mixdown'
 
 /** Compact reading of a word, for readable expectations. */
@@ -422,5 +423,49 @@ describe('exports', () => {
     expect(vocals!.channels[0]![0]).toBeCloseTo(1)
     expect(instrumental!.channels[0]![0]).toBeCloseTo(0.75)
     expect(sumStems(stems, () => false)).toBeNull()
+  })
+})
+
+describe('the mix puts the voice in front', () => {
+  const rms = (buffer: Float32Array): number => {
+    let sum = 0
+    for (let i = 0; i < buffer.length; i++) sum += buffer[i]! * buffer[i]!
+    return Math.sqrt(sum / buffer.length)
+  }
+  const db = (value: number): number => 20 * Math.log10(Math.max(1e-9, value))
+
+  it('sings by default, whatever genre was asked for', () => {
+    // Several of these genres are instrumental traditions. Asking for the sound
+    // is not the same as asking for the vocal to be dropped.
+    for (const prompt of ['lo-fi beats', 'ambient', 'techno', 'cinematic', 'indonesian dangdut koplo']) {
+      const spec = buildSpec(prompt, { seed: 'vox', durationSeconds: 30 })
+      expect(spec.vocals, prompt).not.toBe('none')
+      expect(spec.instrumental, prompt).toBe(false)
+    }
+  })
+
+  it('drops the vocal only when asked', () => {
+    for (const prompt of ['an instrumental lo-fi beat', 'lo-fi, no vocals', 'a backing track']) {
+      expect(buildSpec(prompt, { seed: 'vox' }).vocals, prompt).toBe('none')
+    }
+    expect(buildSpec('a pop song', { seed: 'vox', vocals: 'none' }).vocals).toBe('none')
+  })
+
+  it('leaves the lead vocal louder than the bed it sits on', () => {
+    const score = composeSong(buildSpec('an upbeat pop song', {
+      seed: 'balance', durationSeconds: 30, vocals: 'sung',
+    }))
+    const rendered = renderScore(score, { sampleRate: 22050, keepStems: true })
+    const levels = new Map((rendered.stems ?? []).map((stem) => [stem.id, db(rms(stem.left))]))
+
+    const vocal = levels.get('vocal')
+    expect(vocal).toBeDefined()
+    for (const bed of ['chords', 'pad', 'arp']) {
+      const level = levels.get(bed)
+      if (level === undefined) continue
+      expect(vocal!, `${bed} is louder than the vocal`).toBeGreaterThan(level)
+    }
+    // And it is not so far forward that it is the only thing left.
+    expect(vocal! - (levels.get('drums') ?? -60)).toBeLessThan(12)
   })
 })

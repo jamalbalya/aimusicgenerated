@@ -69,6 +69,11 @@ export interface TrackFx {
   highShelfDb?: number
   /** High-pass corner in Hz — keeps the low end clear of everything but bass. */
   highPassHz?: number
+  /**
+   * Lift in dB around 3 kHz, where consonants live. It is what makes a lyric
+   * legible over a busy arrangement rather than merely louder than it.
+   */
+  presenceDb?: number
   chorus?: number
 }
 

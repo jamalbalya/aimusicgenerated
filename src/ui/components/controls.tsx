@@ -10,6 +10,8 @@ interface FieldProps {
   children: ReactNode
   /** Only needed when the control is not a direct child of the field. */
   htmlFor?: string
+  /** A control on the label's own row, for a switch that belongs to the field. */
+  action?: ReactNode
 }
 
 interface SliderProps {
@@ -50,7 +52,7 @@ const NATIVE_CONTROLS = new Set(['input', 'select', 'textarea'])
  * end up unassociated, which breaks screen readers and every accessible
  * selector along with them.
  */
-export function Field({ label, hint, value, children, htmlFor }: FieldProps) {
+export function Field({ label, hint, value, children, htmlFor, action }: FieldProps) {
   const generatedId = useId()
 
   let content = children
@@ -67,13 +69,59 @@ export function Field({ label, hint, value, children, htmlFor }: FieldProps) {
 
   return (
     <div className="grid gap-1.5">
-      <div className="flex items-baseline justify-between gap-3">
+      <div className="flex min-h-[20px] items-center justify-between gap-3">
         <label className="t-label" htmlFor={controlId}>{label}</label>
-        {value !== undefined && <span className="t-num text-[11px] text-[var(--text-dim)]">{value}</span>}
+        {action ?? (value !== undefined && (
+          <span className="t-num text-[11px] text-[var(--text-dim)]">{value}</span>
+        ))}
       </div>
       {content}
       {hint && <p className="text-[11.5px] leading-snug text-[var(--text-faint)]">{hint}</p>}
     </div>
+  )
+}
+
+/**
+ * An on/off switch.
+ *
+ * A checkbox says "tick this to include it"; a switch says "this is on or off
+ * right now", which is what a setting like Instrumental actually is. It is a
+ * real checkbox underneath so it keeps every keyboard and screen-reader
+ * behaviour a checkbox has.
+ */
+export function Toggle(
+  { label, checked, onChange }: { label: string; checked: boolean; onChange: (on: boolean) => void },
+) {
+  return (
+    <label className="flex cursor-pointer select-none items-center gap-2 text-[11.5px] text-[var(--text-dim)]">
+      {label}
+      <input
+        type="checkbox"
+        className="peer sr-only"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      {/*
+        The track and knob take their state from React rather than from
+        `peer-checked:`, because the knob is a descendant of the track and a
+        peer variant only ever reaches the input's own siblings. The focus ring
+        is the one thing that does belong to the track itself.
+      */}
+      <span
+        aria-hidden="true"
+        className={`relative h-[18px] w-[32px] rounded-full border transition-colors peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--accent)] ${
+          checked
+            ? 'border-[var(--accent)] bg-[var(--accent)]'
+            : 'border-[var(--line)] bg-[var(--bg-sunken)]'
+        }`}
+      >
+        <span
+          className={`absolute left-[2px] top-[2px] h-[12px] w-[12px] rounded-full transition-transform ${
+            checked ? 'translate-x-[14px] bg-white' : 'bg-[var(--text-dim)]'
+          }`}
+        />
+      </span>
+    </label>
   )
 }
 
