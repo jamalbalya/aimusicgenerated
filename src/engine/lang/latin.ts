@@ -18,10 +18,10 @@ const DEFAULT_SYLLABLE: SyllableOptions = { maxOnset: 2 }
 
 /** The rising and falling glides a five-vowel language writes as two letters. */
 const FIVE_VOWEL_DIPHTHONGS = diphthongSet([
-  ['IY', 'A'], ['IY', 'E'], ['IY', 'O'], ['IY', 'UW'],
-  ['UW', 'A'], ['UW', 'E'], ['UW', 'IY'], ['UW', 'O'],
+  ['IY', 'A'], ['IY', 'E'], ['IY', 'O'], ['IY', 'U'],
+  ['U', 'A'], ['U', 'E'], ['U', 'IY'], ['U', 'O'],
   ['A', 'IY'], ['E', 'IY'], ['O', 'IY'],
-  ['A', 'UW'], ['E', 'UW'], ['O', 'UW'],
+  ['A', 'U'], ['E', 'U'], ['O', 'U'],
 ])
 
 /* ------------------------------------------------------------- Indonesian --- */
@@ -33,7 +33,7 @@ const INDONESIAN: SoundRule[] = [
   ...letters({
     ng: 'NG', ny: 'NY', sy: 'SH', kh: 'X', gh: 'GX',
     c: 'CH', j: 'JH', y: 'Y', r: 'DX', v: 'F', x: 'K S', q: 'K',
-    ai: 'A IY', au: 'A UW', oi: 'O IY',
+    ai: 'A IY', au: 'A U', oi: 'O IY',
     ...FIVE_VOWELS,
     b: 'B', d: 'D', f: 'F', g: 'G', h: 'HH', k: 'K', l: 'L', m: 'M',
     n: 'N', p: 'P', s: 'S', t: 'T', w: 'W', z: 'Z',
@@ -49,7 +49,7 @@ const INDONESIAN: SoundRule[] = [
 const SPANISH: SoundRule[] = [
   ...letters({
     ch: 'CH', ll: 'Y', rr: 'RR', qu: 'K', gu: 'G', 'gü': 'G W',
-    'ñ': 'NY', 'á': 'A', 'é': 'E', 'í': 'IY', 'ó': 'O', 'ú': 'UW', 'ü': 'UW',
+    'ñ': 'NY', 'á': 'A', 'é': 'E', 'í': 'IY', 'ó': 'O', 'ú': 'U', 'ü': 'U',
     ...FIVE_VOWELS,
     b: 'B', v: 'B', d: 'D', f: 'F', h: '', j: 'X', k: 'K', l: 'L', m: 'M',
     n: 'N', p: 'P', s: 'S', t: 'T', w: 'W', x: 'K S', y: 'Y', z: 'S', c: 'K', g: 'G',
@@ -72,7 +72,7 @@ const ITALIAN: SoundRule[] = [
     chi: 'K IY', che: 'K E', ghi: 'G IY', ghe: 'G E',
     gli: 'LY IY', gn: 'NY', gi: 'JH IY', ge: 'JH E', ci: 'CH IY', ce: 'CH E',
     qu: 'K W', zz: 'TS', z: 'TS', rr: 'RR',
-    'à': 'A', 'è': 'EH', 'é': 'E', 'ì': 'IY', 'ò': 'AO', 'ó': 'O', 'ù': 'UW',
+    'à': 'A', 'è': 'EH', 'é': 'E', 'ì': 'IY', 'ò': 'AO', 'ó': 'O', 'ù': 'U',
     ...FIVE_VOWELS,
     b: 'B', c: 'K', d: 'D', f: 'F', g: 'G', h: '', l: 'L', m: 'M', n: 'N',
     p: 'P', r: 'DX', s: 'S', t: 'T', v: 'V', j: 'Y', k: 'K', w: 'V', x: 'K S', y: 'IY',
@@ -90,7 +90,7 @@ const PORTUGUESE: SoundRule[] = [
     'ão': 'AN', 'ãe': 'EN', 'õe': 'ON', 'ã': 'AN', 'õ': 'ON',
     lh: 'LY', nh: 'NY', ch: 'SH', rr: 'HH', ss: 'S', 'ç': 'S',
     qu: 'K', gu: 'G', 'á': 'A', 'â': 'A', 'é': 'EH', 'ê': 'E',
-    'í': 'IY', 'ó': 'AO', 'ô': 'O', 'ú': 'UW', 'à': 'A',
+    'í': 'IY', 'ó': 'AO', 'ô': 'O', 'ú': 'U', 'à': 'A',
     ...FIVE_VOWELS,
     b: 'B', d: 'D', f: 'F', g: 'G', h: '', j: 'ZH', k: 'K', l: 'L', m: 'M',
     n: 'N', p: 'P', t: 'T', v: 'V', w: 'V', x: 'SH', y: 'IY', z: 'Z', c: 'K', r: 'DX', s: 'S',
@@ -116,9 +116,9 @@ const PORTUGUESE: SoundRule[] = [
   when('di', 'JH IY', { at: 'end' }),
   when('te', 'CH IY', { at: 'end' }),
   when('de', 'JH IY', { at: 'end' }),
-  when('o', 'UW', { at: 'end' }),
+  when('o', 'U', { at: 'end' }),
   when('e', 'IY', { at: 'end' }),
-  when('os', 'UW S', { at: 'end' }),
+  when('os', 'U S', { at: 'end' }),
   when('es', 'IY S', { at: 'end' }),
 ]
 
@@ -132,10 +132,10 @@ const FRENCH: SoundRule[] = [
     ain: 'EN', aim: 'EN', ein: 'EN', oin: 'W EN',
     an: 'AN', am: 'AN', en: 'AN', em: 'AN', in: 'EN', im: 'EN',
     on: 'ON', om: 'ON', un: 'UN', um: 'UN',
-    ou: 'UW', oi: 'W A', au: 'O', ai: 'EH', ei: 'EH', eu: 'OE',
+    ou: 'U', oi: 'W A', au: 'O', ai: 'EH', ei: 'EH', eu: 'OE',
     'ç': 'S', ch: 'SH', gn: 'NY', ph: 'F', th: 'T', qu: 'K',
     'é': 'E', 'è': 'EH', 'ê': 'EH', 'ë': 'EH', 'à': 'A', 'â': 'A',
-    'î': 'IY', 'ï': 'IY', 'ô': 'O', 'ö': 'OE', 'ù': 'UW', 'û': 'UW', 'ü': 'UE',
+    'î': 'IY', 'ï': 'IY', 'ô': 'O', 'ö': 'OE', 'ù': 'U', 'û': 'U', 'ü': 'UE',
     a: 'A', e: 'AX', i: 'IY', o: 'O', u: 'UE', y: 'IY',
     b: 'B', c: 'K', d: 'D', f: 'F', g: 'G', h: '', j: 'ZH', k: 'K', l: 'L',
     m: 'M', n: 'N', p: 'P', r: 'RU', s: 'S', t: 'T', v: 'V', w: 'W', x: 'K S', z: 'Z',
@@ -187,12 +187,12 @@ const FRENCH_EXCEPTIONS: Record<string, string> = {
   je: 'ZH AX', me: 'M AX', te: 'T AX', se: 'S AX', ce: 'S AX', ne: 'N AX',
   que: 'K AX', qui: 'K IY', quoi: 'K W A', oui: 'W IY',
   mes: 'M E', tes: 'T E', ses: 'S E', ces: 'S E',
-  nous: 'N UW', vous: 'V UW', tout: 'T UW', tous: 'T UW',
+  nous: 'N U', vous: 'V U', tout: 'T U', tous: 'T U',
   plus: 'P L UE', temps: 'T AN', femme: 'F A M', monsieur: 'M AX SH OE',
-  fils: 'F IY S', 'où': 'UW', 'à': 'A', 'a': 'A', y: 'IY',
+  fils: 'F IY S', 'où': 'U', 'à': 'A', 'a': 'A', y: 'IY',
   toi: 'T W A', moi: 'M W A', 'très': 'T RU EH', 'après': 'A P RU EH',
-  coeur: 'K OE RU', 'cœur': 'K OE RU', amour: 'A M UW RU', jamais: 'ZH A M EH',
-  beaucoup: 'B O K UW', aussi: 'O S IY',
+  coeur: 'K OE RU', 'cœur': 'K OE RU', amour: 'A M U RU', jamais: 'ZH A M EH',
+  beaucoup: 'B O K U', aussi: 'O S IY',
 }
 
 /* ----------------------------------------------------------------- German --- */
@@ -202,10 +202,10 @@ const GERMAN: SoundRule[] = [
     tsch: 'CH', sch: 'SH', chs: 'K S', ch: 'CX',
     ie: 'IY', ei: 'AY', ai: 'AY', eu: 'OY', 'äu': 'OY', au: 'AW',
     'ß': 'S', pf: 'PF', tz: 'TS', ng: 'NG', qu: 'K V',
-    ah: 'A', eh: 'E', ih: 'IY', oh: 'O', uh: 'UW', 'äh': 'EH', 'öh': 'OE', 'üh': 'UE',
+    ah: 'A', eh: 'E', ih: 'IY', oh: 'O', uh: 'U', 'äh': 'EH', 'öh': 'OE', 'üh': 'UE',
     aa: 'A', ee: 'E', oo: 'O',
     'ä': 'EH', 'ö': 'OE', 'ü': 'UE',
-    a: 'A', e: 'E', i: 'IH', o: 'O', u: 'UW', y: 'UE',
+    a: 'A', e: 'E', i: 'IH', o: 'O', u: 'U', y: 'UE',
     b: 'B', c: 'K', d: 'D', f: 'F', g: 'G', h: 'HH', j: 'Y', k: 'K', l: 'L',
     m: 'M', n: 'N', p: 'P', r: 'RU', s: 'S', t: 'T', v: 'F', w: 'V', x: 'K S', z: 'TS',
   }),
@@ -229,7 +229,7 @@ const GERMAN: SoundRule[] = [
 const DUTCH: SoundRule[] = [
   ...letters({
     sch: 'S X', ch: 'X', ng: 'NG', nj: 'NY', tj: 'CH',
-    aa: 'A', ee: 'E', oo: 'O', uu: 'UE', ie: 'IY', oe: 'UW',
+    aa: 'A', ee: 'E', oo: 'O', uu: 'UE', ie: 'IY', oe: 'U',
     eu: 'OE', ui: 'OE Y', ij: 'AY', ei: 'AY', ou: 'AW', au: 'AW', aai: 'A Y',
     a: 'A', e: 'EH', i: 'IH', o: 'O', u: 'UE', y: 'IY',
     b: 'B', c: 'K', d: 'D', f: 'F', g: 'X', h: 'HH', j: 'Y', k: 'K', l: 'L',
@@ -246,7 +246,7 @@ const DUTCH: SoundRule[] = [
 // Turkish spelling is exactly phonemic: one letter, one sound, no exceptions,
 // no consonant clusters at the start of a native word.
 const TURKISH: SoundRule[] = letters({
-  a: 'A', e: 'EH', 'ı': 'IX', i: 'IY', o: 'O', 'ö': 'OE', u: 'UW', 'ü': 'UE',
+  a: 'A', e: 'EH', 'ı': 'IX', i: 'IY', o: 'O', 'ö': 'OE', u: 'U', 'ü': 'UE',
   b: 'B', c: 'JH', 'ç': 'CH', d: 'D', f: 'F', g: 'G', 'ğ': '', h: 'HH',
   j: 'ZH', k: 'K', l: 'L', m: 'M', n: 'N', p: 'P', r: 'DX', s: 'S',
   'ş': 'SH', t: 'T', v: 'V', y: 'Y', z: 'Z', q: 'K', w: 'V', x: 'K S',
@@ -257,9 +257,9 @@ const TURKISH: SoundRule[] = letters({
 const POLISH: SoundRule[] = [
   ...letters({
     cz: 'CH', 'dź': 'JH', 'dż': 'JH', dz: 'DZ', ch: 'X', sz: 'SH', rz: 'ZH',
-    'ą': 'ON', 'ę': 'EN', 'ó': 'UW', 'ć': 'CH', 'ń': 'NY', 'ś': 'SH',
+    'ą': 'ON', 'ę': 'EN', 'ó': 'U', 'ć': 'CH', 'ń': 'NY', 'ś': 'SH',
     'ź': 'ZH', 'ż': 'ZH', 'ł': 'W',
-    a: 'A', e: 'EH', i: 'IY', o: 'O', u: 'UW', y: 'IX',
+    a: 'A', e: 'EH', i: 'IY', o: 'O', u: 'U', y: 'IX',
     b: 'B', c: 'TS', d: 'D', f: 'F', g: 'G', h: 'X', j: 'Y', k: 'K', l: 'L',
     m: 'M', n: 'N', p: 'P', r: 'DX', s: 'S', t: 'T', w: 'V', z: 'Z', v: 'V', x: 'K S',
   }),
@@ -290,8 +290,8 @@ const CZECH: SoundRule[] = [
   ...letters({
     ch: 'X', 'č': 'CH', 'ď': 'JH', 'ě': 'Y EH', 'ň': 'NY', 'ř': 'ZH',
     'š': 'SH', 'ť': 'CH', 'ž': 'ZH', 'á': 'A', 'é': 'EH', 'í': 'IY',
-    'ó': 'O', 'ú': 'UW', 'ů': 'UW', 'ý': 'IY',
-    a: 'A', e: 'EH', i: 'IY', o: 'O', u: 'UW', y: 'IY',
+    'ó': 'O', 'ú': 'U', 'ů': 'U', 'ý': 'IY',
+    a: 'A', e: 'EH', i: 'IY', o: 'O', u: 'U', y: 'IY',
     b: 'B', c: 'TS', d: 'D', f: 'F', g: 'G', h: 'GX', j: 'Y', k: 'K', l: 'L',
     m: 'M', n: 'N', p: 'P', q: 'K', r: 'DX', s: 'S', t: 'T', v: 'V', w: 'V', x: 'K S', z: 'Z',
   }),
@@ -303,7 +303,7 @@ const SWEDISH: SoundRule[] = [
   ...letters({
     stj: 'CX', skj: 'CX', sj: 'CX', tj: 'CX', kj: 'CX', ng: 'NG',
     'å': 'O', 'ä': 'EH', 'ö': 'OE',
-    a: 'A', e: 'E', i: 'IY', o: 'UW', u: 'UE', y: 'UE',
+    a: 'A', e: 'E', i: 'IY', o: 'U', u: 'UE', y: 'UE',
     b: 'B', c: 'S', d: 'D', f: 'F', g: 'G', h: 'HH', j: 'Y', k: 'K', l: 'L',
     m: 'M', n: 'N', p: 'P', q: 'K', r: 'DX', s: 'S', t: 'T', v: 'V', w: 'V',
     x: 'K S', z: 'S',
@@ -322,7 +322,7 @@ const FINNISH: SoundRule[] = [
   ...letters({
     ng: 'NG',
     'ä': 'EH', 'ö': 'OE',
-    a: 'A', e: 'E', i: 'IY', o: 'O', u: 'UW', y: 'UE',
+    a: 'A', e: 'E', i: 'IY', o: 'O', u: 'U', y: 'UE',
     b: 'B', c: 'K', d: 'D', f: 'F', g: 'G', h: 'HH', j: 'Y', k: 'K', l: 'L',
     m: 'M', n: 'N', p: 'P', q: 'K', r: 'DX', s: 'S', t: 'T', v: 'V', w: 'V',
     x: 'K S', z: 'TS',
@@ -330,10 +330,10 @@ const FINNISH: SoundRule[] = [
 ]
 
 const FINNISH_DIPHTHONGS = diphthongSet([
-  ['A', 'IY'], ['E', 'IY'], ['O', 'IY'], ['UW', 'IY'], ['UE', 'IY'],
-  ['EH', 'IY'], ['OE', 'IY'], ['A', 'UW'], ['E', 'UW'], ['O', 'UW'],
-  ['IY', 'UW'], ['E', 'UE'], ['EH', 'UE'], ['OE', 'UE'],
-  ['IY', 'E'], ['UW', 'O'], ['UE', 'OE'],
+  ['A', 'IY'], ['E', 'IY'], ['O', 'IY'], ['U', 'IY'], ['UE', 'IY'],
+  ['EH', 'IY'], ['OE', 'IY'], ['A', 'U'], ['E', 'U'], ['O', 'U'],
+  ['IY', 'U'], ['E', 'UE'], ['EH', 'UE'], ['OE', 'UE'],
+  ['IY', 'E'], ['U', 'O'], ['UE', 'OE'],
 ])
 
 /* ------------------------------------------------------------- Vietnamese --- */
@@ -343,7 +343,7 @@ const VIETNAMESE: SoundRule[] = [
     ngh: 'NG', ng: 'NG', nh: 'NY', ch: 'CH', gh: 'G', gi: 'Z', kh: 'X',
     ph: 'F', th: 'T', tr: 'CH', qu: 'K W',
     'ă': 'A', 'â': 'AX', 'ê': 'E', 'ô': 'O', 'ơ': 'ER', 'ư': 'IX', 'đ': 'D',
-    a: 'A', e: 'EH', i: 'IY', o: 'AO', u: 'UW', y: 'IY',
+    a: 'A', e: 'EH', i: 'IY', o: 'AO', u: 'U', y: 'IY',
     b: 'B', c: 'K', d: 'Z', g: 'G', h: 'HH', k: 'K', l: 'L', m: 'M', n: 'N',
     p: 'P', r: 'DX', s: 'SH', t: 'T', v: 'V', x: 'S',
   }),
@@ -388,7 +388,7 @@ const GENERIC_LATIN: SoundRule[] = [
     'é': 'E', 'è': 'E', 'ê': 'E', 'ë': 'E',
     'í': 'IY', 'ì': 'IY', 'î': 'IY', 'ï': 'IY',
     'ó': 'O', 'ò': 'O', 'ô': 'O', 'ö': 'OE', 'õ': 'O',
-    'ú': 'UW', 'ù': 'UW', 'û': 'UW', 'ü': 'UE', 'ñ': 'NY', 'ç': 'S',
+    'ú': 'U', 'ù': 'U', 'û': 'U', 'ü': 'UE', 'ñ': 'NY', 'ç': 'S',
     b: 'B', c: 'K', d: 'D', f: 'F', g: 'G', h: 'HH', j: 'Y', k: 'K', l: 'L',
     m: 'M', n: 'N', p: 'P', q: 'K', r: 'DX', s: 'S', t: 'T', v: 'V', w: 'W',
     x: 'K S', y: 'Y', z: 'Z',

@@ -20,7 +20,7 @@ export type Vowel =
   // English diphthongs
   | 'AY' | 'OY' | 'AW'
   // Pure vowels of the Romance, Austronesian and Turkic languages
-  | 'A' | 'E' | 'O' | 'AX'
+  | 'A' | 'E' | 'O' | 'U' | 'AX'
   // Front rounded vowels: German ü/ö, French u/eu, Turkish ü/ö
   | 'UE' | 'OE'
   // Turkish dotless ı, Russian ы
@@ -41,7 +41,7 @@ export type Phoneme = Vowel | Consonant
 
 export const VOWELS: Vowel[] = [
   'IY', 'IH', 'EY', 'EH', 'AE', 'AA', 'AO', 'OW', 'UH', 'UW', 'AH', 'ER',
-  'AY', 'OY', 'AW', 'A', 'E', 'O', 'AX', 'UE', 'OE', 'IX', 'AN', 'EN', 'ON', 'UN',
+  'AY', 'OY', 'AW', 'A', 'E', 'O', 'U', 'AX', 'UE', 'OE', 'IX', 'AN', 'EN', 'ON', 'UN',
 ]
 
 const VOWEL_SET = new Set<string>(VOWELS)
@@ -70,7 +70,7 @@ const SONORITY: Record<Phoneme, number> = {
   W: 5, Y: 5,
   // vowels
   IY: 6, IH: 6, EY: 6, EH: 6, AE: 6, AA: 6, AO: 6, OW: 6, UH: 6, UW: 6,
-  AH: 6, ER: 6, AY: 6, OY: 6, AW: 6, A: 6, E: 6, O: 6, AX: 6, UE: 6, OE: 6,
+  AH: 6, ER: 6, AY: 6, OY: 6, AW: 6, A: 6, E: 6, O: 6, U: 6, AX: 6, UE: 6, OE: 6,
   IX: 6, AN: 6, EN: 6, ON: 6, UN: 6,
 }
 
