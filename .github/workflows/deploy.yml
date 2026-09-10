@@ -36,6 +36,31 @@ jobs:
           npm run lint
           npm test
 
+      - name: Check that Pages is switched on
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pages")
+          if [ "$status" = "404" ]; then
+            {
+              echo "### GitHub Pages is not enabled yet"
+              echo
+              echo "A repository admin has to switch it on once — a workflow cannot,"
+              echo "because enabling Pages needs admin rights that \`GITHUB_TOKEN\` is"
+              echo "never granted."
+              echo
+              echo "**Settings → Pages → Build and deployment → Source: GitHub Actions**"
+              echo
+              echo "Then re-run this workflow. Every later push deploys automatically."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::GitHub Pages is not enabled. Set Settings -> Pages -> Source to 'GitHub Actions', then re-run this workflow."
+            exit 1
+          fi
+          echo "Pages is enabled (HTTP $status)."
+
       # Pages has to be switched on once, by hand, in the repository settings:
       # Settings -> Pages -> Build and deployment -> Source: GitHub Actions.
       # The workflow token cannot do it — enabling Pages needs admin rights that
