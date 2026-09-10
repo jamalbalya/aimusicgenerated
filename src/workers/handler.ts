@@ -10,6 +10,7 @@
 import { buildSpec } from '../engine/compose/prompt'
 import { composeSong, fitSyllablesToNotes } from '../engine/compose/composer'
 import { renderScore } from '../engine/synth/render'
+import { validateRender } from '../engine/synth/validate'
 import { SING_PRESETS } from '../engine/voice/singer'
 import { generateLyrics } from '../engine/lyrics/generator'
 import { pronounceLine, resolveLanguage } from '../engine/lang'
@@ -163,6 +164,7 @@ function handle(id: number, request: WorkerRequest): WorkerResult {
         })),
         loudnessDb: rendered.loudnessDb,
         peak: rendered.peak,
+        validation: validateRender(score, rendered),
       }
     }
 
@@ -187,6 +189,7 @@ function handle(id: number, request: WorkerRequest): WorkerResult {
         })),
         loudnessDb: rendered.loudnessDb,
         peak: rendered.peak,
+        validation: validateRender(request.score, rendered),
       }
     }
 
@@ -322,6 +325,7 @@ function handle(id: number, request: WorkerRequest): WorkerResult {
         stems: [],
         loudnessDb: rendered.loudnessDb,
         peak: rendered.peak,
+        validation: validateRender(score, rendered),
       }
     }
   }

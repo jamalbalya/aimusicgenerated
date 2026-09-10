@@ -7,6 +7,7 @@
  */
 
 import type { Score } from '../engine/compose/types'
+import type { RenderValidation } from '../engine/synth/validate'
 import type { LanguageId } from '../engine/lang'
 import type { PromptOverrides } from '../engine/compose/prompt'
 import type { LyricsRequest } from '../engine/lyrics/generator'
@@ -59,6 +60,8 @@ export interface GenerateResult {
   stems: { id: string; name: string; audio: TransferAudio }[]
   loudnessDb: number
   peak: number
+  /** What actually came out, checked against what was asked for. */
+  validation: RenderValidation
 }
 
 export interface RerenderRequest {

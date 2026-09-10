@@ -179,12 +179,15 @@ test.describe('song studio', () => {
     // The transport at the foot of the page has an Export button of its own.
     const details = page.getByRole('main')
     await details.getByRole('button', { name: 'Export', exact: true }).click()
+    // Scoped to the export list, so the lyric field's structure chips (which
+    // include "Instrumental Break") cannot match.
+    const exports = details.locator('.panel-sunken')
     for (const label of ['Instrumental', 'Vocals only', 'MIDI', 'Lyric sheet', 'Subtitles', 'Karaoke lyrics']) {
-      await expect(details.getByRole('button', { name: new RegExp(`^${label}`) })).toBeVisible()
+      await expect(exports.filter({ hasText: new RegExp(`^${label}`) }).first()).toBeVisible()
     }
 
     const download = page.waitForEvent('download')
-    await details.getByRole('button', { name: /^MIDI/ }).click()
+    await exports.filter({ hasText: /^MIDI/ }).first().click()
     expect((await download).suggestedFilename()).toMatch(/\.mid$/)
 
     expect(errors).toEqual([])

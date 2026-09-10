@@ -13,7 +13,9 @@ import { NOTE_NAMES, SCALE_NAMES, type ScaleName } from '../../engine/theory/pit
 import { chordChart } from '../../engine/compose/composer'
 import { formatDuration } from '../../engine/core/units'
 import { SING_PRESET_NAMES } from '../../engine/voice/singer'
-import { detectLanguage, LANGUAGE_CHOICES, type LanguageId } from '../../engine/lang'
+import { countLineSyllables, detectLanguage, LANGUAGE_CHOICES, type LanguageId } from '../../engine/lang'
+import { describeResult } from '../../engine/synth/validate'
+import { checkSingability, STRUCTURE_TAGS } from '../../engine/lyrics/structure'
 import {
   QUALITY_LABELS, QUALITY_SAMPLE_RATES,
   type GenerateResult, type RenderQuality,
@@ -89,6 +91,16 @@ export default function StudioPage() {
   const [customLyrics, setCustomLyrics] = useState('')
   const [language, setLanguage] = useState<LanguageId | 'auto'>('auto')
 
+  // Read the lyric the way a singer would and surface what will not work, while
+  // there is still time to change it.
+  const lyricWarnings = useMemo(
+    () => (customLyrics.trim()
+      ? checkSingability(customLyrics, (line) =>
+        countLineSyllables(line, language === 'auto' ? detectLanguage(customLyrics) : language))
+      : []),
+    [customLyrics, language],
+  )
+
   const lyricCount = useMemo(
     () => customLyrics.split(/\r?\n/).filter((line) => line.trim().length > 0).length,
     [customLyrics],
@@ -108,6 +120,22 @@ export default function StudioPage() {
   const [renderedAt, setRenderedAt] = useState<RenderQuality>(quality)
 
   const score = result?.score ?? null
+
+  /**
+   * Says what actually came out.
+   *
+   * A file being returned is not the same as the song being made: a request for
+   * a sung song that comes back as an instrumental, or with the voice buried
+   * under the arrangement, has not succeeded and should not be reported as if
+   * it had.
+   */
+  const reportResult = useCallback((validation: GenerateResult['validation']) => {
+    if (validation.problems.length > 0) {
+      notify(validation.problems[0]!, 'error')
+      return
+    }
+    notify(describeResult(validation), 'success')
+  }, [notify])
 
   const generate = useCallback(async (overrideSeed?: string) => {
     const text = prompt.trim()
@@ -139,6 +167,7 @@ export default function StudioPage() {
       setResult(output)
       setRenderedAt(quality)
       setSeed(output.score.seed)
+      reportResult(output.validation)
       setCurrent({
         title: output.score.title,
         subtitle: describeScore(output.score),
@@ -159,7 +188,7 @@ export default function StudioPage() {
       }
     }
   }, [prompt, genreId, mood, bpm, tonic, scale, duration, vocals, customLyrics, language,
-      singStyle, seed, quality, keepStems, job, notify, setCurrent])
+      singStyle, seed, quality, keepStems, job, notify, reportResult, setCurrent])
 
   /**
    * Renders the same score again at the selected quality. Auditioning in Draft
@@ -178,6 +207,7 @@ export default function StudioPage() {
       })
       setResult(output)
       setRenderedAt(quality)
+      reportResult(output.validation)
       setCurrent({
         title: output.score.title,
         subtitle: describeScore(output.score),
@@ -194,7 +224,7 @@ export default function StudioPage() {
     } catch (error) {
       if (!isCancellation(error)) { /* reported by useJob */ }
     }
-  }, [result, quality, keepStems, singStyle, job, setCurrent])
+  }, [result, quality, keepStems, singStyle, job, reportResult, setCurrent])
 
   const saveToLibrary = useCallback(async () => {
     if (!result) return
@@ -395,6 +425,20 @@ export default function StudioPage() {
                 value={lyricCount > 0 ? `${lyricCount} lines` : 'Optional'}
                 hint="One line per phrase, a blank line between sections. Leave it empty and the studio writes its own."
               >
+                <div className="scroll-x scroll-fade -mx-1 flex gap-1.5 px-1 pb-1">
+                  {STRUCTURE_TAGS.flatMap((group) => group.tags).map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      className="chip shrink-0"
+                      title={`Insert [${tag}]`}
+                      onClick={() => setCustomLyrics((current) =>
+                        `${current.replace(/\s*$/, '')}${current.trim() ? '\n\n' : ''}[${tag}]\n`)}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
                 <textarea
                   id="own-lyrics"
                   className="textarea"
@@ -407,6 +451,16 @@ export default function StudioPage() {
                   }}
                 />
               </Field>
+
+              {lyricWarnings.length > 0 && (
+                <ul className="grid gap-1 text-[11.5px] leading-snug text-[var(--warn,var(--text-dim))]">
+                  {lyricWarnings.slice(0, 3).map((warning) => (
+                    <li key={`${warning.line}-${warning.reason}`}>
+                      {warning.line > 0 ? `Line ${warning.line}: ` : ''}{warning.reason}
+                    </li>
+                  ))}
+                </ul>
+              )}
 
               <Field
                 label="Pronunciation"
