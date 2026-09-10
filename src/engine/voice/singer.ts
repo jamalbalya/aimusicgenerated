@@ -73,10 +73,30 @@ export interface SungNoteRequest {
 class FormantBank {
   private readonly filters: Biquad[]
   private current: Formant[]
+  /** Widest the resonances may be tuned; see `setPitch`. */
+  private minBandwidth = 0
 
   constructor(private readonly sampleRate: number, initial: Formant[]) {
     this.current = initial.map((f) => ({ ...f }))
     this.filters = initial.map(() => new Biquad(sampleRate))
+    this.applyCoefficients()
+  }
+
+  /**
+   * Ties the resonances' width to the note being sung.
+   *
+   * A voiced source is a comb of harmonics spaced one fundamental apart, and a
+   * resonance narrower than that spacing can sit in the gap between two of them
+   * and pass almost nothing. That is what makes a synthesised vowel a hum: the
+   * upper formants — the ones carrying the identity of the vowel — fall silent
+   * whenever they land between harmonics. Real singers solve this by tuning a
+   * formant onto a harmonic; the equivalent here is to keep every resonance at
+   * least as wide as the gap it has to bridge.
+   */
+  setPitch(fundamentalHz: number): void {
+    const wanted = fundamentalHz * 1.8
+    if (Math.abs(wanted - this.minBandwidth) < 1) return
+    this.minBandwidth = wanted
     this.applyCoefficients()
   }
 
@@ -95,7 +115,12 @@ class FormantBank {
   private applyCoefficients(): void {
     for (let i = 0; i < this.filters.length; i++) {
       const formant = this.current[i]!
-      const q = Math.max(0.5, formant.freq / Math.max(20, formant.bandwidth))
+      // F1 keeps its own width — it is always well below the harmonics it needs
+      // — while the upper resonances widen to span the harmonic spacing.
+      const bandwidth = i === 0
+        ? formant.bandwidth
+        : Math.max(formant.bandwidth, this.minBandwidth)
+      const q = Math.max(0.5, formant.freq / Math.max(20, bandwidth))
       this.filters[i]!.bandpass(clamp(formant.freq, 60, this.sampleRate * 0.45), q)
     }
   }
@@ -260,6 +285,7 @@ export function renderSungNote(request: SungNoteRequest): Float32Array {
   const noise = new Noise((request.seed || 11) ^ 0x5f3a)
 
   const bank = new FormantBank(sampleRate, segments[0]!.formants)
+  bank.setPitch(midiToFreq(request.midi))
   const noiseFilter = new Biquad(sampleRate)
   noiseFilter.bandpass(segments[0]!.noiseHz, segments[0]!.noiseQ)
   // Radiation from the lips differentiates the flow: +6 dB per octave across

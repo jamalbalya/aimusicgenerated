@@ -80,10 +80,12 @@ export const VOICE_TYPES: VoiceType[] = ['soprano', 'alto', 'androgynous', 'teno
  * Presence tilt for the upper formants.
  *
  * F2 and F3 carry almost all of the information about *which* vowel is being
- * sung; F1 carries the loudness. Lifting the upper resonances is what makes a
- * synthesised lyric intelligible rather than a hum at the right pitch.
+ * sung; F1 carries the loudness. A glottal source loses roughly 12 dB an
+ * octave, so by the time it reaches F3 there is little left to resonate, and
+ * without a lift the upper formants never make it into the mix — which leaves
+ * a hum at the right pitch rather than a word.
  */
-const FORMANT_PRESENCE = [1, 1.45, 1.7, 1.9]
+const FORMANT_PRESENCE = [1, 3, 4, 3.5]
 
 export function vowelFormants(vowel: Vowel, voice: VoiceType): Formant[] {
   const scale = TRACT_SCALE[voice]

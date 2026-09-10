@@ -4,9 +4,10 @@ import {
   pronounceLine, pronounceWord, resolveLanguage, tokenize,
   type LanguageId,
 } from '../../src/engine/lang'
-import { isVowel, type Syllable } from '../../src/engine/voice/phonemes'
+import { isVowel, type Syllable, type Vowel } from '../../src/engine/voice/phonemes'
 import { CONSONANTS, vowelFormants, VOICE_TYPES } from '../../src/engine/voice/formants'
 import { planSegments, SING_PRESETS, renderSungNote } from '../../src/engine/voice/singer'
+import { stft } from '../../src/engine/audio/stft'
 import { planSpeech, SPEECH_VOICES, synthesizeSpeech } from '../../src/engine/voice/speech'
 import { scoreToMidi } from '../../src/engine/export/midi'
 import { scoreToLrc, scoreToSrt, timedLyricLines } from '../../src/engine/export/subtitles'
@@ -642,5 +643,89 @@ describe('the arrangement has a shape', () => {
     const loudest = score.sections[levels.indexOf(Math.max(...levels))]!
     const quietest = score.sections[levels.indexOf(Math.min(...levels))]!
     expect(loudest.intensity).toBeGreaterThan(quietest.intensity)
+  })
+})
+
+describe('the voice carries words, not just pitch', () => {
+  const SR = 22050
+
+  /** Average magnitude spectrum of a rendered buffer. */
+  const spectrumOf = (buffer: Float32Array): Float32Array => {
+    const spec = stft(buffer, 1024, 256, SR)
+    const average = new Float32Array(spec.magnitude[0]!.length)
+    for (const frame of spec.magnitude) {
+      for (let i = 0; i < frame.length; i++) average[i]! += frame[i]!
+    }
+    return average
+  }
+
+  /** Share of a spectrum's energy above a frequency, 0..1. */
+  const shareAbove = (spectrum: Float32Array, hz: number): number => {
+    let high = 0
+    let all = 0
+    for (let i = 1; i < spectrum.length; i++) {
+      const power = spectrum[i]! * spectrum[i]!
+      all += power
+      if ((i * SR) / 1024 >= hz) high += power
+    }
+    return high / (all || 1)
+  }
+
+  const sing = (vowel: Vowel, midi: number, style = SING_PRESETS.baritone!): Float32Array =>
+    renderSungNote({
+      midi, duration: 0.5, velocity: 0.9,
+      sounds: { text: 'x', onset: [], vowel, coda: [] },
+      sampleRate: SR, style, seed: 5, legato: false,
+    })
+
+  it('puts real energy in the band where words are heard', () => {
+    // A voiced source is a comb of harmonics; a formant narrower than the gap
+    // between them passes almost nothing, which is what turns a sung vowel into
+    // a hum. Every vowel must carry something above 800 Hz, at any pitch.
+    for (const [style, midi] of [
+      [SING_PRESETS.baritone!, 45], [SING_PRESETS.baritone!, 57],
+      [SING_PRESETS.pop!, 62], [SING_PRESETS.soprano!, 72],
+    ] as const) {
+      for (const vowel of ['A', 'E', 'O', 'IY'] as Vowel[]) {
+        const share = shareAbove(spectrumOf(sing(vowel, midi, style)), 800)
+        expect(share, `${style.voice} ${vowel} at ${midi}`).toBeGreaterThan(0.04)
+      }
+    }
+  })
+
+  it('keeps the vowels telling themselves apart', () => {
+    // Widening the formants to catch harmonics must not widen them so far that
+    // every vowel sounds the same — the spread is the intelligibility.
+    const shares = (['A', 'E', 'O', 'UW'] as Vowel[])
+      .map((vowel) => shareAbove(spectrumOf(sing(vowel, 50)), 800))
+    expect(Math.max(...shares) - Math.min(...shares)).toBeGreaterThan(0.15)
+  })
+
+  it('leaves the voice owning the band it is heard in', () => {
+    const score = composeSong(buildSpec('Indonesian dangdut koplo, male vocal', {
+      seed: 'band', durationSeconds: 40, vocals: 'sung',
+    }))
+    const rendered = renderScore(score, { sampleRate: SR, keepStems: true })
+    const stems = rendered.stems ?? []
+
+    const bandPower = (buffer: Float32Array): number => {
+      const spec = stft(buffer, 1024, 256, SR)
+      let total = 0
+      for (const frame of spec.magnitude) {
+        for (let i = 1; i < frame.length; i++) {
+          const hz = (i * SR) / 1024
+          if (hz >= 800 && hz < 5000) total += frame[i]! * frame[i]!
+        }
+      }
+      return total
+    }
+
+    const vocal = bandPower(stems.find((stem) => stem.id === 'vocal')!.left)
+    const backing = stems
+      .filter((stem) => stem.id !== 'vocal' && stem.id !== 'vocalHarmony')
+      .reduce((sum, stem) => sum + bandPower(stem.left), 0)
+
+    // Most of what is audible between 800 Hz and 5 kHz should be the singer.
+    expect(vocal / (vocal + backing)).toBeGreaterThan(0.5)
   })
 })
