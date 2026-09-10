@@ -29,7 +29,7 @@ export function when(match: string, spec: string, context: Context): SoundRule {
 }
 
 /** The five-vowel system shared by most of the world's Latin orthographies. */
-export const FIVE_VOWELS = { a: 'A', e: 'E', i: 'IY', o: 'O', u: 'UW' } as const
+export const FIVE_VOWELS = { a: 'A', e: 'E', i: 'IY', o: 'O', u: 'U' } as const
 
 /**
  * Builds the diphthong key set the syllabifier wants from written vowel pairs.

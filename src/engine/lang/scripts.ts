@@ -25,19 +25,19 @@ const RUSSIAN: SoundRule[] = [
     'ль': 'LY', 'нь': 'NY',
     'а': 'A', 'б': 'B', 'в': 'V', 'г': 'G', 'д': 'D', 'е': 'EH', 'ё': 'O',
     'ж': 'ZH', 'з': 'Z', 'и': 'IY', 'й': 'Y', 'к': 'K', 'л': 'L', 'м': 'M',
-    'н': 'N', 'о': 'O', 'п': 'P', 'р': 'DX', 'с': 'S', 'т': 'T', 'у': 'UW',
+    'н': 'N', 'о': 'O', 'п': 'P', 'р': 'DX', 'с': 'S', 'т': 'T', 'у': 'U',
     'ф': 'F', 'х': 'X', 'ц': 'TS', 'ч': 'CH', 'ш': 'SH', 'щ': 'SH',
-    'ъ': '', 'ы': 'IX', 'ь': '', 'э': 'EH', 'ю': 'UW', 'я': 'A',
+    'ъ': '', 'ы': 'IX', 'ь': '', 'э': 'EH', 'ю': 'U', 'я': 'A',
   }),
   // The iotated vowels carry a y-glide at the start of a word and after
   // another vowel, and only palatalise the consonant before them elsewhere.
   when('е', 'Y EH', { at: 'start' }),
   when('ё', 'Y O', { at: 'start' }),
-  when('ю', 'Y UW', { at: 'start' }),
+  when('ю', 'Y U', { at: 'start' }),
   when('я', 'Y A', { at: 'start' }),
   when('е', 'Y EH', { prev: RUSSIAN_HARD }),
   when('ё', 'Y O', { prev: RUSSIAN_HARD }),
-  when('ю', 'Y UW', { prev: RUSSIAN_HARD }),
+  when('ю', 'Y U', { prev: RUSSIAN_HARD }),
   when('я', 'Y A', { prev: RUSSIAN_HARD }),
   // и is backed after the always-hard consonants.
   when('и', 'IX', { prev: 'жшц' }),
@@ -49,12 +49,12 @@ const UKRAINIAN: SoundRule[] = [
     'а': 'A', 'б': 'B', 'в': 'V', 'г': 'GX', 'ґ': 'G', 'д': 'D', 'е': 'EH',
     'є': 'Y E', 'ж': 'ZH', 'з': 'Z', 'и': 'IX', 'і': 'IY', 'ї': 'Y IY',
     'й': 'Y', 'к': 'K', 'л': 'L', 'м': 'M', 'н': 'N', 'о': 'O', 'п': 'P',
-    'р': 'DX', 'с': 'S', 'т': 'T', 'у': 'UW', 'ф': 'F', 'х': 'X', 'ц': 'TS',
-    'ч': 'CH', 'ш': 'SH', 'щ': 'SH CH', 'ь': '', 'ю': 'UW', 'я': 'A', "'": '',
+    'р': 'DX', 'с': 'S', 'т': 'T', 'у': 'U', 'ф': 'F', 'х': 'X', 'ц': 'TS',
+    'ч': 'CH', 'ш': 'SH', 'щ': 'SH CH', 'ь': '', 'ю': 'U', 'я': 'A', "'": '',
   }),
-  when('ю', 'Y UW', { at: 'start' }),
+  when('ю', 'Y U', { at: 'start' }),
   when('я', 'Y A', { at: 'start' }),
-  when('ю', 'Y UW', { prev: 'аеиіоуюя' }),
+  when('ю', 'Y U', { prev: 'аеиіоуюя' }),
   when('я', 'Y A', { prev: 'аеиіоуюя' }),
 ]
 
@@ -67,7 +67,7 @@ const GREEK_ACCENTS: Record<string, string> = {
 
 const GREEK: SoundRule[] = [
   ...letters({
-    'ου': 'UW', 'αι': 'E', 'ει': 'IY', 'οι': 'IY', 'υι': 'IY',
+    'ου': 'U', 'αι': 'E', 'ει': 'IY', 'οι': 'IY', 'υι': 'IY',
     'αυ': 'A F', 'ευ': 'E F', 'ηυ': 'IY F',
     'μπ': 'B', 'ντ': 'D', 'γκ': 'G', 'γγ': 'NG', 'τσ': 'TS', 'τζ': 'DZ',
     'α': 'A', 'β': 'V', 'γ': 'GX', 'δ': 'DH', 'ε': 'E', 'ζ': 'Z', 'η': 'IY',
@@ -100,13 +100,13 @@ const DEVANAGARI_CONSONANTS: Record<string, Phoneme[]> = {
 
 /** Independent vowel signs, used when a syllable begins with a vowel. */
 const DEVANAGARI_VOWELS: Record<string, Vowel[]> = {
-  'अ': ['AX'], 'आ': ['A'], 'इ': ['IH'], 'ई': ['IY'], 'उ': ['UH'], 'ऊ': ['UW'],
+  'अ': ['AX'], 'आ': ['A'], 'इ': ['IH'], 'ई': ['IY'], 'उ': ['UH'], 'ऊ': ['U'],
   'ऋ': ['IH'], 'ए': ['E'], 'ऐ': ['EH'], 'ओ': ['O'], 'औ': ['AO'],
 }
 
 /** Dependent vowel signs, which replace the consonant's built-in vowel. */
 const DEVANAGARI_MATRAS: Record<string, Vowel[]> = {
-  'ा': ['A'], 'ि': ['IH'], 'ी': ['IY'], 'ु': ['UH'], 'ू': ['UW'],
+  'ा': ['A'], 'ि': ['IH'], 'ी': ['IY'], 'ु': ['UH'], 'ू': ['U'],
   'ृ': ['IH'], 'े': ['E'], 'ै': ['EH'], 'ो': ['O'], 'ौ': ['AO'],
 }
 
@@ -201,27 +201,27 @@ function isFinalConsonant(word: string, index: number): boolean {
 
 /** Each kana is one mora; the table is the syllabary itself. */
 const KANA: Record<string, [Consonant[], Vowel]> = {
-  'あ': [[], 'A'], 'い': [[], 'IY'], 'う': [[], 'UW'], 'え': [[], 'E'], 'お': [[], 'O'],
-  'か': [['K'], 'A'], 'き': [['K'], 'IY'], 'く': [['K'], 'UW'], 'け': [['K'], 'E'], 'こ': [['K'], 'O'],
-  'が': [['G'], 'A'], 'ぎ': [['G'], 'IY'], 'ぐ': [['G'], 'UW'], 'げ': [['G'], 'E'], 'ご': [['G'], 'O'],
-  'さ': [['S'], 'A'], 'し': [['SH'], 'IY'], 'す': [['S'], 'UW'], 'せ': [['S'], 'E'], 'そ': [['S'], 'O'],
-  'ざ': [['Z'], 'A'], 'じ': [['JH'], 'IY'], 'ず': [['Z'], 'UW'], 'ぜ': [['Z'], 'E'], 'ぞ': [['Z'], 'O'],
-  'た': [['T'], 'A'], 'ち': [['CH'], 'IY'], 'つ': [['TS'], 'UW'], 'て': [['T'], 'E'], 'と': [['T'], 'O'],
-  'だ': [['D'], 'A'], 'ぢ': [['JH'], 'IY'], 'づ': [['Z'], 'UW'], 'で': [['D'], 'E'], 'ど': [['D'], 'O'],
-  'な': [['N'], 'A'], 'に': [['NY'], 'IY'], 'ぬ': [['N'], 'UW'], 'ね': [['N'], 'E'], 'の': [['N'], 'O'],
-  'は': [['HH'], 'A'], 'ひ': [['CX'], 'IY'], 'ふ': [['F'], 'UW'], 'へ': [['HH'], 'E'], 'ほ': [['HH'], 'O'],
-  'ば': [['B'], 'A'], 'び': [['B'], 'IY'], 'ぶ': [['B'], 'UW'], 'べ': [['B'], 'E'], 'ぼ': [['B'], 'O'],
-  'ぱ': [['P'], 'A'], 'ぴ': [['P'], 'IY'], 'ぷ': [['P'], 'UW'], 'ぺ': [['P'], 'E'], 'ぽ': [['P'], 'O'],
-  'ま': [['M'], 'A'], 'み': [['M'], 'IY'], 'む': [['M'], 'UW'], 'め': [['M'], 'E'], 'も': [['M'], 'O'],
-  'や': [['Y'], 'A'], 'ゆ': [['Y'], 'UW'], 'よ': [['Y'], 'O'],
-  'ら': [['DX'], 'A'], 'り': [['DX'], 'IY'], 'る': [['DX'], 'UW'], 'れ': [['DX'], 'E'], 'ろ': [['DX'], 'O'],
+  'あ': [[], 'A'], 'い': [[], 'IY'], 'う': [[], 'U'], 'え': [[], 'E'], 'お': [[], 'O'],
+  'か': [['K'], 'A'], 'き': [['K'], 'IY'], 'く': [['K'], 'U'], 'け': [['K'], 'E'], 'こ': [['K'], 'O'],
+  'が': [['G'], 'A'], 'ぎ': [['G'], 'IY'], 'ぐ': [['G'], 'U'], 'げ': [['G'], 'E'], 'ご': [['G'], 'O'],
+  'さ': [['S'], 'A'], 'し': [['SH'], 'IY'], 'す': [['S'], 'U'], 'せ': [['S'], 'E'], 'そ': [['S'], 'O'],
+  'ざ': [['Z'], 'A'], 'じ': [['JH'], 'IY'], 'ず': [['Z'], 'U'], 'ぜ': [['Z'], 'E'], 'ぞ': [['Z'], 'O'],
+  'た': [['T'], 'A'], 'ち': [['CH'], 'IY'], 'つ': [['TS'], 'U'], 'て': [['T'], 'E'], 'と': [['T'], 'O'],
+  'だ': [['D'], 'A'], 'ぢ': [['JH'], 'IY'], 'づ': [['Z'], 'U'], 'で': [['D'], 'E'], 'ど': [['D'], 'O'],
+  'な': [['N'], 'A'], 'に': [['NY'], 'IY'], 'ぬ': [['N'], 'U'], 'ね': [['N'], 'E'], 'の': [['N'], 'O'],
+  'は': [['HH'], 'A'], 'ひ': [['CX'], 'IY'], 'ふ': [['F'], 'U'], 'へ': [['HH'], 'E'], 'ほ': [['HH'], 'O'],
+  'ば': [['B'], 'A'], 'び': [['B'], 'IY'], 'ぶ': [['B'], 'U'], 'べ': [['B'], 'E'], 'ぼ': [['B'], 'O'],
+  'ぱ': [['P'], 'A'], 'ぴ': [['P'], 'IY'], 'ぷ': [['P'], 'U'], 'ぺ': [['P'], 'E'], 'ぽ': [['P'], 'O'],
+  'ま': [['M'], 'A'], 'み': [['M'], 'IY'], 'む': [['M'], 'U'], 'め': [['M'], 'E'], 'も': [['M'], 'O'],
+  'や': [['Y'], 'A'], 'ゆ': [['Y'], 'U'], 'よ': [['Y'], 'O'],
+  'ら': [['DX'], 'A'], 'り': [['DX'], 'IY'], 'る': [['DX'], 'U'], 'れ': [['DX'], 'E'], 'ろ': [['DX'], 'O'],
   'わ': [['W'], 'A'], 'を': [[], 'O'],
 }
 
 /** The small kana that glide onto the mora before them. */
-const KANA_SMALL: Record<string, Vowel> = { 'ゃ': 'A', 'ゅ': 'UW', 'ょ': 'O' }
+const KANA_SMALL: Record<string, Vowel> = { 'ゃ': 'A', 'ゅ': 'U', 'ょ': 'O' }
 const KANA_SMALL_VOWELS: Record<string, Vowel> = {
-  'ぁ': 'A', 'ぃ': 'IY', 'ぅ': 'UW', 'ぇ': 'E', 'ぉ': 'O',
+  'ぁ': 'A', 'ぃ': 'IY', 'ぅ': 'U', 'ぇ': 'E', 'ぉ': 'O',
 }
 
 /** Katakana sit one block above hiragana, so the two share one table. */
@@ -313,7 +313,7 @@ const JAMO_INITIAL: Consonant[][] = [
 const JAMO_MEDIAL: [Consonant[], Vowel][] = [
   [[], 'A'], [[], 'EH'], [['Y'], 'A'], [['Y'], 'EH'], [[], 'AH'], [[], 'E'],
   [['Y'], 'AH'], [['Y'], 'E'], [[], 'O'], [['W'], 'A'], [['W'], 'EH'], [['W'], 'E'],
-  [['Y'], 'O'], [[], 'UW'], [['W'], 'AH'], [['W'], 'E'], [['W'], 'IY'], [['Y'], 'UW'],
+  [['Y'], 'O'], [[], 'U'], [['W'], 'AH'], [['W'], 'E'], [['W'], 'IY'], [['Y'], 'U'],
   [[], 'IX'], [[], 'IX'], [[], 'IY'],
 ]
 
@@ -414,7 +414,7 @@ function readArabic(word: string): PhonemeSpan[] {
       const opensSyllable = previous === undefined || isArabicVowel(previous.phoneme)
       const phoneme: Phoneme = opensSyllable
         ? (character === 'و' ? 'W' : 'Y')
-        : (character === 'و' ? 'UW' : 'IY')
+        : (character === 'و' ? 'U' : 'IY')
       spans.push({ phoneme, start, end: index })
       if (opensSyllable) index = readArabicVowel(word, index, spans, start, true)
       else unmarkedConsonants = 0
@@ -453,7 +453,7 @@ function readArabicVowel(
 }
 
 function isArabicVowel(phoneme: Phoneme): boolean {
-  return phoneme === 'A' || phoneme === 'IY' || phoneme === 'UW'
+  return phoneme === 'A' || phoneme === 'IY' || phoneme === 'U'
     || phoneme === 'IH' || phoneme === 'UH'
 }
 

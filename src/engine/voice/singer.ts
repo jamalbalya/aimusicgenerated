@@ -309,6 +309,12 @@ export function renderSungNote(request: SungNoteRequest): Float32Array {
   let segmentStart = 0
   let jitter = 0
   let shimmer = 1
+  // Jitter and shimmer are period-to-period quantities: a real larynx varies
+  // the length and the strength of each cycle, not of each sample. Drawing
+  // them once per cycle rather than continuously is what gives each harmonic a
+  // skirt that widens with its order, which is the shape a voice actually has.
+  let cycleJitter = 0
+  let cycleShimmer = 1
 
   const attack = 0.018
   const release = 0.09
@@ -345,20 +351,40 @@ export function renderSungNote(request: SungNoteRequest): Float32Array {
       cents -= style.scoop * 100 * (1 - t / 0.09) * (1 - t / 0.09)
     }
     if (style.humanize > 0) {
-      // Slow drift plus fast jitter, both small — this is what stops the voice
-      // from sounding like a synthesiser holding a perfect pitch.
+      // Slow drift the ear hears as a singer settling on the note, plus the
+      // per-cycle jitter drawn below.
       jitter = jitter * 0.9995 + rng.normal(0, 0.6 * style.humanize) * 0.0005
-      cents += jitter * 100 + rng.normal(0, 1.2 * style.humanize)
-      shimmer = shimmer * 0.9998 + (1 + rng.normal(0, 0.05 * style.humanize)) * 0.0002
+      cents += jitter * 100 + cycleJitter
+      shimmer += (cycleShimmer - shimmer) * 0.02
     }
     const freq = baseFreq * Math.pow(2, cents / 1200)
 
     // --- Source -----------------------------------------------------------
     phase += freq / sampleRate
-    if (phase >= 1) phase -= 1
-    const voiced = glottalPulse(phase, openQuotient) * 2 - 0.6
-    const breath = noise.next() * (style.breathiness * 0.35 + segment.noiseLevel)
-    const source = voiced * segment.voicing + noiseFilter.process(breath) * (segment.noiseLevel > 0.05 ? 1 : 0.35)
+    if (phase >= 1) {
+      phase -= 1
+      if (style.humanize > 0) {
+        // Around half a percent of the period, which is what a healthy voice
+        // measures; more than that reads as an unsteady singer.
+        cycleJitter = rng.normal(0, 7 * style.humanize)
+        cycleShimmer = 1 + rng.normal(0, 0.05 * style.humanize)
+      }
+    }
+    const flow = glottalPulse(phase, openQuotient)
+    const voiced = flow * 2 - 0.6
+    // Aspiration is turbulence at the glottis: it is broadband, and it comes
+    // and goes with the opening rather than running at a constant level. Both
+    // details matter more than they sound like they should. A source that is
+    // perfectly periodic leaves 30 dB valleys between its harmonics, and that
+    // unnaturally clean comb is a large part of what makes a synthesised voice
+    // read as an oscillator rather than a person; filling it is what a real
+    // larynx does for free. Fricatives keep their own noise band — there the
+    // constriction, not the glottis, is making the sound.
+    const turbulence = noise.next() * (style.breathiness * 0.65 + segment.noiseLevel)
+    const shaped = segment.noiseLevel > 0.05
+      ? noiseFilter.process(turbulence)
+      : turbulence * (0.3 + 0.7 * flow)
+    const source = voiced * segment.voicing + shaped
 
     // --- Filter and envelope ---------------------------------------------
     let sample = bank.process(source)

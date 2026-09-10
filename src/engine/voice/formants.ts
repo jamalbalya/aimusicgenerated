@@ -37,7 +37,12 @@ const BASE_VOWELS: Record<Vowel, Formant[]> = {
   // lax/tense pairs above, which is why reading them as English mangles them.
   A: [{ freq: 720, bandwidth: 90, amp: 1 }, { freq: 1300, bandwidth: 110, amp: 0.52 }, { freq: 2540, bandwidth: 150, amp: 0.2 }, { freq: 3400, bandwidth: 200, amp: 0.07 }],
   E: [{ freq: 440, bandwidth: 70, amp: 1 }, { freq: 1900, bandwidth: 100, amp: 0.48 }, { freq: 2600, bandwidth: 140, amp: 0.3 }, { freq: 3450, bandwidth: 190, amp: 0.1 }],
-  O: [{ freq: 460, bandwidth: 70, amp: 1 }, { freq: 900, bandwidth: 95, amp: 0.5 }, { freq: 2450, bandwidth: 140, amp: 0.12 }, { freq: 3300, bandwidth: 200, amp: 0.04 }],
+  O: [{ freq: 470, bandwidth: 70, amp: 1 }, { freq: 1030, bandwidth: 95, amp: 0.5 }, { freq: 2450, bandwidth: 140, amp: 0.12 }, { freq: 3300, bandwidth: 200, amp: 0.04 }],
+  // English "oo" is a diphthongised, fronted vowel whose F2 sits close to
+  // that of a pure /o/. Borrowing it for the five-vowel languages left their
+  // u and o measurably indistinguishable, so they get their own vowel: a
+  // genuinely close back rounded one, with F2 well clear of /o/.
+  U: [{ freq: 315, bandwidth: 60, amp: 1 }, { freq: 680, bandwidth: 85, amp: 0.42 }, { freq: 2350, bandwidth: 140, amp: 0.1 }, { freq: 3300, bandwidth: 200, amp: 0.04 }],
   AX: [{ freq: 500, bandwidth: 80, amp: 1 }, { freq: 1450, bandwidth: 110, amp: 0.42 }, { freq: 2450, bandwidth: 150, amp: 0.16 }, { freq: 3300, bandwidth: 200, amp: 0.05 }],
   // Front rounded: the tongue of a front vowel with the lips of a back one, so
   // F2 sits between the two. German ü/ö, French u/eu, Turkish ü/ö.

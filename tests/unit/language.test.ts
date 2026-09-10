@@ -36,7 +36,7 @@ describe('grapheme to phoneme', () => {
     expect(read('selamat', 'id')).toBe('S AX | L A | M A T')
     expect(read('mata', 'es')).toBe('M A | T A')
     expect(read('moyo', 'sw')).toBe('M O | Y O')
-    expect(read('puso', 'tl')).toBe('P UW | S O')
+    expect(read('puso', 'tl')).toBe('P U | S O')
   })
 
   it('gives Indonesian its glottal stop and its schwa', () => {
@@ -66,7 +66,7 @@ describe('grapheme to phoneme', () => {
     expect(pronounceWord('coração', 'pt').at(-1)!.vowel).toBe('AN')
     expect(read('bem', 'pt')).toBe('B EN')
     // Brazilian: a final o is /u/ and a final e is /i/.
-    expect(pronounceWord('amigo', 'pt').at(-1)!.vowel).toBe('UW')
+    expect(pronounceWord('amigo', 'pt').at(-1)!.vowel).toBe('U')
     expect(pronounceWord('noite', 'pt').at(-1)!.vowel).toBe('IY')
   })
 
@@ -74,10 +74,10 @@ describe('grapheme to phoneme', () => {
     expect(read('bon', 'fr')).toBe('B ON')
     // "bonne" is not nasal: the vowel that follows undoes it.
     expect(read('bonne', 'fr')).toBe('B O N')
-    expect(read('toujours', 'fr')).toBe('T UW | ZH UW RU')
+    expect(read('toujours', 'fr')).toBe('T U | ZH U RU')
     // A whole-word exception beats the rules.
     expect(read('les', 'fr')).toBe('L E')
-    expect(read('vous', 'fr')).toBe('V UW')
+    expect(read('vous', 'fr')).toBe('V U')
   })
 
   it('reads German ch by the vowel before it, and devoices its endings', () => {
@@ -117,18 +117,18 @@ describe('grapheme to phoneme', () => {
   })
 
   it('reads kana one mora at a time', () => {
-    expect(read('さくら', 'ja')).toBe('S A | K UW | DX A')
+    expect(read('さくら', 'ja')).toBe('S A | K U | DX A')
     // The moraic n closes the syllable before it rather than taking a note.
     expect(pronounceWord('にほん', 'ja').at(-1)!.coda).toEqual(['N'])
     // Katakana share the table with hiragana.
-    expect(read('サクラ', 'ja')).toBe('S A | K UW | DX A')
+    expect(read('サクラ', 'ja')).toBe('S A | K U | DX A')
     // A small ya glides onto the mora before it.
     expect(pronounceWord('きゃ', 'ja')[0]!.onset).toEqual(['K', 'Y'])
   })
 
   it('decomposes hangul into its jamo', () => {
     expect(read('사랑', 'ko')).toBe('S A | DX A NG')
-    expect(read('한국', 'ko')).toBe('HH A N | G UW K')
+    expect(read('한국', 'ko')).toBe('HH A N | G U K')
     // Only seven sounds can close a Korean syllable, whatever the spelling.
     expect(pronounceWord('앞', 'ko')[0]!.coda).toEqual(['P'])
   })
