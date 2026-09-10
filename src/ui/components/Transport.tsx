@@ -11,7 +11,7 @@ import { formatDuration } from '../../engine/core/units'
 import * as player from '../../lib/player'
 import { useStudio } from '../../state/store'
 import {
-  downloadBlob, encodeAudio, EXPORT_FORMATS, extensionFor, safeFilename, savingIsMediated,
+  downloadBlob, encodeAudio, EXPORT_FORMATS, extensionFor, safeFilename,
   type ExportFormat,
 } from '../../lib/files'
 
@@ -22,9 +22,6 @@ export function Transport() {
   const [format, setFormat] = useState<ExportFormat>('mp3-320')
   const [exporting, setExporting] = useState(false)
   const [showExport, setShowExport] = useState(false)
-  // Some embeds mediate saving and refuse audio outright. Better to say so
-  // before the click than to let it fail afterwards.
-  const [mediated] = useState(savingIsMediated)
 
   useEffect(() => player.subscribe(setState), [])
 
@@ -170,9 +167,7 @@ export function Transport() {
                     {exporting ? 'Preparing…' : 'Download'}
                   </button>
                   <p className="mt-2 text-[11px] leading-snug text-[var(--text-faint)]">
-                    {mediated
-                      ? 'This embedded preview cannot save audio files. Open the full version to download.'
-                      : 'Free, unwatermarked, yours to use.'}
+                    Free, unwatermarked, yours to use.
                   </p>
                 </div>
               </>
