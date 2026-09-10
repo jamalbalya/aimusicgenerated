@@ -3,7 +3,7 @@
  * hear them sung, which is the part most lyric tools stop short of.
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Icon } from '../components/Icon'
 import { Empty, Field, Panel, Progress, Segmented, Slider } from '../components/controls'
 import { isCancellation, useJob } from '../useJob'
@@ -13,6 +13,7 @@ import { GENRES } from '../../engine/compose/genres'
 import { RHYME_SCHEMES, type RhymeScheme } from '../../engine/lyrics/generator'
 import { syllablesInLine } from '../../engine/lyrics/syllables'
 import { SING_PRESETS, SING_PRESET_NAMES } from '../../engine/voice/singer'
+import { detectLanguage, LANGUAGE_CHOICES, type LanguageId } from '../../engine/lang'
 import type { GenerateResult, LyricsWorkerResult } from '../../workers/protocol'
 import type { SectionKind, SongLyrics } from '../../engine/compose/types'
 import { downloadText, safeFilename } from '../../lib/files'
@@ -51,6 +52,7 @@ export default function LyricsPage() {
 
   const [singGenre, setSingGenre] = useState('pop')
   const [singVoice, setSingVoice] = useState('pop')
+  const [singLanguage, setSingLanguage] = useState<LanguageId | 'auto'>('auto')
 
   const write = useCallback(async () => {
     if (!theme.trim()) {
@@ -93,6 +95,7 @@ export default function LyricsPage() {
         prompt: theme.trim() || 'a song',
         quality,
         style: SING_PRESETS[singVoice] ?? SING_PRESETS.pop!,
+        language: singLanguage,
         overrides: { genreId: singGenre, mood, seed: `${theme}|sing|${Date.now()}` },
       })
       setCurrent({
@@ -107,7 +110,15 @@ export default function LyricsPage() {
     } catch (error) {
       if (!isCancellation(error)) { /* reported by useJob */ }
     }
-  }, [edited, theme, quality, singGenre, singVoice, mood, lyrics, job, notify, setCurrent])
+  }, [edited, theme, quality, singGenre, singVoice, singLanguage, mood, lyrics, job, notify, setCurrent])
+
+  // The lyric can be edited into any language after it is written, so the
+  // reading is taken from what is in the box now, not from what was generated.
+  const detectedName = useMemo(() => {
+    const text = edited.replace(/^\[.*\]$/gm, '').trim()
+    if (!text) return undefined
+    return LANGUAGE_CHOICES.find((choice) => choice.id === detectLanguage(text))?.label
+  }, [edited])
 
   const lineStats = edited
     .split('\n')
@@ -296,7 +307,7 @@ export default function LyricsPage() {
 
           {lyrics && (
             <Panel title="Hear it sung">
-              <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
                 <Field label="Backing style">
                   <select className="select" value={singGenre} onChange={(e) => setSingGenre(e.target.value)}>
                     {GENRES.map((genre) => (
@@ -308,6 +319,24 @@ export default function LyricsPage() {
                   <select className="select" value={singVoice} onChange={(e) => setSingVoice(e.target.value)}>
                     {SING_PRESET_NAMES.map((name) => (
                       <option key={name} value={name}>{name.charAt(0).toUpperCase() + name.slice(1)}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field
+                  label="Pronunciation"
+                  htmlFor="sing-language"
+                  value={singLanguage === 'auto' ? detectedName : undefined}
+                >
+                  <select
+                    id="sing-language"
+                    className="select"
+                    value={singLanguage}
+                    onChange={(e) => setSingLanguage(e.target.value as LanguageId | 'auto')}
+                  >
+                    {LANGUAGE_CHOICES.map((choice) => (
+                      <option key={choice.id} value={choice.id}>
+                        {choice.id === 'auto' ? choice.label : `${choice.label} — ${choice.native}`}
+                      </option>
                     ))}
                   </select>
                 </Field>
