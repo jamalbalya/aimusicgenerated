@@ -1,0 +1,232 @@
+import { expect, test, type Page } from '@playwright/test'
+import { writeFixture } from './make-fixture'
+
+const FIXTURE = writeFixture()
+
+/** Fails the test if the page logged an error, so silent breakage cannot pass. */
+function watchForErrors(page: Page): string[] {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`))
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(`console: ${message.text()}`)
+  })
+  return errors
+}
+
+test.describe('shell', () => {
+  test('loads, routes between every tool, and survives a reload', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: /Describe a song/i })).toBeVisible()
+
+    const routes: [string, RegExp][] = [
+      ['/lyrics', /Words that scan/i],
+      ['/voice', /Eight voices/i],
+      ['/stems', /Take the track apart/i],
+      ['/shifter', /Change the voice/i],
+      ['/toolkit', /Edit, treat and measure/i],
+      ['/library', /Saved on this device/i],
+      ['/about', /Everything runs here/i],
+    ]
+
+    for (const [path, heading] of routes) {
+      await page.goto(path)
+      await expect(page.getByRole('heading', { name: heading, level: 1 })).toBeVisible()
+      // A deep link must survive a hard reload, not only client-side routing.
+      await page.reload()
+      await expect(page.getByRole('heading', { name: heading, level: 1 })).toBeVisible()
+    }
+
+    await page.goto('/')
+    expect(errors).toEqual([])
+  })
+
+  test('shows a 404 for an unknown route', async ({ page }) => {
+    await page.goto('/not-a-real-page')
+    await expect(page.getByRole('heading', { name: /No tool lives here/i })).toBeVisible()
+    await page.getByRole('link', { name: /Back to the studio/i }).click()
+    await expect(page.getByRole('heading', { name: /Describe a song/i })).toBeVisible()
+  })
+
+  test('remembers the theme across reloads', async ({ page, isMobile }) => {
+    await page.goto('/')
+    const toggle = isMobile
+      ? page.getByRole('button', { name: /Switch to light theme/i })
+      : page.getByRole('button', { name: /Light theme/i })
+    await toggle.click()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+    await page.reload()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+  })
+})
+
+test.describe('song studio', () => {
+  test('generates, plays, and exposes lyrics, chords and stems', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/')
+
+    await page.getByRole('textbox').first().fill('an upbeat pop song about the summer, 30 seconds')
+    await page.getByRole('button', { name: 'Generate song' }).click()
+
+    const title = page.getByRole('heading', { level: 2 }).first()
+    await expect(title).toBeVisible({ timeout: 150_000 })
+    await expect(title).not.toHaveText('')
+
+    // Stats are real numbers, not placeholders.
+    const tempoLabel = page.getByText('Tempo', { exact: true }).first()
+    await expect(tempoLabel).toBeVisible()
+    const tempo = await tempoLabel.locator('xpath=following-sibling::span[1]').innerText()
+    expect(Number(tempo)).toBeGreaterThan(40)
+
+    // The transport picked the render up and reports a real duration.
+    await expect(page.getByText(/0:00 \/ 0:\d\d/)).toBeVisible()
+
+    await page.getByRole('button', { name: 'Play' }).click()
+    await page.waitForTimeout(1500)
+    const readout = await page.getByText(/\d:\d\d \/ \d:\d\d/).first().innerText()
+    expect(readout).not.toMatch(/^0:00 /)
+
+    // Lyrics tab has real words in it.
+    await page.getByRole('button', { name: 'Lyrics', exact: true }).click()
+    const lyricsText = await page.locator('.lyrics-body').innerText()
+    expect(lyricsText.split(/\s+/).length).toBeGreaterThan(15)
+    expect(lyricsText).not.toContain('%END')
+    expect(lyricsText).not.toContain('undefined')
+    expect(lyricsText).not.toMatch(/[{}]/)
+
+    // Chords tab lists chord symbols.
+    await page.getByRole('button', { name: 'Chords', exact: true }).click()
+    await expect(page.getByText(/^[A-G][#b]?(m|maj7|m7|7|dim|sus[24]|add9|m9|9|6|aug)?(\/[A-G][#b]?)?$/).first()).toBeVisible()
+
+    // Stems tab lists per-instrument renders.
+    await page.getByRole('button', { name: 'Stems', exact: true }).click()
+    await expect(page.getByRole('button', { name: /^Play$/ }).first()).toBeVisible()
+
+    expect(errors).toEqual([])
+  })
+
+  test('the same seed reproduces the same song', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('textbox').first().fill('a lo-fi beat, 20 seconds')
+    await page.getByRole('button', { name: /Show controls/i }).click()
+    await page.getByLabel('Seed').fill('reproducible-seed')
+
+    await page.getByRole('button', { name: 'Generate song' }).click()
+    const first = page.getByRole('heading', { level: 2 }).first()
+    await expect(first).toBeVisible({ timeout: 150_000 })
+    const firstTitle = await first.innerText()
+
+    await page.getByRole('button', { name: 'Generate song' }).click()
+    await page.waitForTimeout(500)
+    await expect(page.getByRole('heading', { level: 2 }).first()).toBeVisible({ timeout: 150_000 })
+    expect(await page.getByRole('heading', { level: 2 }).first().innerText()).toBe(firstTitle)
+  })
+
+  test('refuses to generate with nothing to go on', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Generate song' }).click()
+    await expect(page.getByText(/Describe the song you want/i)).toBeVisible()
+  })
+})
+
+test.describe('lyric writer', () => {
+  test('writes editable, structured lyrics', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/lyrics')
+    await page.getByLabel(/What is it about/i).fill('the last summer before everyone moved away')
+    await page.getByRole('button', { name: /Write lyrics/i }).click()
+
+    const editor = page.getByLabel('Lyrics')
+    await expect(editor).toBeVisible({ timeout: 60_000 })
+    const value = await editor.inputValue()
+    expect(value.length).toBeGreaterThan(80)
+    expect(value).toContain('[Chorus]')
+    expect(value).not.toContain('%END')
+    expect(value).not.toMatch(/[{}]/)
+
+    // Both choruses are identical — that is what makes it a hook.
+    const choruses = value.split(/\[Chorus[^\]]*\]/).slice(1).map((block) => block.split(/\n\[/)[0]!.trim())
+    if (choruses.length > 1) expect(choruses[0]).toBe(choruses[1])
+
+    await expect(page.getByText(/\d+ lines · \d+ syllables/)).toBeVisible()
+    expect(errors).toEqual([])
+  })
+})
+
+test.describe('text to speech', () => {
+  test('synthesises speech and loads it into the transport', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/voice')
+    await page.getByLabel('Text to speak').fill('Testing the built in speech engine.')
+    await page.getByRole('button', { name: /Speak & load/i }).click()
+
+    await expect(page.getByText(/0:00 \/ 0:\d\d/)).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByText(/Testing the built in speech/i).last()).toBeVisible()
+    expect(errors).toEqual([])
+  })
+})
+
+test.describe('stem splitter', () => {
+  test('separates an uploaded mix into stems', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/stems')
+    await page.setInputFiles('input[type="file"]', FIXTURE)
+    await expect(page.getByText('test-mix.wav')).toBeVisible()
+
+    await page.getByRole('button', { name: /Split vocal & backing/i }).click()
+    await expect(page.getByText('Vocals', { exact: true })).toBeVisible({ timeout: 120_000 })
+    await expect(page.getByText('Instrumental', { exact: true })).toBeVisible()
+    expect(errors).toEqual([])
+  })
+})
+
+test.describe('voice changer', () => {
+  test('applies a character to an uploaded file', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/shifter')
+    await page.setInputFiles('input[type="file"]', FIXTURE)
+    await expect(page.getByText('test-mix.wav')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Chipmunk' }).click()
+    await page.getByRole('button', { name: 'Apply', exact: true }).click()
+    await expect(page.getByText(/\+9 st · formant/)).toBeVisible({ timeout: 120_000 })
+    expect(errors).toEqual([])
+  })
+})
+
+test.describe('audio toolkit', () => {
+  test('edits and analyses an uploaded file', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/toolkit')
+    await page.setInputFiles('input[type="file"]', FIXTURE)
+    await expect(page.getByText('Length', { exact: true })).toBeVisible()
+
+    // Normalise, then confirm the edit registered.
+    await page.getByRole('button', { name: /Peak to −1 dB/i }).click()
+    await expect(page.getByText(/Peak normalise applied/i)).toBeVisible({ timeout: 60_000 })
+
+    await page.getByRole('button', { name: 'Analyse', exact: true }).first().click()
+    await page.getByRole('button', { name: 'Analyse', exact: true }).last().click()
+    // The fixture is a 120 BPM click, so detection should land on it.
+    await expect(page.getByText(/^1\d\d(\.\d)? BPM$/)).toBeVisible({ timeout: 120_000 })
+    await expect(page.getByText(/^-?\d+(\.\d)? LUFS$/)).toBeVisible()
+    expect(errors).toEqual([])
+  })
+})
+
+test.describe('library', () => {
+  test('saves a generated song and lists it', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/')
+    await page.getByRole('textbox').first().fill('a short lo-fi loop, 20 seconds')
+    await page.getByRole('button', { name: 'Generate song' }).click()
+    await expect(page.getByRole('heading', { level: 2 }).first()).toBeVisible({ timeout: 150_000 })
+
+    await page.getByRole('button', { name: /Save to library/i }).click()
+    await expect(page.getByText(/Saved to your library/i)).toBeVisible({ timeout: 60_000 })
+
+    await page.goto('/library')
+    await expect(page.getByRole('button', { name: /^Open$|^Play$/ }).first()).toBeVisible({ timeout: 30_000 })
+    expect(errors).toEqual([])
+  })
+})
