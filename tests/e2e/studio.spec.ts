@@ -240,6 +240,41 @@ test.describe('song studio', () => {
     expect(await page.getByRole('heading', { level: 2 }).first().innerText()).toBe(firstTitle)
   })
 
+  test('writes several takes from one brief and lets you pick between them', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/')
+    await page.getByRole('textbox').first().fill('a short lo-fi loop, 20 seconds')
+    await page.getByRole('button', { name: /Show controls/i }).click()
+
+    await page.getByRole('group', { name: 'Takes per run' }).getByRole('button', { name: '2' }).click()
+    await page.getByRole('button', { name: 'Generate song' }).click()
+
+    await expect(page.getByText('2 takes from one brief')).toBeVisible({ timeout: 200_000 })
+    const chooser = page.getByRole('group', { name: 'Choose a take' })
+    await expect(chooser.getByRole('button')).toHaveCount(2)
+
+    // The first take is the one playing, and it is a finished song.
+    const first = chooser.getByRole('button', { name: /Take 1/ })
+    await expect(first).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByText(/0:00 \/ 0:\d\d/)).toBeVisible()
+
+    // Switching takes swaps what is loaded, without generating again.
+    const second = chooser.getByRole('button', { name: /Take 2/ })
+    await second.click()
+    await expect(second).toHaveAttribute('aria-pressed', 'true')
+    await expect(first).toHaveAttribute('aria-pressed', 'false')
+
+    // Several takes come back without stems; the one you keep can have them.
+    const renderStems = page.getByRole('button', { name: 'Render stems for this take' })
+    await expect(renderStems).toBeVisible()
+    await renderStems.click()
+    await expect(renderStems).toBeHidden({ timeout: 200_000 })
+    await page.getByRole('button', { name: 'Stems', exact: true }).click()
+    await expect(page.getByRole('button', { name: /^Play$/ }).first()).toBeVisible()
+
+    expect(errors).toEqual([])
+  })
+
   test('offers a re-render when the quality setting changes', async ({ page, isMobile }) => {
     test.skip(isMobile, 'The quality control lives in the desktop sidebar.')
     await page.goto('/')

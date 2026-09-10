@@ -738,14 +738,17 @@ describe('the voice carries words, not just pitch', () => {
 describe('the pipeline reports what it actually produced', () => {
   const LYRIC = readFileSync(new URL('./fixtures/koplo-lyric.txt', import.meta.url), 'utf8')
 
-  const generate = async (overrides: Record<string, unknown>): Promise<GenerateResult> =>
+  const run = async (overrides: Record<string, unknown>, takes?: number): Promise<GenerateResult> =>
     await handleRequest({
       kind: 'generate',
       prompt: 'Indonesian dangdut koplo, sarcastic workplace anthem, powerful kendang, groovy bass, funky guitar, dramatic male vocal, explosive sing-along chorus',
       quality: 'draft',
       keepStems: true,
+      ...(takes ? { takes } : {}),
       overrides: { seed: 'pipeline', ...overrides },
     } as never, () => {}) as GenerateResult
+
+  const generate = async (overrides: Record<string, unknown>) => (await run(overrides)).takes[0]!
 
     it('calls a sung song a sung song, and an instrumental an instrumental', async () => {
     const song = await generate({ customLyrics: LYRIC })
@@ -787,6 +790,33 @@ describe('the pipeline reports what it actually produced', () => {
 
     // And the voice is carrying the range it is heard in.
     expect(song.validation.voiceBandShare!).toBeGreaterThan(0.4)
+  })
+
+  it('writes a different song for every take, from one brief', async () => {
+    const run2 = await run({ customLyrics: LYRIC }, 2)
+    expect(run2.takes).toHaveLength(2)
+
+    const [first, second] = run2.takes as [typeof run2.takes[0], typeof run2.takes[0]]
+    // Same brief, so the same genre and the same words — a different song.
+    expect(second.score.genreId).toBe(first.score.genreId)
+    expect(second.score.lyrics?.formatted).toBe(first.score.lyrics?.formatted)
+    expect(second.score.seed).not.toBe(first.score.seed)
+
+    const tune = (take: typeof first): string =>
+      take.score.tracks.find((track) => track.id === 'vocal')!
+        .notes.slice(0, 24).map((note) => note.midi).join(',')
+    expect(tune(second)).not.toBe(tune(first))
+
+    // Both are finished songs, not one song and one draft.
+    for (const take of run2.takes) {
+      expect(take.validation.kind).toBe('vocal-song')
+      expect(take.validation.problems).toEqual([])
+      expect(take.audio.channels[0]!.length).toBeGreaterThan(0)
+    }
+
+    // Stems would cost a set of full-length buffers per take, so a run that
+    // writes several hands them back without.
+    expect(run2.takes.every((take) => take.stems.length === 0)).toBe(true)
   })
 
   it('notices a lyric a singer cannot perform', () => {

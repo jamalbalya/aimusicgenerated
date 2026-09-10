@@ -18,7 +18,7 @@ import { describeResult } from '../../engine/synth/validate'
 import { checkSingability, STRUCTURE_TAGS } from '../../engine/lyrics/structure'
 import {
   QUALITY_LABELS, QUALITY_SAMPLE_RATES,
-  type GenerateResult, type RenderQuality,
+  MAX_TAKES, type GenerateResult, type RenderQuality, type SongTake,
 } from '../../workers/protocol'
 import { INSTRUMENT_LABELS, type Score, type SectionKind } from '../../engine/compose/types'
 import { downloadText, encodeAudio, downloadBlob, safeFilename } from '../../lib/files'
@@ -114,7 +114,13 @@ export default function StudioPage() {
   }, [customLyrics])
   const [keepStems, setKeepStems] = useState(true)
 
-  const [result, setResult] = useState<GenerateResult | null>(null)
+  const [takeCount, setTakeCount] = useState(1)
+  // A run can write more than one song from the same brief. They are all kept
+  // so the two can be compared without generating twice; `takeIndex` is the
+  // one on screen and in the player.
+  const [takes, setTakes] = useState<SongTake[]>([])
+  const [takeIndex, setTakeIndex] = useState(0)
+  const result = takes[takeIndex] ?? null
   const [tab, setTab] = useState<DetailTab>('lyrics')
   const [saving, setSaving] = useState(false)
   const [renderedAt, setRenderedAt] = useState<RenderQuality>(quality)
@@ -129,13 +135,38 @@ export default function StudioPage() {
    * under the arrangement, has not succeeded and should not be reported as if
    * it had.
    */
-  const reportResult = useCallback((validation: GenerateResult['validation']) => {
+  const reportResult = useCallback((validation: SongTake['validation']) => {
     if (validation.problems.length > 0) {
       notify(validation.problems[0]!, 'error')
       return
     }
     notify(describeResult(validation), 'success')
   }, [notify])
+
+  /** Puts one take in the player and in the panels below it. */
+  const openTake = useCallback((take: SongTake) => {
+    setCurrent({
+      title: take.score.title,
+      subtitle: describeScore(take.score),
+      audio: { channels: take.audio.channels, sampleRate: take.audio.sampleRate },
+      score: take.score,
+      lyrics: take.score.lyrics?.formatted,
+      stems: take.stems.map((stem) => ({
+        id: stem.id,
+        name: stem.name,
+        audio: { channels: stem.audio.channels, sampleRate: stem.audio.sampleRate },
+      })),
+      source: 'song',
+    })
+  }, [setCurrent])
+
+  const chooseTake = useCallback((index: number) => {
+    const take = takes[index]
+    if (!take) return
+    setTakeIndex(index)
+    setSeed(take.score.seed)
+    openTake(take)
+  }, [takes, openTake])
 
   const generate = useCallback(async (overrideSeed?: string) => {
     const text = prompt.trim()
@@ -150,6 +181,7 @@ export default function StudioPage() {
         prompt: text,
         quality,
         keepStems,
+        takes: takeCount,
         singStylePreset: singStyle || undefined,
         overrides: {
           ...(genreId ? { genreId } : {}),
@@ -164,31 +196,21 @@ export default function StudioPage() {
           seed: usedSeed || `${text}|${Date.now()}`,
         },
       })
-      setResult(output)
+      const first = output.takes[0]!
+      setTakes(output.takes)
+      setTakeIndex(0)
       setRenderedAt(quality)
-      setSeed(output.score.seed)
-      reportResult(output.validation)
-      setCurrent({
-        title: output.score.title,
-        subtitle: describeScore(output.score),
-        audio: { channels: output.audio.channels, sampleRate: output.audio.sampleRate },
-        score: output.score,
-        lyrics: output.score.lyrics?.formatted,
-        stems: output.stems.map((stem) => ({
-          id: stem.id,
-          name: stem.name,
-          audio: { channels: stem.audio.channels, sampleRate: stem.audio.sampleRate },
-        })),
-        source: 'song',
-      })
-      setTab(output.score.lyrics ? 'lyrics' : 'chords')
+      setSeed(first.score.seed)
+      reportResult(first.validation)
+      openTake(first)
+      setTab(first.score.lyrics ? 'lyrics' : 'chords')
     } catch (error) {
       if (!isCancellation(error)) {
         // useJob already surfaced the message.
       }
     }
   }, [prompt, genreId, mood, bpm, tonic, scale, duration, vocals, customLyrics, language,
-      singStyle, seed, quality, keepStems, job, notify, reportResult, setCurrent])
+      singStyle, seed, quality, keepStems, takeCount, job, notify, reportResult, openTake])
 
   /**
    * Renders the same score again at the selected quality. Auditioning in Draft
@@ -205,26 +227,17 @@ export default function StudioPage() {
         keepStems,
         singStylePreset: singStyle || undefined,
       })
-      setResult(output)
+      const take = output.takes[0]!
+      // Re-rendering replaces the take it came from, so switching back and
+      // forth does not lose the stems that were just rendered for it.
+      setTakes((current) => current.map((existing, index) => index === takeIndex ? take : existing))
       setRenderedAt(quality)
-      reportResult(output.validation)
-      setCurrent({
-        title: output.score.title,
-        subtitle: describeScore(output.score),
-        audio: { channels: output.audio.channels, sampleRate: output.audio.sampleRate },
-        score: output.score,
-        lyrics: output.score.lyrics?.formatted,
-        stems: output.stems.map((stem) => ({
-          id: stem.id,
-          name: stem.name,
-          audio: { channels: stem.audio.channels, sampleRate: stem.audio.sampleRate },
-        })),
-        source: 'song',
-      })
+      reportResult(take.validation)
+      openTake(take)
     } catch (error) {
       if (!isCancellation(error)) { /* reported by useJob */ }
     }
-  }, [result, quality, keepStems, singStyle, job, reportResult, setCurrent])
+  }, [result, takeIndex, quality, keepStems, singStyle, job, reportResult, openTake])
 
   const saveToLibrary = useCallback(async () => {
     if (!result) return
@@ -289,7 +302,7 @@ export default function StudioPage() {
       notify(
         which === 'vocals'
           ? 'This song has no vocal track.'
-          : 'Turn on “Render stems” in the controls and generate again.',
+          : 'This take has no stems. Render them from the Result panel first.',
         'error',
       )
       return
@@ -326,6 +339,10 @@ export default function StudioPage() {
   }, [result, notify])
 
   const hasVocalStem = result?.stems.some((stem) => isVocalStem(stem.id)) ?? false
+  // A run that writes several takes hands them back without stems, because a
+  // set per take is more memory than a phone has. Whichever take is kept can
+  // have them rendered on its own.
+  const stemsMissing = Boolean(result) && keepStems && result!.stems.length === 0
 
   return (
     <div className="grid gap-4">
@@ -609,6 +626,24 @@ export default function StudioPage() {
                 />
               </Field>
 
+              <Field
+                label="Takes"
+                hint={takeCount > 1
+                  ? 'Each take is a different song from the same brief. Stems are rendered for whichever one you keep.'
+                  : 'Write more than one song at once and pick the one you like.'}
+              >
+                <Segmented
+                  ariaLabel="Takes per run"
+                  value={String(takeCount)}
+                  onChange={(value) => setTakeCount(Number(value))}
+                  options={Array.from({ length: MAX_TAKES }, (_, index) => ({
+                    value: String(index + 1),
+                    label: String(index + 1),
+                    title: index === 0 ? 'One song' : `${index + 1} songs from one brief`,
+                  }))}
+                />
+              </Field>
+
               <Field label="Stems" hint="Render every instrument separately so you can export them.">
                 <Segmented
                   ariaLabel="Render stems"
@@ -637,15 +672,19 @@ export default function StudioPage() {
             title="Result"
             action={
               <div className="flex items-center gap-1.5">
-                {renderedAt !== quality && (
+                {(renderedAt !== quality || stemsMissing) && (
                   <button
                     type="button"
                     className="btn btn-sm"
                     disabled={job.running}
-                    title={`Render this take again at ${QUALITY_LABELS[quality]}`}
+                    title={stemsMissing
+                      ? 'Render this take again, keeping every instrument separately'
+                      : `Render this take again at ${QUALITY_LABELS[quality]}`}
                     onClick={() => void rerender()}
                   >
-                    Re-render at {QUALITY_LABELS[quality].split(' · ')[0]}
+                    {stemsMissing && renderedAt === quality
+                      ? 'Render stems for this take'
+                      : `Re-render at ${QUALITY_LABELS[quality].split(' · ')[0]}`}
                   </button>
                 )}
                 <button type="button" className="btn btn-sm" disabled={saving || job.running} onClick={() => void saveToLibrary()}>
@@ -655,6 +694,29 @@ export default function StudioPage() {
             }
           >
             <div className="grid gap-4">
+              {takes.length > 1 && (
+                <div className="grid gap-1.5">
+                  <p className="t-label">{takes.length} takes from one brief</p>
+                  <div className="flex flex-wrap gap-1.5" role="group" aria-label="Choose a take">
+                    {takes.map((take, index) => (
+                      <button
+                        key={take.score.seed}
+                        type="button"
+                        className={`btn btn-sm ${index === takeIndex ? 'btn-primary' : ''}`}
+                        aria-pressed={index === takeIndex}
+                        disabled={job.running}
+                        onClick={() => chooseTake(index)}
+                      >
+                        Take {index + 1}
+                        <span className="t-num text-[11px] opacity-70">
+                          {take.score.bpm} BPM · {formatDuration((take.score.lengthBeats * 60) / take.score.bpm)}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div>
                 <h2 className="t-title text-[1.35rem] tracking-[-0.02em]">{score.title}</h2>
                 <p className="mt-1 text-[12.5px] text-[var(--text-dim)]">{describeScore(score)}</p>
@@ -798,7 +860,9 @@ export default function StudioPage() {
               ) : (
                 <Empty
                   title="Stems were not rendered"
-                  body="Turn on “Render stems” in the controls and generate again to get every instrument as a separate file."
+                  body={stemsMissing
+                    ? 'A run that writes several takes skips them, since a set per take is more memory than most devices have. Use “Render stems for this take” above to get every instrument as a separate file.'
+                    : 'Turn on “Render stems” in the controls and generate again to get every instrument as a separate file.'}
                 />
               )
             )}

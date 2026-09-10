@@ -13,7 +13,7 @@ survives except what you chose to save on your own device.
 
 | Tool | What it does |
 | --- | --- |
-| **Song Studio** | Describe a style and get a finished track: form, harmony, drums, instruments, a sung or rapped lead and a mastered mix. Write your own lyrics and they are the ones sung, in the language you wrote them in. Exports the mix, the instrumental, the vocal alone, every stem, a MIDI file and timed lyrics. |
+| **Song Studio** | Describe a style and get a finished track: form, harmony, drums, instruments, a sung or rapped lead and a mastered mix. Write your own lyrics and they are the ones sung, in the language you wrote them in. Ask for up to four takes and each is a different song from the same brief, not the same one mixed twice. Exports the mix, the instrumental, the vocal alone, every stem, a MIDI file and timed lyrics. |
 | **Lyric Writer** | Structured lyrics with a real rhyme scheme, a syllable target per line and a repeated hook. Edit any line, then hear it sung over a backing track. |
 | **Text to Speech** | Eight built-in voices with control over speed, pitch, expression and effects, reading 25 languages with each one's own sounds. Exports to a file. The system's own voices are offered for preview, sorted by which of them speak the language you typed. |
 | **Stem Splitter** | Pull the vocals out of any track, or split it four ways into vocals, drums, bass and everything else. |
@@ -72,7 +72,10 @@ This is not a large neural model. Those need a data centre full of GPUs, which
 is precisely the cost paid services are passing on. What you get instead is a
 composition and synthesis engine that is genuinely unlimited and genuinely
 private, with the trade-off that it sounds like a very good software instrument
-rather than a recording of a band. Separation is likewise signal processing
+rather than a recording of a band. The singer in particular is formant
+synthesis: in tune, in the right language, singing the words that were written,
+and audibly synthesised. `docs/quality/bos-toxic-evaluation.md` measures exactly
+how far that is from a recording and says what closing the gap would cost. Separation is likewise signal processing
 rather than a trained model, so heavily doubled or hard-panned vocals will not
 come out as cleanly as they would from a model trained on thousands of songs.
 
@@ -138,6 +141,9 @@ src/
 tests/
   unit/            Engine tests (Vitest, runs in Node)
   e2e/             Browser tests (Playwright, desktop and mobile)
+docs/
+  vocal-renderers.md          The seam a different singer plugs into
+  quality/                    Measured assessments of what comes out
 ```
 
 The engine has no browser dependencies at all — it is plain TypeScript over

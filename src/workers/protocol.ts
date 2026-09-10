@@ -51,17 +51,33 @@ export interface GenerateRequest {
   singStylePreset?: string
   /** Render every track separately so stems can be exported. */
   keepStems: boolean
+  /**
+   * How many different songs to write from the same brief, 1..MAX_TAKES.
+   * Every take is a fresh composition, not a re-mix of one arrangement: the
+   * melody, the fills and the words' placement all differ.
+   */
+  takes?: number
 }
 
-export interface GenerateResult {
-  kind: 'generate'
+/** Most takes a single run will write; every one of them is a full render. */
+export const MAX_TAKES = 4
+
+/** One finished song. A run produces at least one of these. */
+export interface SongTake {
   score: Score
   audio: TransferAudio
+  /** Only the take that is opened carries stems; see `GenerateRequest.takes`. */
   stems: { id: string; name: string; audio: TransferAudio }[]
   loudnessDb: number
   peak: number
   /** What actually came out, checked against what was asked for. */
   validation: RenderValidation
+}
+
+export interface GenerateResult {
+  kind: 'generate'
+  /** Every take from this run, in the order they were written. Never empty. */
+  takes: SongTake[]
 }
 
 export interface RerenderRequest {
@@ -220,8 +236,10 @@ export function collectTransferables(result: WorkerResult): Transferable[] {
   }
   switch (result.kind) {
     case 'generate':
-      push(result.audio)
-      for (const stem of result.stems) push(stem.audio)
+      for (const take of result.takes) {
+        push(take.audio)
+        for (const stem of take.stems) push(stem.audio)
+      }
       break
     case 'separate':
       for (const stem of result.stems) push(stem.audio)

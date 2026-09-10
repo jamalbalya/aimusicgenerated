@@ -72,6 +72,27 @@ downloaded, or whose service has no key, returns `false` and the local singer is
 used instead. Asking for nothing always gets the local singer, so a build never
 changes its output because of which modules it happened to pull in.
 
+## Several takes at once
+
+`GenerateRequest.takes` asks for more than one song from the same brief. Each
+take composes from its own seed, so the melody, the fills and the placement of
+the words all differ — it is a different song, not the same arrangement mixed
+twice. The style, the key, the genre and the words stay put, because those are
+what was asked for.
+
+The takes are produced above the renderer, which is deliberate: a procedural
+singer is deterministic, so asking it twice for the same performance returns the
+same audio, and the only place variety can come from is the composition. A
+renderer that samples — a neural one — has a second axis available, and should
+expose it the same way: several renders of one `VocalPerformance`, differing in
+the seed passed through `VocalRenderOptions`. Nothing in the contract needs to
+change for that; a renderer is free to be called more than once.
+
+Stems are not kept for a multi-take run. A full set of per-instrument buffers
+costs roughly as much memory as the mix itself times the track count, and
+holding one set per take is more than a phone has. Whichever take is kept can be
+re-rendered with them on its own.
+
 ## The local singer
 
 `ProceduralVocalRenderer` (`src/engine/voice/procedural.ts`) is a source-filter
@@ -84,3 +105,5 @@ human voice from vocal-fold irregularity, glottal noise, coarticulation and
 per-phoneme micro-timing that the model does not represent at all.
 
 It is the fallback, and it should always be described as synthesised singing.
+`docs/quality/bos-toxic-evaluation.md` measures where it currently stands and
+what the alternatives to it would actually cost.
