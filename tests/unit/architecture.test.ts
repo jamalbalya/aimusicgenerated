@@ -174,3 +174,44 @@ describe('the pipeline produces a complete song', () => {
     expect(rendered.performance.phrases.length).toBeGreaterThan(10)
   })
 })
+
+describe('the lyric decides the melody, not the other way round', () => {
+  it('gives every written line a phrase to be sung on', () => {
+    const score = koploScore()
+    const performance = buildVocalPerformance(score, {
+      profile: vocalProfileFor(score),
+      labels: score.sections.map((section) => section.label),
+    })
+
+    const written = LYRIC.split(/\r?\n/)
+      .filter((line) => line.trim().length > 0 && !/^\s*\[/.test(line)).length
+
+    // Cutting the melody into phrases by bar count and fitting the words to
+    // whatever came out silently dropped every line past the last phrase.
+    expect(performance.phrases.length).toBe(written)
+
+    const sung = performance.phrases.map((phrase) => phrase.text.toLowerCase())
+    for (const line of ['bos toxic, bos toxic', 'kalau salah?', 'jangan di sini!']) {
+      expect(sung, `"${line}" was never sung`).toContain(line)
+    }
+  })
+
+  it('answers the call with a different voice', () => {
+    const score = koploScore()
+    const performance = buildVocalPerformance(score, {
+      profile: vocalProfileFor(score),
+      labels: score.sections.map((section) => section.label),
+    })
+    // Scoped to the break: "Kalau" opens ordinary verse lines elsewhere.
+    const conversation = performance.phrases.filter((phrase) => /break/i.test(phrase.sectionLabel))
+
+    expect(conversation.length).toBe(8)
+    // Question, answer, question, answer.
+    expect(conversation.map((phrase) => phrase.role)).toEqual(
+      ['lead', 'response', 'lead', 'response', 'lead', 'response', 'lead', 'response'])
+    // A response is thrown out rather than eased into.
+    for (const phrase of conversation.filter((p) => p.role === 'response')) {
+      expect(phrase.notes[0]!.slide).toBe(0)
+    }
+  })
+})

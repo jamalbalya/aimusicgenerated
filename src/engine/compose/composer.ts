@@ -293,7 +293,13 @@ function attachVocals(
   for (const i of vocalSections) {
     const slot = slots[i]!
     const lift = Math.round((slot.intensity - 0.5) * 10)
-    perSection.set(i, generateMelody(context(slot, i, centerMidi + lift, range)))
+    // One phrase per written line, so no line is left without a melody to
+    // sing it — the words decide the shape, not the bar count.
+    const lines = blocks?.[i]?.lines.length
+    perSection.set(i, generateMelody({
+      ...context(slot, i, centerMidi + lift, range),
+      ...(lines ? { phraseCount: lines } : {}),
+    }))
   }
 
   // 2. Ask for one lyric line per melodic phrase, sized to its note count.
