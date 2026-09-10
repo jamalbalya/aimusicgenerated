@@ -1,5 +1,6 @@
 import { copyFileSync, existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig, type Plugin } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -9,13 +10,15 @@ import tailwindcss from '@tailwindcss/vite'
  * index there is what makes a deep link like /toolkit survive a hard reload
  * on GitHub Pages, which has no server-side rewrite.
  */
+const projectRoot = dirname(fileURLToPath(import.meta.url))
+
 function spaFallback(): Plugin {
   return {
     name: 'spa-fallback',
     apply: 'build',
     closeBundle() {
-      const index = resolve(__dirname, 'dist/index.html')
-      if (existsSync(index)) copyFileSync(index, resolve(__dirname, 'dist/404.html'))
+      const index = resolve(projectRoot, 'dist/index.html')
+      if (existsSync(index)) copyFileSync(index, resolve(projectRoot, 'dist/404.html'))
     },
   }
 }

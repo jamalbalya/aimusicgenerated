@@ -13,7 +13,8 @@ import { generateArp, generateBass, generateMelody, compRhythm, type MelodyConte
 import { planHarmony } from './harmony'
 import { generateLyrics, type LyricSectionRequest } from '../lyrics/generator'
 import { lineSyllables } from '../lyrics/syllables'
-import type { SongSpec } from './prompt'
+import { MOODS, type SongSpec } from './prompt'
+import { GENRES } from './genres'
 import type {
   InstrumentId, Score, ScoreNote, ScoreTrack, Section, SectionKind, TrackFx, TrackRole,
 } from './types'
@@ -95,7 +96,7 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
     }
   }
   tracks.push(makeTrack('chords', 'Chords', 'chords', chordInstrument, chordNotes, {
-    gainDb: -8, pan: rng.fork('pan1').float(-0.22, 0.22),
+    gainDb: -5, pan: rng.fork('pan1').float(-0.22, 0.22),
     fx: { reverbSend: 0.2 + genre.space * 0.2, delaySend: 0.05, sidechain: 0.25, drive: 0.1, highPassHz: 160 },
   }))
 
@@ -107,9 +108,13 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
     if (slot.intensity < 0.3 && slot.kind === 'intro') continue
     bassNotes.push(...generateBass(context(slot, i, 40, 12)))
   }
+  // Genres built around the 808 keep more weight; everything else sits back so
+  // the parts carrying the tune are not competing with the low end.
+  const bassGainDb = ['trap', 'drill', 'phonk', 'dubstep', 'dnb', 'reggaeton'].includes(genre.id) ? -6.5 : -10
   tracks.push(makeTrack('bass', 'Bass', 'bass', bassInstrument, bassNotes, {
-    gainDb: -4, pan: 0,
-    fx: { reverbSend: 0.02, delaySend: 0, sidechain: 0.55, drive: 0.18 },
+    gainDb: bassGainDb, pan: 0,
+    // Below about 35 Hz there is nothing to hear, only headroom to lose.
+    fx: { reverbSend: 0.02, delaySend: 0, sidechain: 0.55, drive: 0.18, highPassHz: 34 },
   }))
 
   // ---- Pad ----------------------------------------------------------------
@@ -134,7 +139,7 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
     }
   }
   tracks.push(makeTrack('pad', 'Pad', 'pad', padInstrument, padNotes, {
-    gainDb: -14, pan: 0,
+    gainDb: -12, pan: 0,
     fx: { reverbSend: 0.4 + genre.space * 0.25, delaySend: 0.08, sidechain: 0.4, drive: 0, highPassHz: 220 },
   }))
 
@@ -149,7 +154,7 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
   }
   if (arpNotes.length > 0) {
     tracks.push(makeTrack('arp', 'Arp', 'arp', arpInstrument, arpNotes, {
-      gainDb: -16, pan: rng.fork('pan2').float(-0.5, 0.5),
+      gainDb: -13, pan: rng.fork('pan2').float(-0.5, 0.5),
       fx: { reverbSend: 0.28, delaySend: 0.22, sidechain: 0.35, drive: 0, highPassHz: 320 },
     }))
   }
@@ -179,7 +184,7 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
   }
   if (leadNotes.length > 0) {
     tracks.push(makeTrack('lead', 'Lead', 'lead', leadInstrument, leadNotes, {
-      gainDb: hasVocals ? -14 : -7, pan: rng.fork('pan3').float(-0.2, 0.2),
+      gainDb: hasVocals ? -12 : -6, pan: rng.fork('pan3').float(-0.2, 0.2),
       fx: { reverbSend: 0.25 + genre.space * 0.2, delaySend: 0.18, sidechain: 0.25, drive: 0.12, highPassHz: 200 },
     }))
   }
@@ -297,7 +302,9 @@ function attachVocals(
     result.phrases.forEach((phrase, phraseIndex) => {
       const phraseNotes = result.notes.slice(phrase.start, phrase.end)
       const syllables = lineSyllables(lines[phraseIndex] ?? '')
-      placed.push(...fitSyllablesToNotes(phraseNotes, syllables))
+      const placedPhrase = fitSyllablesToNotes(phraseNotes, syllables)
+      if (placedPhrase[0]) placedPhrase[0].phraseStart = true
+      placed.push(...placedPhrase)
     })
 
     vocalNotes.push(...placed)
@@ -317,12 +324,12 @@ function attachVocals(
 
   const vocalInstrument: InstrumentId = 'vocal'
   score.tracks.push(makeTrack('vocal', 'Lead Vocal', 'vocal', vocalInstrument, vocalNotes, {
-    gainDb: -3, pan: 0,
+    gainDb: -9, pan: 0,
     fx: { reverbSend: score.genreId === 'ambient' ? 0.42 : 0.22, delaySend: 0.14, sidechain: 0.15, drive: 0.08, highPassHz: 110 },
   }))
   if (harmonyNotes.length > 0) {
     score.tracks.push(makeTrack('vocalHarmony', 'Vocal Harmony', 'vocalHarmony', vocalInstrument, harmonyNotes, {
-      gainDb: -13, pan: 0.25,
+      gainDb: -19, pan: 0.25,
       fx: { reverbSend: 0.34, delaySend: 0.16, sidechain: 0.15, drive: 0.05, highPassHz: 160 },
     }))
   }
@@ -410,13 +417,44 @@ function makeTrack(
   }
 }
 
+/** Words that describe the request rather than the song. */
+const TITLE_NOISE = /\b(\d+\s*(?:bpm|beats?\s*per\s*minute|seconds?|secs?|minutes?|mins?)|\d+|instrumental|no\s+vocals?|without\s+vocals?|backing\s+track|beat\s+only|karaoke|bgm|background\s+music|song|track|music|beat|make|generate|create|please|about|for|with|at|in|on|of|and|or|a|an|the)\b/gi
+
+/**
+ * Genre and mood words describe the style, not the subject. A title built
+ * only from them is just the brief read back, so those cases fall through to
+ * a generated name instead.
+ */
+const STYLE_WORDS = new Set<string>([
+  ...GENRES.flatMap((genre) => [
+    ...genre.tags.flatMap((tag) => tag.split(/\s+/)),
+    ...genre.label.toLowerCase().split(/[\s/]+/),
+    genre.id,
+  ]),
+  ...MOODS.flatMap((mood) => mood.tags.flatMap((tag) => tag.split(/\s+/))),
+  'lofi', 'lo-fi', 'hi-fi', 'sound', 'sounds', 'style', 'vibe', 'vibes', 'type',
+])
+
+/**
+ * Title for a song with no lyrics to take one from. The prompt is reused only
+ * when something specific survives stripping the request's own vocabulary —
+ * "lofi chill beat, 30 seconds" is a brief, not a title.
+ */
 function defaultTitle(spec: SongSpec, rng: Rng): string {
-  const theme = spec.theme.trim()
-  if (theme && theme.length <= 40 && theme.split(/\s+/).length <= 5) {
-    return theme.charAt(0).toUpperCase() + theme.slice(1)
+  const cleaned = spec.theme
+    .replace(TITLE_NOISE, ' ')
+    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const words = cleaned.split(' ').filter((w) => w.length > 1)
+  const subjectWords = words.filter((w) => !STYLE_WORDS.has(w.toLowerCase()))
+  // One substantial subject word is enough: "rain" is a title, "chill" is not.
+  const hasSubject = subjectWords.length >= 2 || (subjectWords[0]?.length ?? 0) >= 4
+  if (hasSubject && words.length <= 5 && cleaned.length <= 40) {
+    return words.map((w, i) => (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w)).join(' ')
   }
-  const adjectives = ['Distant', 'Golden', 'Electric', 'Quiet', 'Endless', 'Neon', 'Hollow', 'Silver', 'Restless']
-  const nouns = ['Signal', 'Horizon', 'Machine', 'Current', 'Light', 'Motion', 'Static', 'Circuit', 'Tide']
+  const adjectives = ['Distant', 'Golden', 'Electric', 'Quiet', 'Endless', 'Neon', 'Hollow', 'Silver', 'Restless', 'Slow', 'Paper', 'Low']
+  const nouns = ['Signal', 'Horizon', 'Machine', 'Current', 'Light', 'Motion', 'Static', 'Circuit', 'Tide', 'Hours', 'Window', 'Afternoon']
   return `${rng.pick(adjectives)} ${rng.pick(nouns)}`
 }
 

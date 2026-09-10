@@ -16,6 +16,7 @@
  */
 
 import { istft, stft, type Spectrogram } from './stft'
+import { blockwise } from './blockwise'
 import type { AudioData } from './wav'
 
 export type StemName = 'vocals' | 'drums' | 'bass' | 'other'
@@ -112,11 +113,38 @@ function emptyMask(frames: number, bins: number, value = 0): Float32Array[] {
  * mix. Mono input still works — the centre analysis simply contributes nothing
  * and separation falls back to harmonic/percussive plus frequency banding.
  */
+/**
+ * Separates a track into vocals, drums, bass and other, plus the instrumental.
+ * Long files are processed in overlapping blocks so peak memory stays bounded.
+ */
 export function separateStems(audio: AudioData, options: SeparationOptions = {}): SeparationResult {
+  const report = options.onProgress ?? (() => {})
+  const [vocals, drums, bass, other, instrumental] = blockwise(
+    audio,
+    5,
+    (block) => {
+      const result = separateBlock(block, options)
+      return [
+        result.stems.vocals, result.stems.drums, result.stems.bass,
+        result.stems.other, result.instrumental,
+      ]
+    },
+    { onProgress: (progress) => report(progress, 'Separating') },
+  )
+  report(1, 'Done')
+  return {
+    stems: { vocals: vocals!, drums: drums!, bass: bass!, other: other! },
+    instrumental: instrumental!,
+    sampleRate: audio.sampleRate,
+  }
+}
+
+function separateBlock(audio: AudioData, options: SeparationOptions): SeparationResult {
   const frameSize = options.frameSize ?? 2048
   const hopSize = options.hopSize ?? frameSize / 4
   const vocalStrength = options.vocalStrength ?? 0.85
-  const report = options.onProgress ?? (() => {})
+  // Progress is reported by the block wrapper, which knows the whole file.
+  const report = (_progress: number, _stage: string): void => {}
 
   const sampleRate = audio.sampleRate
   const left = audio.channels[0] ?? new Float32Array(0)
@@ -144,61 +172,67 @@ export function separateStems(audio: AudioData, options: SeparationOptions = {})
   const percussive = medianAlongFrequency(midMagnitude, 17)
 
   report(0.65, 'Building masks')
-  const vocalMask = emptyMask(frames, bins)
-  const drumMask = emptyMask(frames, bins)
-  const bassMask = emptyMask(frames, bins)
-  const otherMask = emptyMask(frames, bins)
-
   const binHz = sampleRate / frameSize
   const bassCutoffBin = Math.floor(250 / binHz)
   const vocalLowBin = Math.floor(180 / binHz)
   const vocalHighBin = Math.min(bins - 1, Math.ceil(7000 / binHz))
 
-  for (let f = 0; f < frames; f++) {
-    const leftFrame = specLeft.magnitude[f]!
-    const rightFrame = specRight.magnitude[f]!
-    const leftPhase = specLeft.phase[f]!
-    const rightPhase = specRight.phase[f]!
-    const harmonicFrame = harmonic[f]!
-    const percussiveFrame = percussive[f]!
+  /**
+   * Builds one stem's mask. Materialising all four at once would triple peak
+   * memory for no benefit — the per-bin arithmetic is trivial next to the FFT.
+   */
+  const buildMask = (stem: StemName): Float32Array[] => {
+    const mask = emptyMask(frames, bins)
+    for (let f = 0; f < frames; f++) {
+      const leftFrame = specLeft.magnitude[f]!
+      const rightFrame = specRight.magnitude[f]!
+      const leftPhase = specLeft.phase[f]!
+      const rightPhase = specRight.phase[f]!
+      const harmonicFrame = harmonic[f]!
+      const percussiveFrame = percussive[f]!
+      const target = mask[f]!
 
-    for (let bin = 0; bin < bins; bin++) {
-      const h = harmonicFrame[bin]!
-      const p = percussiveFrame[bin]!
-      // Wiener-style soft masks: each source gets its share of the energy.
-      const total = h * h + p * p + 1e-12
-      const harmonicShare = (h * h) / total
-      const percussiveShare = (p * p) / total
+      for (let bin = 0; bin < bins; bin++) {
+        const h = harmonicFrame[bin]!
+        const p = percussiveFrame[bin]!
+        // Wiener-style soft masks: each source gets its share of the energy.
+        const total = h * h + p * p + 1e-12
+        const harmonicShare = (h * h) / total
+        const percussiveShare = (p * p) / total
 
-      // Centre-ness: 1 when the two channels agree, 0 when they are unrelated.
-      let centre = 1
-      if (isStereo) {
-        const l = leftFrame[bin]!
-        const r = rightFrame[bin]!
-        const magnitudeAgreement = 1 - Math.abs(l - r) / (l + r + 1e-9)
-        let phaseDelta = Math.abs(leftPhase[bin]! - rightPhase[bin]!)
-        if (phaseDelta > Math.PI) phaseDelta = 2 * Math.PI - phaseDelta
-        const phaseAgreement = 1 - phaseDelta / Math.PI
-        centre = Math.max(0, magnitudeAgreement * 0.65 + phaseAgreement * 0.35)
-        centre = Math.pow(centre, 1 + vocalStrength * 3)
+        // Centre-ness: 1 when the two channels agree, 0 when they do not.
+        let centre = 1
+        if (isStereo) {
+          const l = leftFrame[bin]!
+          const r = rightFrame[bin]!
+          const magnitudeAgreement = 1 - Math.abs(l - r) / (l + r + 1e-9)
+          let phaseDelta = Math.abs(leftPhase[bin]! - rightPhase[bin]!)
+          if (phaseDelta > Math.PI) phaseDelta = 2 * Math.PI - phaseDelta
+          const phaseAgreement = 1 - phaseDelta / Math.PI
+          centre = Math.max(0, magnitudeAgreement * 0.65 + phaseAgreement * 0.35)
+          centre = Math.pow(centre, 1 + vocalStrength * 3)
+        }
+
+        const inVocalBand = bin >= vocalLowBin && bin <= vocalHighBin
+        const vocal = inVocalBand ? harmonicShare * centre * vocalStrength : 0
+        const drums = percussiveShare * (bin > bassCutoffBin ? 1 : 0.45)
+        const bass = bin <= bassCutoffBin ? harmonicShare : 0
+
+        switch (stem) {
+          case 'vocals': target[bin] = vocal; break
+          case 'drums': target[bin] = drums; break
+          case 'bass': target[bin] = bass; break
+          case 'other': target[bin] = Math.max(0, 1 - vocal - drums - bass); break
+        }
       }
-
-      const inVocalBand = bin >= vocalLowBin && bin <= vocalHighBin
-      const vocal = inVocalBand ? harmonicShare * centre * vocalStrength : 0
-      const drums = percussiveShare * (bin > bassCutoffBin ? 1 : 0.45)
-      const bass = bin <= bassCutoffBin ? harmonicShare : 0
-      const rest = Math.max(0, 1 - vocal - drums - bass)
-
-      vocalMask[f]![bin] = vocal
-      drumMask[f]![bin] = drums
-      bassMask[f]![bin] = bass
-      otherMask[f]![bin] = rest
     }
+    return mask
   }
 
   report(0.78, 'Resynthesising stems')
 
-  const resynth = (mask: Float32Array[]): AudioData => {
+  const resynth = (stem: StemName): AudioData => {
+    const mask = buildMask(stem)
     const channels: Float32Array[] = []
     channels.push(istft(specLeft, applyMask(specLeft, mask)))
     if (isStereo) channels.push(istft(specRight, applyMask(specRight, mask)))
@@ -206,13 +240,10 @@ export function separateStems(audio: AudioData, options: SeparationOptions = {})
     return { channels, sampleRate }
   }
 
-  const vocals = resynth(vocalMask)
-  report(0.84, 'Resynthesising stems')
-  const drums = resynth(drumMask)
-  report(0.9, 'Resynthesising stems')
-  const bass = resynth(bassMask)
-  report(0.95, 'Resynthesising stems')
-  const other = resynth(otherMask)
+  const vocals = resynth('vocals')
+  const drums = resynth('drums')
+  const bass = resynth('bass')
+  const other = resynth('other')
 
   // The instrumental is the original minus the vocal estimate, which keeps
   // more of the backing intact than summing the other three stems does.
@@ -245,10 +276,29 @@ export function splitVocals(audio: AudioData, options: VocalSplitOptions = {}): 
   vocals: AudioData
   instrumental: AudioData
 } {
+  const report = options.onProgress ?? (() => {})
+  const [vocals, instrumental] = blockwise(
+    audio,
+    2,
+    (block) => {
+      const result = splitVocalsBlock(block, options)
+      return [result.vocals, result.instrumental]
+    },
+    { onProgress: (progress) => report(progress, 'Isolating the vocal') },
+  )
+  report(1, 'Done')
+  return { vocals: vocals!, instrumental: instrumental! }
+}
+
+function splitVocalsBlock(audio: AudioData, options: VocalSplitOptions): {
+  vocals: AudioData
+  instrumental: AudioData
+} {
   const frameSize = options.frameSize ?? 2048
   const hopSize = frameSize / 4
   const strength = options.strength ?? 0.85
-  const report = options.onProgress ?? (() => {})
+  // Progress is reported by the block wrapper.
+  const report = (_progress: number, _stage: string): void => {}
   const sampleRate = audio.sampleRate
 
   const left = audio.channels[0] ?? new Float32Array(0)

@@ -13,7 +13,10 @@ import { NOTE_NAMES, SCALE_NAMES, type ScaleName } from '../../engine/theory/pit
 import { chordChart } from '../../engine/compose/composer'
 import { formatDuration } from '../../engine/core/units'
 import { SING_PRESET_NAMES } from '../../engine/voice/singer'
-import { QUALITY_SAMPLE_RATES, type GenerateResult, type RenderQuality } from '../../workers/protocol'
+import {
+  QUALITY_LABELS, QUALITY_SAMPLE_RATES,
+  type GenerateResult, type RenderQuality,
+} from '../../workers/protocol'
 import { INSTRUMENT_LABELS, type Score, type SectionKind } from '../../engine/compose/types'
 import { downloadText, encodeAudio, downloadBlob, safeFilename } from '../../lib/files'
 import { newProjectId, saveProject } from '../../lib/library'
@@ -66,6 +69,7 @@ export default function StudioPage() {
   const [result, setResult] = useState<GenerateResult | null>(null)
   const [tab, setTab] = useState<'lyrics' | 'chords' | 'stems'>('lyrics')
   const [saving, setSaving] = useState(false)
+  const [renderedAt, setRenderedAt] = useState<RenderQuality>(quality)
 
   const score = result?.score ?? null
 
@@ -95,6 +99,7 @@ export default function StudioPage() {
         },
       })
       setResult(output)
+      setRenderedAt(quality)
       setSeed(output.score.seed)
       setCurrent({
         title: output.score.title,
@@ -116,6 +121,41 @@ export default function StudioPage() {
       }
     }
   }, [prompt, genreId, mood, bpm, tonic, scale, duration, vocals, singStyle, seed, quality, keepStems, job, notify, setCurrent])
+
+  /**
+   * Renders the same score again at the selected quality. Auditioning in Draft
+   * and exporting in Studio is the normal way to work, and recomposing would
+   * throw away the take you just decided you liked.
+   */
+  const rerender = useCallback(async () => {
+    if (!result) return
+    try {
+      const output = await job.run<GenerateResult>('Re-rendering', {
+        kind: 'rerender',
+        score: result.score,
+        quality,
+        keepStems,
+        singStylePreset: singStyle || undefined,
+      })
+      setResult(output)
+      setRenderedAt(quality)
+      setCurrent({
+        title: output.score.title,
+        subtitle: describeScore(output.score),
+        audio: { channels: output.audio.channels, sampleRate: output.audio.sampleRate },
+        score: output.score,
+        lyrics: output.score.lyrics?.formatted,
+        stems: output.stems.map((stem) => ({
+          id: stem.id,
+          name: stem.name,
+          audio: { channels: stem.audio.channels, sampleRate: stem.audio.sampleRate },
+        })),
+        source: 'song',
+      })
+    } catch (error) {
+      if (!isCancellation(error)) { /* reported by useJob */ }
+    }
+  }, [result, quality, keepStems, singStyle, job, setCurrent])
 
   const saveToLibrary = useCallback(async () => {
     if (!result) return
@@ -356,7 +396,18 @@ export default function StudioPage() {
             title="Result"
             action={
               <div className="flex items-center gap-1.5">
-                <button type="button" className="btn btn-sm" disabled={saving} onClick={() => void saveToLibrary()}>
+                {renderedAt !== quality && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={job.running}
+                    title={`Render this take again at ${QUALITY_LABELS[quality]}`}
+                    onClick={() => void rerender()}
+                  >
+                    Re-render at {QUALITY_LABELS[quality].split(' · ')[0]}
+                  </button>
+                )}
+                <button type="button" className="btn btn-sm" disabled={saving || job.running} onClick={() => void saveToLibrary()}>
                   {saving ? 'Saving…' : 'Save to library'}
                 </button>
               </div>

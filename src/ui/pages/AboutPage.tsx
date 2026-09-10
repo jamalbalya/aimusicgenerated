@@ -24,7 +24,7 @@ export default function AboutPage() {
         </p>
       </header>
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid items-start gap-4 lg:grid-cols-3">
         <Panel title="What you get">
           <ul className="grid gap-2.5 text-[13px] leading-relaxed">
             {[
@@ -35,6 +35,7 @@ export default function AboutPage() {
               'Commercial use — it is your audio',
               'Works offline once loaded',
               'Nothing uploaded, ever',
+              'Covers: swap the voice on a finished song',
             ].map((item) => (
               <li key={item} className="flex items-start gap-2">
                 <Icon name="check" size={14} className="mt-0.5 shrink-0 text-[var(--ok)]" />

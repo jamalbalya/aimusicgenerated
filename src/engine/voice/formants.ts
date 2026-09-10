@@ -56,6 +56,15 @@ export const VOICE_CENTER: Record<VoiceType, number> = {
 export const VOICE_TYPES: VoiceType[] = ['soprano', 'alto', 'androgynous', 'tenor', 'baritone', 'bass']
 
 /** Formants for a vowel as sung by a given voice type. */
+/**
+ * Presence tilt for the upper formants.
+ *
+ * F2 and F3 carry almost all of the information about *which* vowel is being
+ * sung; F1 carries the loudness. Lifting the upper resonances is what makes a
+ * synthesised lyric intelligible rather than a hum at the right pitch.
+ */
+const FORMANT_PRESENCE = [1, 1.45, 1.7, 1.9]
+
 export function vowelFormants(vowel: Vowel, voice: VoiceType): Formant[] {
   const scale = TRACT_SCALE[voice]
   const base = BASE_VOWELS[vowel] ?? BASE_VOWELS.AH
@@ -63,7 +72,7 @@ export function vowelFormants(vowel: Vowel, voice: VoiceType): Formant[] {
   return base.map((formant, index) => ({
     freq: formant.freq * scale,
     bandwidth: formant.bandwidth * (0.8 + scale * 0.25),
-    amp: formant.amp * (index === 2 ? singersFormant : 1),
+    amp: formant.amp * (FORMANT_PRESENCE[index] ?? 1) * (index === 2 ? singersFormant : 1),
   }))
 }
 

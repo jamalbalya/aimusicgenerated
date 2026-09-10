@@ -4,7 +4,7 @@
  */
 
 import { buildSpec } from '../engine/compose/prompt'
-import { composeSong } from '../engine/compose/composer'
+import { composeSong, fitSyllablesToNotes } from '../engine/compose/composer'
 import { renderScore } from '../engine/synth/render'
 import { SING_PRESETS } from '../engine/voice/singer'
 import { generateLyrics } from '../engine/lyrics/generator'
@@ -15,7 +15,7 @@ import { detectKey, detectTempo, measureLoudness } from '../engine/audio/analyze
 import { synthesizeSpeech } from '../engine/voice/speech'
 import {
   applyChorus, applyCompression, applyDistortion, applyEcho, applyLimiter, applyReverb,
-  equalize, fade, gain, normalizeLoudness, normalizePeak, reduceNoise, reverse, trim,
+  equalize, fade, gain, mixDown, normalizeLoudness, normalizePeak, reduceNoise, reverse, trim,
 } from '../engine/audio/effects'
 import {
   collectTransferables, QUALITY_SAMPLE_RATES,
@@ -23,6 +23,7 @@ import {
   type WorkerResponse, type WorkerResult,
 } from './protocol'
 import type { AudioData } from '../engine/audio/wav'
+import type { Score, ScoreNote } from '../engine/compose/types'
 
 const scope = self as unknown as DedicatedWorkerGlobalScope
 
@@ -224,6 +225,47 @@ function handle(id: number, request: WorkerRequest): WorkerResult {
     case 'process':
       return { kind: 'process', audio: toTransfer(applyOps(toAudioData(request.audio), request.ops, id)) }
 
+    case 'cover': {
+      const audio = toAudioData(request.audio)
+      progress(id, 0.05, 'Separating the vocal')
+      const split = splitVocals(audio, {
+        strength: request.separationStrength,
+        onProgress: (value, stage) => progress(id, 0.05 + value * 0.55, stage),
+      })
+
+      progress(id, 0.62, 'Transforming the vocal')
+      const ops: ProcessOp[] = []
+      if (request.semitones !== 0 || request.formantSemitones !== 0) {
+        ops.push({
+          op: 'pitch',
+          semitones: request.semitones,
+          preserveFormants: true,
+          formantSemitones: request.semitones + request.formantSemitones,
+        })
+      }
+      ops.push(...request.vocalOps)
+      const vocal = ops.length > 0 ? applyOps(split.vocals, ops, id) : split.vocals
+
+      progress(id, 0.9, 'Rebuilding the mix')
+      const mixed = applyLimiter(
+        normalizePeak(
+          mixDown([
+            { audio: split.instrumental },
+            { audio: vocal, gainDb: request.vocalGainDb },
+          ]),
+          -1,
+        ),
+        0.97,
+      )
+
+      return {
+        kind: 'cover',
+        mix: toTransfer(mixed),
+        vocal: toTransfer(vocal),
+        instrumental: toTransfer(split.instrumental),
+      }
+    }
+
     case 'analyze': {
       const audio = toAudioData(request.audio)
       progress(id, 0.2, 'Detecting tempo')
@@ -248,7 +290,14 @@ function handle(id: number, request: WorkerRequest): WorkerResult {
       // Sing user-supplied lyrics: compose a song, then replace its lyric text.
       progress(id, 0.05, 'Writing the melody')
       const lines = request.text.split(/\n+/).map((l) => l.trim()).filter(Boolean)
-      const spec = buildSpec(request.prompt, { ...request.overrides, vocals: 'sung' })
+      // Fit the arrangement to the lyric rather than the other way round: one
+      // melodic phrase per line, at roughly four and a half seconds each.
+      const suggestedSeconds = Math.max(30, Math.min(420, Math.round(lines.length * 4.5)))
+      const spec = buildSpec(request.prompt, {
+        durationSeconds: suggestedSeconds,
+        ...request.overrides,
+        vocals: 'sung',
+      })
       const score = composeSong(spec)
       const vocal = score.tracks.find((t) => t.id === 'vocal')
       if (vocal && lines.length > 0 && score.lyrics) {
@@ -284,41 +333,48 @@ function replaceLyricText(target: { text: string }[], lines: string[]): void {
 
 /**
  * Re-places syllables on the vocal track after the lyric text has changed.
- * Notes are grouped back into phrases by their gaps, which is how the composer
- * laid them out in the first place.
+ *
+ * Phrase boundaries come from the marks the composer left, so a phrase that
+ * ends legato is still recognised as one. Lines longer than their phrase split
+ * its notes; shorter lines are held across the spare ones — the same fitting
+ * the composer uses, so a user-written line is treated no differently from a
+ * generated one.
  */
-function applyLyricsToTrack(score: { tracks: { id: string; notes: { start: number; duration: number; syllable?: string; legato?: boolean }[] }[] }, lines: string[]): void {
+function applyLyricsToTrack(score: Score, lines: string[]): void {
   const track = score.tracks.find((t) => t.id === 'vocal')
-  if (!track || track.notes.length === 0) return
+  if (!track || track.notes.length === 0 || lines.length === 0) return
 
-  const phrases: number[][] = []
-  let current: number[] = [0]
-  for (let i = 1; i < track.notes.length; i++) {
-    const previous = track.notes[i - 1]!
+  const phrases: ScoreNote[][] = []
+  let current: ScoreNote[] = []
+  for (let i = 0; i < track.notes.length; i++) {
     const note = track.notes[i]!
-    const gap = note.start - (previous.start + previous.duration)
-    if (gap > 0.6) {
+    if (i > 0 && note.phraseStart) {
       phrases.push(current)
       current = []
     }
-    current.push(i)
+    current.push(note)
   }
-  phrases.push(current)
+  if (current.length > 0) phrases.push(current)
 
-  phrases.forEach((indices, phraseIndex) => {
-    const line = lines[phraseIndex % lines.length] ?? ''
-    const syllables = lineSyllables(line)
-    indices.forEach((noteIndex, position) => {
-      const note = track.notes[noteIndex]!
-      if (position < syllables.length) {
-        note.syllable = syllables[position]
-        note.legato = false
-      } else {
-        note.syllable = undefined
-        note.legato = true
-      }
-    })
+  const rebuilt: ScoreNote[] = []
+  phrases.forEach((phraseNotes, index) => {
+    const line = lines[index % lines.length] ?? ''
+    const placed = fitSyllablesToNotes(phraseNotes, lineSyllables(line))
+    if (placed[0]) placed[0].phraseStart = true
+    rebuilt.push(...placed)
   })
+
+  track.notes = rebuilt.sort((a, b) => a.start - b.start)
+
+  // Harmonies double the lead, so they have to be rebuilt from it.
+  const harmony = score.tracks.find((t) => t.id === 'vocalHarmony')
+  if (harmony && harmony.notes.length > 0) {
+    const interval = harmony.notes[0]!.midi - track.notes[0]!.midi
+    const harmonised = rebuilt
+      .filter((note) => note.start >= harmony.notes[0]!.start && note.start <= harmony.notes[harmony.notes.length - 1]!.start)
+      .map((note) => ({ ...note, midi: note.midi + interval, velocity: note.velocity * 0.55 }))
+    harmony.notes = harmonised
+  }
 }
 
 scope.onmessage = (event: MessageEvent<WorkerMessage>) => {

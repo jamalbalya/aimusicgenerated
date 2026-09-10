@@ -126,7 +126,7 @@ export default function SpeechPage() {
         </p>
       </header>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,330px)]">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,330px)]">
         <Panel title="Script">
           <div className="grid gap-3">
             <textarea
@@ -187,7 +187,7 @@ export default function SpeechPage() {
             </div>
           </Panel>
 
-          <Panel title="Voice">
+          <Panel title="Delivery">
             <div className="grid gap-3.5">
               {engine === 'builtin' ? (
                 <Field label="Voice">

@@ -122,6 +122,23 @@ test.describe('song studio', () => {
     expect(await page.getByRole('heading', { level: 2 }).first().innerText()).toBe(firstTitle)
   })
 
+  test('offers a re-render when the quality setting changes', async ({ page, isMobile }) => {
+    test.skip(isMobile, 'The quality control lives in the desktop sidebar.')
+    await page.goto('/')
+    await page.getByRole('textbox').first().fill('a short lo-fi loop, 20 seconds')
+    await page.getByRole('button', { name: 'Generate song' }).click()
+    await expect(page.getByRole('heading', { level: 2 }).first()).toBeVisible({ timeout: 150_000 })
+
+    // No re-render offered while the render matches the setting.
+    await expect(page.getByRole('button', { name: /Re-render at/ })).toBeHidden()
+
+    await page.getByRole('button', { name: 'Draft · 22 kHz' }).click()
+    const rerender = page.getByRole('button', { name: /Re-render at Draft/ })
+    await expect(rerender).toBeVisible()
+    await rerender.click()
+    await expect(rerender).toBeHidden({ timeout: 150_000 })
+  })
+
   test('refuses to generate with nothing to go on', async ({ page }) => {
     await page.goto('/')
     await page.getByRole('button', { name: 'Generate song' }).click()
@@ -149,6 +166,33 @@ test.describe('lyric writer', () => {
     if (choruses.length > 1) expect(choruses[0]).toBe(choruses[1])
 
     await expect(page.getByText(/\d+ lines · \d+ syllables/)).toBeVisible()
+    expect(errors).toEqual([])
+  })
+
+  test('sings edited lyrics over a backing track', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/lyrics')
+    await page.getByLabel(/What is it about/i).fill('driving home at the end of a long year')
+    await page.getByRole('button', { name: /Write lyrics/i }).click()
+    await expect(page.getByLabel('Lyrics')).toBeVisible({ timeout: 60_000 })
+
+    // Replace the generated words entirely — the singer must follow the box.
+    await page.getByLabel('Lyrics').fill(
+      [
+        'I was standing in the doorway when it turned cold',
+        'We were younger and we never learned to wait',
+        'Take me where the rivers run',
+        'This is how we start again',
+      ].join('\n'),
+    )
+
+    await page.getByRole('button', { name: /Sing it/i }).click()
+    await expect(page.getByText(/0:00 \/ 0:\d\d/)).toBeVisible({ timeout: 150_000 })
+
+    await page.getByRole('button', { name: 'Play' }).click()
+    await page.waitForTimeout(1200)
+    const readout = await page.getByText(/\d:\d\d \/ \d:\d\d/).first().innerText()
+    expect(readout).not.toMatch(/^0:00 /)
     expect(errors).toEqual([])
   })
 })
@@ -227,6 +271,28 @@ test.describe('library', () => {
 
     await page.goto('/library')
     await expect(page.getByRole('button', { name: /^Open$|^Play$/ }).first()).toBeVisible({ timeout: 30_000 })
+    expect(errors).toEqual([])
+  })
+})
+
+test.describe('cover', () => {
+  test('separates, transforms and rebuilds a full song', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/shifter')
+    await page.setInputFiles('input[type="file"]', FIXTURE)
+    await expect(page.getByText('test-mix.wav')).toBeVisible()
+
+    await page.getByRole('button', { name: 'A full song' }).click()
+    await page.getByRole('button', { name: 'Deeper' }).click()
+    await page.getByRole('button', { name: /Make a cover/i }).click()
+
+    await expect(page.getByText('Cover parts')).toBeVisible({ timeout: 150_000 })
+    await expect(page.getByRole('button', { name: /Full cover/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Backing track/ })).toBeVisible()
+
+    // Loading a part swaps what the transport is playing.
+    await page.getByRole('button', { name: /Backing track/ }).click()
+    await expect(page.getByText(/— Backing track/)).toBeVisible()
     expect(errors).toEqual([])
   })
 })

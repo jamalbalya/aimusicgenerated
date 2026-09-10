@@ -124,7 +124,7 @@ export default function LyricsPage() {
         </p>
       </header>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
         <div className="grid content-start gap-4">
           <Panel title="Brief">
             <div className="grid gap-3.5">
@@ -243,7 +243,7 @@ export default function LyricsPage() {
 
         <div className="grid content-start gap-4">
           <Panel
-            title={lyrics ? lyrics.title : 'Lyrics'}
+            title="Lyrics"
             action={
               lyrics && (
                 <div className="flex gap-1.5">

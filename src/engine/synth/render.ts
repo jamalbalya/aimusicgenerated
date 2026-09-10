@@ -13,7 +13,9 @@ import type { DrumHit, Score, ScoreTrack } from '../compose/types'
 import { renderDrum, drumLength } from './drumkit'
 import { renderVoice } from './instruments'
 import { applyDrive, applyTrackEq, buildSidechainEnvelope, Compressor, Limiter, PingPongDelay, Reverb } from './fx'
+import { Biquad } from './dsp'
 import { renderSungNote, SING_PRESETS, type SingStyle } from '../voice/singer'
+import { measureLoudness } from '../audio/analyze'
 
 export interface RenderOptions {
   sampleRate?: number
@@ -159,10 +161,16 @@ export function renderScore(score: Score, options: RenderOptions = {}): RenderRe
     const drumRight = new Float32Array(totalSamples)
     renderDrums(score.drums.hits, score, sampleRate, brightness, swing, subdivision, drumLeft, drumRight, genre.id)
 
-    const gain = dbToGain(score.drums.gainDb)
+    // The kit is the loudest thing in most arrangements; trimming it here is
+    // what leaves room for the parts that carry the tune.
+    const gain = dbToGain(score.drums.gainDb - 9)
     for (let i = 0; i < totalSamples; i++) {
+      // Apply the bus gain in place, so the exported stem is the same audio
+      // that is in the mix rather than a much louder version of it.
       const l = drumLeft[i]! * gain
       const r = drumRight[i]! * gain
+      drumLeft[i] = l
+      drumRight[i] = r
       masterLeft[i]! += l
       masterRight[i]! += r
       reverbBus[i]! += (l + r) * 0.5 * 0.08
@@ -185,6 +193,28 @@ export function renderScore(score: Score, options: RenderOptions = {}): RenderRe
   }
 
   // --- Master bus --------------------------------------------------------
+  // Rumble below 30 Hz is inaudible on every speaker anyone will use, but it
+  // eats headroom and drags the limiter down over the whole mix.
+  // Rumble removal plus the tilt a finished record gets: a little weight off
+  // the low end, a presence lift where words and attacks live, and air on top.
+  // Synthesised material is naturally low-heavy, so without this the mix reads
+  // as muddy no matter how well the parts are balanced.
+  const masterEq = (channel: Float32Array): void => {
+    const rumble = new Biquad(sampleRate)
+    rumble.highpass(30, 0.707)
+    const lowShelf = new Biquad(sampleRate)
+    lowShelf.lowShelf(130, -2)
+    const presence = new Biquad(sampleRate)
+    presence.peaking(3000, 0.8, 2)
+    const air = new Biquad(sampleRate)
+    air.highShelf(7500, 3)
+    for (let i = 0; i < channel.length; i++) {
+      channel[i] = air.process(presence.process(lowShelf.process(rumble.process(channel[i]!))))
+    }
+  }
+  masterEq(masterLeft)
+  masterEq(masterRight)
+
   const busCompressor = new Compressor(sampleRate, {
     thresholdDb: -14, ratio: 2.4, attackMs: 12, releaseMs: 180, makeupDb: 2.5,
   })
@@ -214,6 +244,31 @@ export function renderScore(score: Score, options: RenderOptions = {}): RenderRe
       }
       sumSquares *= normalise * normalise
       peak = targetPeak
+    }
+  }
+
+  /*
+   * Match every render to the same integrated loudness.
+   *
+   * Peak normalisation alone leaves a sparse ambient piece several decibels
+   * quieter than a dense metal track, which is jarring when someone auditions
+   * one after the other. A second limiter pass catches the peaks the makeup
+   * gain creates.
+   */
+  const measured = measureLoudness({ channels: [masterLeft, masterRight], sampleRate })
+  const targetLufs = -13
+  if (Number.isFinite(measured.lufs) && Math.abs(targetLufs - measured.lufs) > 0.5) {
+    const makeup = Math.min(4, dbToGain(targetLufs - measured.lufs))
+    const finalLimiter = new Limiter(sampleRate, targetPeak)
+    peak = 0
+    sumSquares = 0
+    for (let i = 0; i < totalSamples; i++) {
+      const [l, r] = finalLimiter.process(masterLeft[i]! * makeup, masterRight[i]! * makeup)
+      masterLeft[i] = l
+      masterRight[i] = r
+      const magnitude = Math.max(Math.abs(l), Math.abs(r))
+      if (magnitude > peak) peak = magnitude
+      sumSquares += (l * l + r * r) * 0.5
     }
   }
 

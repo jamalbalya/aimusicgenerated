@@ -26,6 +26,12 @@ export interface ScoreNote {
   syllable?: string
   /** Slides from the previous note's pitch instead of re-attacking. */
   legato?: boolean
+  /**
+   * First note of a sung phrase — one lyric line per phrase. Recorded here
+   * rather than re-derived from the gaps between notes, because a legato
+   * phrase ending leaves no gap to find.
+   */
+  phraseStart?: boolean
 }
 
 export type DrumName =

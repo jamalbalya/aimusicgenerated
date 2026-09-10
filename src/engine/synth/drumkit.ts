@@ -22,7 +22,7 @@ export interface DrumRequest {
 
 /** Longest tail each piece can produce, in seconds. */
 const TAILS: Record<DrumName, number> = {
-  kick: 0.9, snare: 0.5, clap: 0.5, rim: 0.14, hatClosed: 0.09, hatOpen: 0.55,
+  kick: 0.6, snare: 0.5, clap: 0.5, rim: 0.14, hatClosed: 0.09, hatOpen: 0.55,
   hatPedal: 0.12, tomLow: 0.7, tomMid: 0.55, tomHigh: 0.45, crash: 2.4, ride: 1.6,
   shaker: 0.14, tambourine: 0.3, cowbell: 0.35, conga: 0.35, perc: 0.3,
   reverseCymbal: 1.6, sweepUp: 1.6, impact: 2,
@@ -33,8 +33,18 @@ export function drumLength(request: DrumRequest): number {
   return Math.ceil((Math.max(tail, request.duration) + 0.05) * request.sampleRate)
 }
 
+/**
+ * Relative level per piece, so the kit is balanced against itself before it
+ * ever reaches the mix. Without this the kick simply buries everything.
+ */
+const DRUM_TRIM: Partial<Record<DrumName, number>> = {
+  kick: 0.62, tomLow: 0.8, tomMid: 0.85, impact: 0.55, snare: 0.9, clap: 0.9,
+  crash: 0.7, ride: 0.8, hatOpen: 0.85,
+}
+
 export function renderDrum(request: DrumRequest): Float32Array {
-  const { drum, velocity, sampleRate, brightness } = request
+  const { drum, sampleRate, brightness } = request
+  const velocity = request.velocity * (DRUM_TRIM[request.drum] ?? 1)
   const length = drumLength(request)
   const out = new Float32Array(length)
   const noise = new Noise(request.seed || 7)
@@ -42,8 +52,10 @@ export function renderDrum(request: DrumRequest): Float32Array {
 
   switch (drum) {
     case 'kick':
-      pitchedDrum(out, sampleRate, 58 * tune, 42 * tune, 0.035, 0.42, 0.9, velocity, 0.55 + brightness * 0.2)
-      addClick(out, sampleRate, noise, 2600, 0.004, velocity * (0.18 + brightness * 0.22))
+      // A shorter body keeps the low end defined; the click is what makes a
+      // kick audible on a phone speaker, so it is not skimped on.
+      pitchedDrum(out, sampleRate, 62 * tune, 46 * tune, 0.03, 0.26, 0.55, velocity, 0.5 + brightness * 0.2)
+      addClick(out, sampleRate, noise, 2600, 0.004, velocity * (0.22 + brightness * 0.24))
       break
     case 'tomLow':
       pitchedDrum(out, sampleRate, 120 * tune, 82 * tune, 0.02, 0.4, 0.45, velocity, 0.35)

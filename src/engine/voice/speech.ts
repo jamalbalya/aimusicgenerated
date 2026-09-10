@@ -219,8 +219,17 @@ export function synthesizeSpeech(text: string, options: SpeakOptions): AudioData
   const noise = new Noise(0x9e37 ^ length)
   const filters = [new Biquad(sampleRate), new Biquad(sampleRate), new Biquad(sampleRate), new Biquad(sampleRate)]
   const noiseFilter = new Biquad(sampleRate)
-  const radiation = new Biquad(sampleRate)
-  radiation.highpass(120, 0.6)
+  // Lip radiation differentiates the glottal flow: +6 dB per octave across the
+  // band, which is what gives the upper formants something to shape.
+  // A gentler coefficient than the singer uses: full pre-emphasis makes a
+  // speaking voice sound thin and sibilant, where a sung line benefits from
+  // the extra brightness.
+  let radiationPrevious = 0
+  const radiate = (sample: number): number => {
+    const out = sample - 0.82 * radiationPrevious
+    radiationPrevious = sample
+    return out
+  }
 
   const basePitch = voice.pitchHz * Math.pow(2, (options.pitchSemitones ?? 0) / 12)
   const current: Formant[] = segments[0]!.formants.map((f) => ({ ...f }))
@@ -280,7 +289,7 @@ export function synthesizeSpeech(text: string, options: SpeakOptions): AudioData
     for (let f = 0; f < filters.length; f++) {
       sample += filters[f]!.process(source) * current[f]!.amp
     }
-    mono[i] = radiation.process(sample) * level
+    mono[i] = radiate(sample) * level
   }
 
   // Normalise so every voice comes out at a comparable level.

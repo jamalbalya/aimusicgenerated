@@ -14,7 +14,7 @@ import { useStudio } from '../../state/store'
 import { decodeAudioFile } from '../../lib/files'
 import { formatDuration } from '../../engine/core/units'
 import type { AudioData } from '../../engine/audio/wav'
-import type { ProcessOp, ProcessResult } from '../../workers/protocol'
+import type { CoverResult, ProcessOp, ProcessResult } from '../../workers/protocol'
 
 interface Character {
   id: string
@@ -51,11 +51,16 @@ export default function ShifterPage() {
   const [formant, setFormant] = useState(-3)
   const [mode, setMode] = useState<'natural' | 'tape'>('natural')
   const [tempo, setTempo] = useState(1)
+  const [target, setTarget] = useState<'voice' | 'song'>('voice')
+  const [separation, setSeparation] = useState(0.85)
+  const [vocalGain, setVocalGain] = useState(0)
+  const [coverStems, setCoverStems] = useState<CoverResult | null>(null)
 
   const load = useCallback(async (picked: File) => {
     try {
       const audio = await decodeAudioFile(picked)
       setSource(audio)
+      setCoverStems(null)
       setFile({ name: picked.name, size: picked.size })
       setCurrent({
         title: picked.name.replace(/\.[^.]+$/, ''),
@@ -75,6 +80,31 @@ export default function ShifterPage() {
     setSemitones(preset.semitones)
     setFormant(preset.formant)
   }, [])
+
+  const makeCover = useCallback(async () => {
+    if (!source) return
+    const preset = CHARACTERS.find((c) => c.id === character)
+    try {
+      const output = await job.run<CoverResult>('Making a cover', {
+        kind: 'cover',
+        audio: { channels: source.channels, sampleRate: source.sampleRate },
+        separationStrength: separation,
+        semitones,
+        formantSemitones: formant,
+        vocalOps: preset?.extra ?? [],
+        vocalGainDb: vocalGain,
+      })
+      setCoverStems(output)
+      setCurrent({
+        title: `${file?.name.replace(/\.[^.]+$/, '') ?? 'Cover'} — ${preset?.label ?? 'Cover'}`,
+        subtitle: `Cover · vocal ${semitones > 0 ? '+' : ''}${semitones} st · tract ${formant > 0 ? '+' : ''}${formant}`,
+        audio: { channels: output.mix.channels, sampleRate: output.mix.sampleRate },
+        source: 'edit',
+      })
+    } catch (error) {
+      if (!isCancellation(error)) { /* reported by useJob */ }
+    }
+  }, [source, character, separation, semitones, formant, vocalGain, job, file, setCurrent])
 
   const process = useCallback(async () => {
     if (!source) return
@@ -124,11 +154,12 @@ export default function ShifterPage() {
         <h1 className="t-display max-w-2xl">Change the voice, not just the pitch.</h1>
         <p className="max-w-2xl text-[13.5px] leading-relaxed text-[var(--text-dim)]">
           Pitch and vocal-tract size are separate controls here, which is the difference between
-          sounding like a different person and sounding like a sped-up tape.
+          sounding like a different person and sounding like a sped-up tape. Feed it a whole song
+          and it separates the vocal, transforms it and rebuilds the mix — a cover in one step.
         </p>
       </header>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
         <div className="grid content-start gap-4">
           <Panel title="Source">
             <FileDrop
@@ -164,6 +195,38 @@ export default function ShifterPage() {
 
         <Panel title="Controls">
           <div className="grid gap-4">
+            <Field
+              label="What is in the file?"
+              hint={target === 'voice'
+                ? 'The whole file is treated as one voice.'
+                : 'The vocal is separated out, transformed, and the song is rebuilt around it — an instant cover.'}
+            >
+              <Segmented
+                ariaLabel="Source material"
+                value={target}
+                onChange={setTarget}
+                options={[
+                  { value: 'voice', label: 'A voice' },
+                  { value: 'song', label: 'A full song' },
+                ]}
+              />
+            </Field>
+
+            {target === 'song' && (
+              <>
+                <Field
+                  label="Vocal separation"
+                  value={`${Math.round(separation * 100)}%`}
+                  hint="Higher isolates more of the vocal before it is transformed."
+                >
+                  <Slider min={0.3} max={1} step={0.05} value={separation} onChange={setSeparation} />
+                </Field>
+                <Field label="Vocal level" value={`${vocalGain > 0 ? '+' : ''}${vocalGain} dB`}>
+                  <Slider min={-12} max={12} value={vocalGain} onChange={setVocalGain} />
+                </Field>
+              </>
+            )}
+
             <Field label="Mode" hint={mode === 'natural' ? 'Length is preserved and formants are controlled separately.' : 'Speed and pitch move together, like a tape machine.'}>
               <Segmented
                 ariaLabel="Shift mode"
@@ -180,7 +243,7 @@ export default function ShifterPage() {
               <Slider min={-12} max={12} value={semitones} onChange={setSemitones} ariaLabel="Pitch shift in semitones" />
             </Field>
 
-            {mode === 'natural' && (
+            {mode === 'natural' && target === 'voice' && (
               <>
                 <Field
                   label="Vocal tract"
@@ -196,14 +259,20 @@ export default function ShifterPage() {
               </>
             )}
 
+            {target === 'song' && (
+              <Field label="Vocal tract" value={`${formant > 0 ? '+' : ''}${formant}`} hint="Negative sounds larger and deeper; positive sounds smaller and brighter.">
+                <Slider min={-8} max={8} value={formant} onChange={setFormant} />
+              </Field>
+            )}
+
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 className="btn btn-primary"
                 disabled={!source || job.running}
-                onClick={() => void process()}
+                onClick={() => (target === 'song' ? void makeCover() : void process())}
               >
-                {job.running ? 'Working…' : 'Apply'}
+                {job.running ? 'Working…' : target === 'song' ? 'Make a cover' : 'Apply'}
               </button>
               <button
                 type="button"
@@ -223,6 +292,34 @@ export default function ShifterPage() {
               </button>
             </div>
             {job.running && <Progress value={job.progress} stage={job.stage} label="Transforming" />}
+
+            {coverStems && (
+              <div className="grid gap-1.5 border-t border-[var(--line)] pt-3">
+                <p className="t-label">Cover parts</p>
+                {([
+                  ['Full cover', coverStems.mix],
+                  ['New vocal only', coverStems.vocal],
+                  ['Backing track', coverStems.instrumental],
+                ] as const).map(([label, part]) => (
+                  <button
+                    key={label}
+                    type="button"
+                    className="nav-item justify-between !border-l-0 text-[12.5px]"
+                    onClick={() =>
+                      setCurrent({
+                        title: `${file?.name.replace(/\.[^.]+$/, '') ?? 'Cover'} — ${label}`,
+                        subtitle: 'Cover',
+                        audio: { channels: part.channels, sampleRate: part.sampleRate },
+                        source: 'edit',
+                      })
+                    }
+                  >
+                    <span>{label}</span>
+                    <span className="t-label">Load</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </Panel>
       </div>

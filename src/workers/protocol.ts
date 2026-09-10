@@ -125,6 +125,32 @@ export interface ProcessResult {
   audio: TransferAudio
 }
 
+/**
+ * "Cover": separate the vocal out of a finished song, transform it, and put
+ * the song back together around it. It is the stem splitter and the voice
+ * changer used together, which is a common enough job to be one action.
+ */
+export interface CoverRequest {
+  kind: 'cover'
+  audio: TransferAudio
+  /** 0..1 — how aggressively the vocal is pulled out before transforming. */
+  separationStrength: number
+  semitones: number
+  /** Vocal-tract shift, relative to the pitch shift. */
+  formantSemitones: number
+  /** Extra treatment applied to the isolated vocal only. */
+  vocalOps: ProcessOp[]
+  /** Level of the transformed vocal against the backing, in dB. */
+  vocalGainDb: number
+}
+
+export interface CoverResult {
+  kind: 'cover'
+  mix: TransferAudio
+  vocal: TransferAudio
+  instrumental: TransferAudio
+}
+
 export interface AnalyzeRequest {
   kind: 'analyze'
   audio: TransferAudio
@@ -163,11 +189,11 @@ export interface SingRequest {
 
 export type WorkerRequest =
   | GenerateRequest | RerenderRequest | LyricsWorkerRequest | SeparateRequest
-  | ProcessRequest | AnalyzeRequest | SpeakRequest | SingRequest
+  | ProcessRequest | AnalyzeRequest | SpeakRequest | SingRequest | CoverRequest
 
 export type WorkerResult =
   | GenerateResult | LyricsWorkerResult | SeparateResult | ProcessResult
-  | AnalyzeResult | SpeakResult
+  | AnalyzeResult | SpeakResult | CoverResult
 
 export interface WorkerMessage {
   id: number
@@ -197,6 +223,11 @@ export function collectTransferables(result: WorkerResult): Transferable[] {
     case 'process':
     case 'speak':
       push(result.audio)
+      break
+    case 'cover':
+      push(result.mix)
+      push(result.vocal)
+      push(result.instrumental)
       break
     default:
       break

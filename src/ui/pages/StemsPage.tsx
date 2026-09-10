@@ -13,6 +13,12 @@ import { formatDuration } from '../../engine/core/units'
 import type { AudioData } from '../../engine/audio/wav'
 import type { SeparateResult } from '../../workers/protocol'
 
+/**
+ * Separation holds every stem in memory at full length, so the ceiling is set
+ * by what a phone can allocate rather than by the algorithm.
+ */
+const MAX_SECONDS = 8 * 60
+
 const STEM_LABELS: Record<string, { label: string; blurb: string }> = {
   vocals: { label: 'Vocals', blurb: 'The centred lead and its harmonies' },
   instrumental: { label: 'Instrumental', blurb: 'Everything except the vocal — your karaoke track' },
@@ -40,8 +46,11 @@ export default function StemsPage() {
         notify('That file is too short to separate.', 'error')
         return
       }
-      if (duration > 600) {
-        notify('Files longer than ten minutes are not supported — trim it first in the Audio Toolkit.', 'error')
+      if (duration > MAX_SECONDS) {
+        notify(
+          `Files longer than ${Math.round(MAX_SECONDS / 60)} minutes are not supported — trim it first in the Audio Toolkit.`,
+          'error',
+        )
         return
       }
       setSource(audio)
@@ -96,7 +105,7 @@ export default function StemsPage() {
         </p>
       </header>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
         <div className="grid content-start gap-4">
           <Panel title="Source">
             <FileDrop
@@ -146,7 +155,9 @@ export default function StemsPage() {
               {job.running && <Progress value={job.progress} stage={job.stage} label="Separating" />}
               {!job.running && source && (
                 <p className="text-[11.5px] leading-snug text-[var(--text-faint)]">
-                  A {formatDuration(duration)} track takes roughly {formatDuration(Math.max(4, duration * (mode === 'stems' ? 1.4 : 0.7)))} to process.
+                  A {formatDuration(duration)} track takes roughly{' '}
+                  {formatDuration(Math.max(4, duration * (mode === 'stems' ? 0.9 : 0.35)))} to process on a
+                  desktop, longer on a phone. Four-stem mode is the heavier of the two.
                 </p>
               )}
             </div>

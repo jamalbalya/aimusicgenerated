@@ -9,6 +9,7 @@ import { syllablePhonemeList, syllableToPhonemes, isVowel } from '../../src/engi
 import { vowelFormants, VOICE_TYPES } from '../../src/engine/voice/formants'
 import { estimateSpeechDuration, planSpeech, SPEECH_VOICES, splitSentences, synthesizeSpeech } from '../../src/engine/voice/speech'
 import { measureLoudness } from '../../src/engine/audio/analyze'
+import { stft } from '../../src/engine/audio/stft'
 import type { InstrumentId } from '../../src/engine/compose/types'
 
 const RATE = 16000
@@ -297,6 +298,49 @@ describe('full render', () => {
     expect(result.loudnessDb).toBeGreaterThan(-30)
     expect(result.loudnessDb).toBeLessThan(0)
     expect(measureLoudness({ channels: [result.left, result.right], sampleRate: RATE }).clipping).toBe(false)
+  })
+
+  it('lands every genre at the same loudness', () => {
+    const measured: number[] = []
+    for (const prompt of ['an upbeat pop song', 'ambient meditation instrumental', 'heavy metal', 'lofi chill instrumental']) {
+      const score = composeSong(buildSpec(prompt, { seed: `loud-${prompt}`, durationSeconds: 14 }))
+      const result = renderScore(score, { sampleRate: RATE })
+      const loudness = measureLoudness({ channels: [result.left, result.right], sampleRate: RATE })
+      expect(loudness.clipping).toBe(false)
+      measured.push(loudness.lufs)
+    }
+    // Auditioning one track after another should not mean reaching for the
+    // volume control, so the spread has to be small.
+    expect(Math.max(...measured) - Math.min(...measured)).toBeLessThan(2.5)
+    for (const lufs of measured) expect(lufs).toBeGreaterThan(-17)
+  })
+
+  it('does not pile the whole mix into the low end', () => {
+    // Synthesised material is naturally low-heavy; a mix where almost nothing
+    // sits where melody and words live is the classic failure.
+    for (const prompt of ['an upbeat pop song about summer', 'heavy metal', 'dark trap beat instrumental']) {
+      const score = composeSong(buildSpec(prompt, { seed: `band-${prompt}`, durationSeconds: 14 }))
+      const result = renderScore(score, { sampleRate: RATE })
+      const spectrum = stft(result.left, 1024, 1024, RATE)
+
+      const bands = [0, 0, 0, 0]
+      let total = 0
+      for (const frame of spectrum.magnitude) {
+        for (let bin = 1; bin < frame.length; bin++) {
+          const freq = (bin * RATE) / 1024
+          const power = frame[bin]! * frame[bin]!
+          total += power
+          if (freq < 250) bands[0]! += power
+          else if (freq < 800) bands[1]! += power
+          else if (freq < 2500) bands[2]! += power
+          else bands[3]! += power
+        }
+      }
+      const share = bands.map((value) => value / Math.max(1e-12, total))
+      expect(share[0], `${prompt} lows`).toBeLessThan(0.62)
+      expect(share[1], `${prompt} low-mids`).toBeGreaterThan(0.16)
+      expect(share[2], `${prompt} mids`).toBeGreaterThan(0.05)
+    }
   })
 
   it('reports monotonically increasing progress ending at one', () => {

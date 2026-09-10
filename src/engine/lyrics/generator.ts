@@ -388,6 +388,8 @@ const TITLE_EDGE_WORDS = new Set([
   'oh', 'yeah', 'now', 'still', 'well', 'my', 'your', 'this', 'as', 'by',
   'until', 'while', 'when', 'before', 'after', 'than', 'from', 'into',
   'about', 'like', 'through', 'without', 'where', 'how', 'if', 'can', 'will',
+  'do', 'does', 'did', 'have', 'has', 'had', 'be', 'am', 'not', 'no',
+  'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'let',
 ])
 
 /**
@@ -407,7 +409,11 @@ function deriveTitle(candidateLines: string[], theme: string, rng: Rng): string 
 }
 
 function titleFromLine(line: string): string | null {
-  let words = line.replace(/[.,!?;:]+/g, '').split(/\s+/).filter(Boolean)
+  // A comma is a natural title boundary: "Run with me, we do not have to hold"
+  // gives "Run with me", not four words of the following clause.
+  const clause = line.split(/[,;:]/)[0] ?? line
+  const source = clause.split(/\s+/).filter(Boolean).length >= 2 ? clause : line
+  let words = source.replace(/[.,!?;:]+/g, '').split(/\s+/).filter(Boolean)
   while (words.length > 2 && TITLE_EDGE_WORDS.has(words[0]!.toLowerCase())) words = words.slice(1)
   if (words.length > 5) words = words.slice(0, 5)
   while (words.length > 2 && TITLE_EDGE_WORDS.has(words[words.length - 1]!.toLowerCase())) words.pop()

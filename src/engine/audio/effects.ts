@@ -5,6 +5,7 @@ import { Biquad, saturate } from '../synth/dsp'
 import { Chorus, Compressor, Limiter, PingPongDelay, Reverb } from '../synth/fx'
 import { measureLoudness } from './analyze'
 import { istft, stft } from './stft'
+import { blockwise } from './blockwise'
 import type { AudioData } from './wav'
 
 function mapChannels(audio: AudioData, fn: (channel: Float32Array, index: number) => Float32Array): AudioData {
@@ -279,7 +280,16 @@ export function applyLimiter(audio: AudioData, ceiling = 0.97): AudioData {
  * ducks rather than punching holes in the signal.
  */
 export function reduceNoise(audio: AudioData, strength = 0.7): AudioData {
-  return mapChannels(audio, (channel) => denoiseChannel(channel, audio.sampleRate, strength))
+  // Blocked for the same reason separation is: a spectrogram of a whole track
+  // is far larger than a phone will tolerate. A per-block noise profile also
+  // tracks a noise floor that changes over the recording.
+  const [result] = blockwise(
+    audio,
+    1,
+    (block) => [mapChannels(block, (channel) => denoiseChannel(channel, block.sampleRate, strength))],
+    { blockSeconds: 20, overlapSeconds: 1 },
+  )
+  return result!
 }
 
 function denoiseChannel(signal: Float32Array, sampleRate: number, strength: number): Float32Array {

@@ -64,20 +64,29 @@ export function Waveform({ audio, progress, height = 76, onSeek, markers, classN
       ctx.stroke()
 
       if (peaks) {
+        // Two batched paths rather than one stroke per column: this canvas is
+        // redrawn on every animation frame while the transport runs, and 800
+        // separate stroke calls per frame is the difference between smooth and
+        // not on a phone.
         const playedX = progress * width
+        const played = new Path2D()
+        const remaining = new Path2D()
         for (let x = 0; x < width; x++) {
           const column = Math.min(COLUMNS - 1, Math.floor((x / width) * COLUMNS))
           const min = peaks[column * 2]!
           const max = peaks[column * 2 + 1]!
-          const top = middle - max * middle * 0.94
-          const bottom = middle - min * middle * 0.94
-          ctx.strokeStyle = x <= playedX ? accent : dim
-          ctx.globalAlpha = x <= playedX ? 0.95 : 0.5
-          ctx.beginPath()
-          ctx.moveTo(x + 0.5, Math.min(top, middle - 0.5))
-          ctx.lineTo(x + 0.5, Math.max(bottom, middle + 0.5))
-          ctx.stroke()
+          const top = Math.min(middle - max * middle * 0.94, middle - 0.5)
+          const bottom = Math.max(middle - min * middle * 0.94, middle + 0.5)
+          const path = x <= playedX ? played : remaining
+          path.moveTo(x + 0.5, top)
+          path.lineTo(x + 0.5, bottom)
         }
+        ctx.strokeStyle = dim
+        ctx.globalAlpha = 0.5
+        ctx.stroke(remaining)
+        ctx.strokeStyle = accent
+        ctx.globalAlpha = 0.95
+        ctx.stroke(played)
         ctx.globalAlpha = 1
       }
 

@@ -51,7 +51,7 @@ export const TOOLS: ToolRoute[] = [
     label: 'Voice Changer',
     short: 'Voice',
     icon: 'shifter',
-    blurb: 'Shift pitch and vocal character independently, with ten ready-made characters.',
+    blurb: 'Shift pitch and vocal character independently — or feed it a whole song to make a cover.',
     primary: true,
   },
   {

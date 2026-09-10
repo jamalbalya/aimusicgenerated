@@ -238,9 +238,16 @@ export function renderSungNote(request: SungNoteRequest): Float32Array {
   const bank = new FormantBank(sampleRate, segments[0]!.formants)
   const noiseFilter = new Biquad(sampleRate)
   noiseFilter.bandpass(segments[0]!.noiseHz, segments[0]!.noiseQ)
-  // Radiation from the lips is roughly a first-order high-pass.
-  const radiation = new Biquad(sampleRate)
-  radiation.highpass(140, 0.6)
+  // Radiation from the lips differentiates the flow: +6 dB per octave across
+  // the whole band. Modelling it as a high-pass leaves the upper formants with
+  // no source energy to shape, which is what makes formant synthesis sound
+  // like it is speaking through a pillow.
+  let radiationPrevious = 0
+  const radiate = (sample: number): number => {
+    const out = sample - 0.97 * radiationPrevious
+    radiationPrevious = sample
+    return out
+  }
 
   const baseFreq = midiToFreq(request.midi)
   // Slight per-note detune keeps a doubled vocal from sounding like one voice.
@@ -305,7 +312,7 @@ export function renderSungNote(request: SungNoteRequest): Float32Array {
 
     // --- Filter and envelope ---------------------------------------------
     let sample = bank.process(source)
-    sample = radiation.process(sample)
+    sample = radiate(sample)
 
     let amp: number
     if (t < attack) amp = t / attack
@@ -320,8 +327,22 @@ export function renderSungNote(request: SungNoteRequest): Float32Array {
 
   // A gentle push through tanh adds the harmonic richness a real voice has.
   const driveAmount = 1 + style.power * 1.6
+  let peak = 0
   for (let i = 0; i < length; i++) {
-    out[i] = fastTanh(out[i]! * driveAmount) / driveAmount
+    const value = fastTanh(out[i]! * driveAmount) / driveAmount
+    out[i] = value
+    const magnitude = Math.abs(value)
+    if (magnitude > peak) peak = magnitude
+  }
+
+  // Level every note to the same peak, scaled by velocity. The differentiator
+  // modelling lip radiation attenuates by 20 dB or more at the pitches people
+  // sing at, and the amount depends on the vowel and the note — so a fixed
+  // makeup gain would leave the line lurching in volume from word to word.
+  if (peak > 1e-6) {
+    const target = 0.92 * velocity
+    const scale = target / peak
+    for (let i = 0; i < length; i++) out[i]! *= scale
   }
 
   return out
