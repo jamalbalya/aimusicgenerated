@@ -89,7 +89,7 @@ export default function LyricsPage() {
       return
     }
     try {
-      const output = await job.run<GenerateResult>('Singing your lyrics', {
+      const result = await job.run<GenerateResult>('Singing your lyrics', {
         kind: 'sing',
         text,
         prompt: theme.trim() || 'a song',
@@ -98,6 +98,7 @@ export default function LyricsPage() {
         language: singLanguage,
         overrides: { genreId: singGenre, mood, seed: `${theme}|sing|${Date.now()}` },
       })
+      const output = result.takes[0]!
       setCurrent({
         title: lyrics?.title ?? 'Your lyrics',
         subtitle: `Sung · ${GENRES.find((g) => g.id === singGenre)?.label ?? singGenre} · ${output.score.bpm} BPM`,

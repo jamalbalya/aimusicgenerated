@@ -9,7 +9,7 @@
 
 import { buildSpec } from '../engine/compose/prompt'
 import { composeSong, fitSyllablesToNotes } from '../engine/compose/composer'
-import { renderSong } from '../engine/synth/pipeline'
+import { renderSong, type SongRenderResult } from '../engine/synth/pipeline'
 import { SING_PRESETS } from '../engine/voice/singer'
 import { generateLyrics } from '../engine/lyrics/generator'
 import { pronounceLine, resolveLanguage } from '../engine/lang'
@@ -22,8 +22,8 @@ import {
   equalize, fade, gain, mixDown, normalizeLoudness, normalizePeak, reduceNoise, reverse, trim,
 } from '../engine/audio/effects'
 import {
-  QUALITY_SAMPLE_RATES,
-  type ProcessOp, type TransferAudio, type WorkerRequest, type WorkerResult,
+  MAX_TAKES, QUALITY_SAMPLE_RATES,
+  type ProcessOp, type SongTake, type TransferAudio, type WorkerRequest, type WorkerResult,
 } from './protocol'
 import type { AudioData } from '../engine/audio/wav'
 import type { Score, ScoreNote } from '../engine/compose/types'
@@ -138,33 +138,56 @@ function applyOp(audio: AudioData, op: ProcessOp): AudioData {
   }
 }
 
+/** Packs a finished render into the shape a take is carried in. */
+function toTake(score: Score, rendered: SongRenderResult, sampleRate: number): SongTake {
+  return {
+    score,
+    audio: { channels: [rendered.left, rendered.right], sampleRate },
+    stems: (rendered.stems ?? []).map((stem) => ({
+      id: stem.id,
+      name: stem.name,
+      audio: { channels: [stem.left, stem.right], sampleRate },
+    })),
+    loudnessDb: rendered.loudnessDb,
+    peak: rendered.peak,
+    validation: rendered.validation,
+  }
+}
+
 async function handle(id: number, request: WorkerRequest): Promise<WorkerResult> {
   switch (request.kind) {
     case 'generate': {
-      progress(id, 0.02, 'Writing the arrangement')
-      const spec = buildSpec(request.prompt, request.overrides)
-      const score = composeSong(spec)
-      progress(id, 0.08, 'Rendering audio')
       const sampleRate = QUALITY_SAMPLE_RATES[request.quality]
-      const rendered = await renderSong(score, {
-        sampleRate,
-        keepStems: request.keepStems,
-        singStyle: request.singStylePreset ? SING_PRESETS[request.singStylePreset] : undefined,
-        onProgress: (value) => progress(id, 0.08 + value * 0.9, 'Rendering audio'),
-      })
-      return {
-        kind: 'generate',
-        score,
-        audio: { channels: [rendered.left, rendered.right], sampleRate },
-        stems: (rendered.stems ?? []).map((stem) => ({
-          id: stem.id,
-          name: stem.name,
-          audio: { channels: [stem.left, stem.right], sampleRate },
-        })),
-        loudnessDb: rendered.loudnessDb,
-        peak: rendered.peak,
-        validation: rendered.validation,
+      const wanted = Math.max(1, Math.min(MAX_TAKES, Math.round(request.takes ?? 1)))
+      const style = request.singStylePreset ? SING_PRESETS[request.singStylePreset] : undefined
+      // One brief, several songs. Each take composes from its own seed, so it
+      // is a different melody and a different arrangement rather than the same
+      // one mixed twice — which is the only version of this worth having.
+      const base = request.overrides.seed || `${request.prompt}|${Date.now()}`
+      const takes: SongTake[] = []
+
+      for (let index = 0; index < wanted; index++) {
+        const label = wanted > 1 ? `Take ${index + 1} of ${wanted}` : 'Rendering audio'
+        const span = 1 / wanted
+        const from = index * span
+        progress(id, from + span * 0.02, `${label} — writing the arrangement`)
+        const score = composeSong(buildSpec(request.prompt, {
+          ...request.overrides,
+          seed: index === 0 ? base : `${base}#take${index + 1}`,
+        }))
+        const rendered = await renderSong(score, {
+          sampleRate,
+          // Stems are heavy enough that keeping a set per take would cost more
+          // memory than a phone has. The take that gets opened is re-rendered
+          // with them when they are wanted.
+          keepStems: request.keepStems && wanted === 1,
+          singStyle: style,
+          onProgress: (value) => progress(id, from + span * (0.08 + value * 0.9), label),
+        })
+        takes.push(toTake(score, rendered, sampleRate))
       }
+
+      return { kind: 'generate', takes }
     }
 
     case 'rerender': {
@@ -177,19 +200,7 @@ async function handle(id: number, request: WorkerRequest): Promise<WorkerResult>
         singStyle: request.singStylePreset ? SING_PRESETS[request.singStylePreset] : undefined,
         onProgress: (value) => progress(id, value, 'Rendering audio'),
       })
-      return {
-        kind: 'generate',
-        score: request.score,
-        audio: { channels: [rendered.left, rendered.right], sampleRate },
-        stems: (rendered.stems ?? []).map((stem) => ({
-          id: stem.id,
-          name: stem.name,
-          audio: { channels: [stem.left, stem.right], sampleRate },
-        })),
-        loudnessDb: rendered.loudnessDb,
-        peak: rendered.peak,
-        validation: rendered.validation,
-      }
+      return { kind: 'generate', takes: [toTake(request.score, rendered, sampleRate)] }
     }
 
     case 'lyrics':
@@ -317,15 +328,7 @@ async function handle(id: number, request: WorkerRequest): Promise<WorkerResult>
         singStyle: request.style,
         onProgress: (value) => progress(id, 0.15 + value * 0.83, 'Rendering audio'),
       })
-      return {
-        kind: 'generate',
-        score,
-        audio: { channels: [rendered.left, rendered.right], sampleRate },
-        stems: [],
-        loudnessDb: rendered.loudnessDb,
-        peak: rendered.peak,
-        validation: rendered.validation,
-      }
+      return { kind: 'generate', takes: [toTake(score, rendered, sampleRate)] }
     }
   }
 }
