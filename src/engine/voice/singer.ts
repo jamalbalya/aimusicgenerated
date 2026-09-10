@@ -12,7 +12,7 @@
 import { midiToFreq, clamp, lerp } from '../core/units'
 import { Rng } from '../core/rng'
 import { Biquad, fastSin, fastTanh, Noise } from '../synth/dsp'
-import { syllableToPhonemes, type Consonant } from './phonemes'
+import type { Consonant, Syllable } from './phonemes'
 import {
   CONSONANTS, DIPHTHONG_TARGET, vowelFormants, VOICE_CENTER,
   type Formant, type VoiceType,
@@ -57,8 +57,11 @@ export interface SungNoteRequest {
   /** Held duration in seconds. */
   duration: number
   velocity: number
-  /** Written syllable; empty means a continuation of the previous one. */
-  syllable: string
+  /**
+   * The sounds to sing. Null means this note continues the syllable before it,
+   * which is what a melisma is.
+   */
+  sounds: Syllable | null
   sampleRate: number
   style: SingStyle
   seed: number
@@ -140,6 +143,24 @@ interface Segment {
   closure?: boolean
 }
 
+/**
+ * A trill is the tongue tip bouncing, so the sound is a run of taps rather than
+ * one steady constriction: alternating loud and quiet segments at the trill's
+ * own rate is what the ear hears as a rolled r.
+ */
+function trillSegments(
+  rateHz: number, seconds: number, formants: Formant[], spec: { noiseHz: number; noiseQ: number },
+): Segment[] {
+  const taps = Math.max(2, Math.round(seconds * rateHz))
+  const step = seconds / (taps * 2)
+  const segments: Segment[] = []
+  for (let i = 0; i < taps; i++) {
+    segments.push({ seconds: step, formants, voicing: 1, noiseHz: spec.noiseHz, noiseQ: spec.noiseQ, noiseLevel: 0.02, level: 0.28 })
+    segments.push({ seconds: step, formants, voicing: 1, noiseHz: spec.noiseHz, noiseQ: spec.noiseQ, noiseLevel: 0.02, level: 0.95 })
+  }
+  return segments
+}
+
 function consonantSegments(
   phoneme: Consonant,
   vowelFormantSet: Formant[],
@@ -169,6 +190,7 @@ function consonantSegments(
       return [{ seconds, formants, voicing: 1, noiseHz: spec.noiseHz, noiseQ: spec.noiseQ, noiseLevel: 0.02, level: position === 'coda' ? 0.7 : 0.8 }]
     case 'liquid':
     case 'glide':
+      if (spec.trill !== undefined) return trillSegments(spec.trill, seconds, formants, spec)
       return [{ seconds, formants, voicing: 1, noiseHz: spec.noiseHz, noiseQ: spec.noiseQ, noiseLevel: 0.02, level: 0.85 }]
   }
 }
@@ -179,24 +201,23 @@ function consonantSegments(
  * singing works.
  */
 export function planSegments(request: SungNoteRequest): Segment[] {
-  const { syllable, duration, style } = request
+  const { sounds, duration, style } = request
   const rate = clamp(duration / 0.45, 0.55, 1.5)
 
-  if (!syllable || request.legato) {
+  if (!sounds || request.legato) {
     // A continuation: hold the previous vowel colour. The renderer supplies it.
     const formants = vowelFormants('AH', style.voice)
     return [{ seconds: duration, formants, voicing: 1, noiseHz: 1200, noiseQ: 1, noiseLevel: 0.02, level: 1 }]
   }
 
-  const parts = syllableToPhonemes(syllable)
-  const vowelSet = vowelFormants(parts.vowel, style.voice)
+  const vowelSet = vowelFormants(sounds.vowel, style.voice)
   const segments: Segment[] = []
 
-  for (const consonant of parts.onset) {
+  for (const consonant of sounds.onset) {
     segments.push(...consonantSegments(consonant, vowelSet, rate, 'onset'))
   }
   const codaSegments: Segment[] = []
-  for (const consonant of parts.coda) {
+  for (const consonant of sounds.coda) {
     codaSegments.push(...consonantSegments(consonant, vowelSet, rate, 'coda'))
   }
 
@@ -208,8 +229,11 @@ export function planSegments(request: SungNoteRequest): Segment[] {
     : 1
   for (const segment of [...segments, ...codaSegments]) segment.seconds *= scale
 
-  // Diphthongs glide toward a second vowel position across the held vowel.
-  const target = DIPHTHONG_TARGET[parts.vowel]
+  // Diphthongs glide toward a second vowel position across the held vowel. The
+  // language may have named the second target itself, as Spanish and Finnish
+  // spell theirs out; English writes them as one letter, so the table supplies
+  // the target instead.
+  const target = sounds.glide ?? DIPHTHONG_TARGET[sounds.vowel]
   if (target) {
     segments.push({ seconds: vowelSeconds * 0.6, formants: vowelSet, voicing: 1, noiseHz: 1200, noiseQ: 1, noiseLevel: 0.02, level: 1 })
     segments.push({ seconds: vowelSeconds * 0.4, formants: vowelFormants(target, style.voice), voicing: 1, noiseHz: 1200, noiseQ: 1, noiseLevel: 0.02, level: 1 })

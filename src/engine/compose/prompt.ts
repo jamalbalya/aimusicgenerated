@@ -7,6 +7,7 @@
 import { parsePitchClass, SCALE_NAMES, type PitchClass, type ScaleName } from '../theory/pitch'
 import { GENRES, getGenre, type GenreDef, type VocalStyle } from './genres'
 import { Rng } from '../core/rng'
+import type { LanguageId } from '../lang/types'
 
 export type Mood =
   | 'happy' | 'sad' | 'dark' | 'epic' | 'chill' | 'energetic'
@@ -63,6 +64,14 @@ export interface SongSpec {
   energy: number
   /** Set when the user named an explicit chord progression template. */
   progressionId?: string
+  /**
+   * The language the vocals are pronounced in. `auto` reads it off whatever
+   * lyrics end up being sung, which is the right answer whenever the singer is
+   * given words rather than asked to invent them.
+   */
+  language: LanguageId | 'auto'
+  /** Lyrics the user wrote, sung instead of generated ones. */
+  customLyrics?: string
 }
 
 const INSTRUMENTAL_WORDS = ['instrumental', 'no vocals', 'no vocal', 'without vocals', 'karaoke', 'beat only', 'backing track', 'bgm', 'background music']
@@ -174,6 +183,8 @@ export interface PromptOverrides {
   seed?: string
   theme?: string
   progressionId?: string
+  language?: LanguageId | 'auto'
+  customLyrics?: string
 }
 
 /**
@@ -247,6 +258,8 @@ export function buildSpec(prompt: string, overrides: PromptOverrides = {}): Song
     instrumental: vocals === 'none',
     energy: clamp01(mood.energy * 0.6 + genre.density * 0.4),
     progressionId: overrides.progressionId,
+    language: overrides.language ?? 'auto',
+    ...(overrides.customLyrics?.trim() ? { customLyrics: overrides.customLyrics.trim() } : {}),
   }
 }
 

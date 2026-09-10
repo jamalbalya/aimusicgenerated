@@ -14,6 +14,9 @@ export type TrackRole =
   | 'lead' | 'harmony' | 'chords' | 'bass' | 'arp' | 'pad' | 'counter'
   | 'texture' | 'riff' | 'vocal' | 'vocalHarmony' | 'fx'
 
+import type { Syllable } from '../voice/phonemes'
+import type { LanguageId } from '../lang/types'
+
 export interface ScoreNote {
   /** Onset in beats from the start of the song. */
   start: number
@@ -22,8 +25,16 @@ export interface ScoreNote {
   midi: number
   /** 0..1 */
   velocity: number
-  /** Lyric syllable, when this note is sung. */
+  /** Lyric syllable as written, when this note is sung. */
   syllable?: string
+  /**
+   * The sounds that syllable is made of.
+   *
+   * Carried on the note rather than worked out at render time because the
+   * reading depends on the whole word — "ção" is only nasal because of where
+   * it sits in "coração" — and the note has already lost that context.
+   */
+  sounds?: Syllable
   /** Slides from the previous note's pitch instead of re-attacking. */
   legato?: boolean
   /**
@@ -107,6 +118,8 @@ export interface Score {
   drums: DrumTrack
   /** Set when the song has sung vocals. */
   lyrics?: SongLyrics
+  /** The language the lyrics are pronounced in. */
+  language: LanguageId
   seed: string
   genreId: string
 }

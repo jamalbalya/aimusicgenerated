@@ -9,7 +9,7 @@
 import { beatsToSeconds, clamp, dbToGain, SAMPLE_RATE } from '../core/units'
 import { hashString } from '../core/rng'
 import { getGenre } from '../compose/genres'
-import type { DrumHit, Score, ScoreTrack } from '../compose/types'
+import type { DrumHit, Score, ScoreNote, ScoreTrack } from '../compose/types'
 import { renderDrum, drumLength } from './drumkit'
 import { renderVoice } from './instruments'
 import { applyDrive, applyTrackEq, buildSidechainEnvelope, Compressor, Limiter, PingPongDelay, Reverb } from './fx'
@@ -297,6 +297,16 @@ export function renderScore(score: Score, options: RenderOptions = {}): RenderRe
  * takes a few seconds. Durations and velocities are bucketed at thresholds
  * well below audibility, so near-identical notes share one render.
  */
+/**
+ * Cache key for a sung note. Two notes sound the same only if every sound in
+ * them is the same, so the key is the phonemes rather than the spelling —
+ * different spellings of the same sound share one rendered note.
+ */
+function soundsKey(sounds: ScoreNote['sounds']): string {
+  if (!sounds) return ''
+  return `${sounds.onset.join('.')}-${sounds.vowel}${sounds.glide ?? ''}-${sounds.coda.join('.')}`
+}
+
 class VoiceCache {
   private readonly entries = new Map<string, Float32Array>()
   private cachedSamples = 0
@@ -346,7 +356,7 @@ function renderTrack(
     const seed = hashString(`${track.instrument}:${note.midi}`)
 
     const key = isVocal
-      ? `v|${note.midi}|${duration}|${velocity}|${note.syllable ?? ''}|${note.legato === true}`
+      ? `v|${note.midi}|${duration}|${velocity}|${soundsKey(note.sounds)}|${note.legato === true}`
       : `i|${track.instrument}|${note.midi}|${duration}|${velocity}`
 
     let buffer = cache.get(key)
@@ -356,7 +366,7 @@ function renderTrack(
           midi: note.midi,
           duration,
           velocity,
-          syllable: note.syllable ?? '',
+          sounds: note.sounds ?? null,
           sampleRate,
           style: singStyle,
           seed,

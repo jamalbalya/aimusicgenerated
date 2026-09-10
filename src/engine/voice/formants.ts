@@ -32,6 +32,26 @@ const BASE_VOWELS: Record<Vowel, Formant[]> = {
   UW: [{ freq: 300, bandwidth: 60, amp: 1 }, { freq: 870, bandwidth: 90, amp: 0.35 }, { freq: 2240, bandwidth: 140, amp: 0.1 }, { freq: 3300, bandwidth: 200, amp: 0.04 }],
   AH: [{ freq: 600, bandwidth: 80, amp: 1 }, { freq: 1170, bandwidth: 100, amp: 0.5 }, { freq: 2390, bandwidth: 140, amp: 0.18 }, { freq: 3300, bandwidth: 200, amp: 0.06 }],
   ER: [{ freq: 490, bandwidth: 70, amp: 1 }, { freq: 1350, bandwidth: 100, amp: 0.5 }, { freq: 1690, bandwidth: 130, amp: 0.42 }, { freq: 3300, bandwidth: 200, amp: 0.08 }],
+  // Pure vowels. Spanish, Italian, Indonesian, Turkish, Swahili, Japanese and
+  // most of the world's five-vowel systems sit here rather than on the English
+  // lax/tense pairs above, which is why reading them as English mangles them.
+  A: [{ freq: 720, bandwidth: 90, amp: 1 }, { freq: 1300, bandwidth: 110, amp: 0.52 }, { freq: 2540, bandwidth: 150, amp: 0.2 }, { freq: 3400, bandwidth: 200, amp: 0.07 }],
+  E: [{ freq: 440, bandwidth: 70, amp: 1 }, { freq: 1900, bandwidth: 100, amp: 0.48 }, { freq: 2600, bandwidth: 140, amp: 0.3 }, { freq: 3450, bandwidth: 190, amp: 0.1 }],
+  O: [{ freq: 460, bandwidth: 70, amp: 1 }, { freq: 900, bandwidth: 95, amp: 0.5 }, { freq: 2450, bandwidth: 140, amp: 0.12 }, { freq: 3300, bandwidth: 200, amp: 0.04 }],
+  AX: [{ freq: 500, bandwidth: 80, amp: 1 }, { freq: 1450, bandwidth: 110, amp: 0.42 }, { freq: 2450, bandwidth: 150, amp: 0.16 }, { freq: 3300, bandwidth: 200, amp: 0.05 }],
+  // Front rounded: the tongue of a front vowel with the lips of a back one, so
+  // F2 sits between the two. German ü/ö, French u/eu, Turkish ü/ö.
+  UE: [{ freq: 260, bandwidth: 60, amp: 1 }, { freq: 1750, bandwidth: 95, amp: 0.4 }, { freq: 2160, bandwidth: 135, amp: 0.24 }, { freq: 3350, bandwidth: 190, amp: 0.08 }],
+  OE: [{ freq: 370, bandwidth: 70, amp: 1 }, { freq: 1560, bandwidth: 100, amp: 0.44 }, { freq: 2100, bandwidth: 140, amp: 0.26 }, { freq: 3350, bandwidth: 190, amp: 0.08 }],
+  // Close back unrounded: Turkish dotless i, Russian ы.
+  IX: [{ freq: 320, bandwidth: 65, amp: 1 }, { freq: 1380, bandwidth: 100, amp: 0.38 }, { freq: 2300, bandwidth: 140, amp: 0.2 }, { freq: 3300, bandwidth: 195, amp: 0.06 }],
+  // Nasal vowels. Coupling the nasal cavity to the tract adds an anti-formant
+  // that flattens and damps everything above F1; wide bandwidths and reduced
+  // upper amplitudes are what that sounds like.
+  AN: [{ freq: 620, bandwidth: 130, amp: 1 }, { freq: 1080, bandwidth: 170, amp: 0.4 }, { freq: 2400, bandwidth: 230, amp: 0.12 }, { freq: 3300, bandwidth: 280, amp: 0.04 }],
+  EN: [{ freq: 560, bandwidth: 125, amp: 1 }, { freq: 1650, bandwidth: 165, amp: 0.42 }, { freq: 2450, bandwidth: 230, amp: 0.14 }, { freq: 3350, bandwidth: 280, amp: 0.04 }],
+  ON: [{ freq: 470, bandwidth: 120, amp: 1 }, { freq: 820, bandwidth: 160, amp: 0.42 }, { freq: 2400, bandwidth: 230, amp: 0.1 }, { freq: 3300, bandwidth: 280, amp: 0.03 }],
+  UN: [{ freq: 480, bandwidth: 125, amp: 1 }, { freq: 1420, bandwidth: 165, amp: 0.4 }, { freq: 2200, bandwidth: 230, amp: 0.14 }, { freq: 3300, bandwidth: 280, amp: 0.04 }],
   // Diphthongs use their starting position; the singer glides to the target.
   AY: [{ freq: 700, bandwidth: 90, amp: 1 }, { freq: 1200, bandwidth: 110, amp: 0.5 }, { freq: 2450, bandwidth: 150, amp: 0.2 }, { freq: 3400, bandwidth: 200, amp: 0.07 }],
   OY: [{ freq: 550, bandwidth: 80, amp: 1 }, { freq: 900, bandwidth: 100, amp: 0.5 }, { freq: 2400, bandwidth: 140, amp: 0.15 }, { freq: 3300, bandwidth: 200, amp: 0.05 }],
@@ -89,6 +109,13 @@ export interface ConsonantSpec {
   duration: number
   /** Formant targets for nasals, liquids and glides. */
   formants?: Formant[]
+  /**
+   * Repetition rate in Hz for a trilled consonant. The Spanish/Italian rr is
+   * the tongue tip bouncing off the ridge two or three times, and a steady
+   * approximant in its place is the single most obvious tell of a synthesised
+   * accent in those languages.
+   */
+  trill?: number
 }
 
 export const CONSONANTS: Record<Consonant, ConsonantSpec> = {
@@ -137,4 +164,40 @@ export const CONSONANTS: Record<Consonant, ConsonantSpec> = {
     formants: [{ freq: 280, bandwidth: 60, amp: 1 }, { freq: 2200, bandwidth: 100, amp: 0.48 }, { freq: 2900, bandwidth: 150, amp: 0.24 }, { freq: 3600, bandwidth: 220, amp: 0.06 }],
   },
   HH: { kind: 'aspirate', voiced: false, noiseHz: 1500, noiseQ: 0.4, duration: 0.06 },
+
+  // --- Sounds English does not have ---------------------------------------
+
+  // Affricates: Italian z, Polish c/dz, Japanese tsu, German pf.
+  TS: { kind: 'affricate', voiced: false, noiseHz: 6600, noiseQ: 1.4, duration: 0.085 },
+  DZ: { kind: 'affricate', voiced: true, noiseHz: 5000, noiseQ: 1.4, duration: 0.075 },
+  PF: { kind: 'affricate', voiced: false, noiseHz: 4600, noiseQ: 0.7, duration: 0.085 },
+  // Palatal nasal and lateral: Spanish ñ/ll, Italian gn/gl, French gn, Portuguese nh/lh.
+  NY: {
+    kind: 'nasal', voiced: true, noiseHz: 400, noiseQ: 1, duration: 0.07,
+    formants: [{ freq: 300, bandwidth: 90, amp: 1 }, { freq: 2100, bandwidth: 130, amp: 0.24 }, { freq: 2900, bandwidth: 210, amp: 0.08 }, { freq: 3400, bandwidth: 260, amp: 0.02 }],
+  },
+  LY: {
+    kind: 'liquid', voiced: true, noiseHz: 500, noiseQ: 1, duration: 0.06,
+    formants: [{ freq: 300, bandwidth: 75, amp: 1 }, { freq: 1900, bandwidth: 105, amp: 0.4 }, { freq: 2700, bandwidth: 160, amp: 0.16 }, { freq: 3450, bandwidth: 220, amp: 0.05 }],
+  },
+  // Trilled and tapped r: Spanish perro vs pero, Italian, Indonesian, Russian.
+  RR: {
+    kind: 'liquid', voiced: true, noiseHz: 500, noiseQ: 1, duration: 0.1, trill: 26,
+    formants: [{ freq: 330, bandwidth: 80, amp: 1 }, { freq: 1250, bandwidth: 110, amp: 0.4 }, { freq: 1700, bandwidth: 150, amp: 0.22 }, { freq: 3300, bandwidth: 220, amp: 0.04 }],
+  },
+  DX: {
+    kind: 'liquid', voiced: true, noiseHz: 500, noiseQ: 1, duration: 0.024,
+    formants: [{ freq: 330, bandwidth: 80, amp: 1 }, { freq: 1350, bandwidth: 115, amp: 0.38 }, { freq: 1750, bandwidth: 150, amp: 0.2 }, { freq: 3300, bandwidth: 220, amp: 0.04 }],
+  },
+  // Uvular r: French and standard German.
+  RU: {
+    kind: 'fricative', voiced: true, noiseHz: 1250, noiseQ: 0.9, duration: 0.065,
+    formants: [{ freq: 400, bandwidth: 90, amp: 1 }, { freq: 1150, bandwidth: 120, amp: 0.34 }, { freq: 2100, bandwidth: 170, amp: 0.1 }, { freq: 3200, bandwidth: 230, amp: 0.03 }],
+  },
+  // Velar and palatal fricatives: Spanish j, German ach/ich, Russian х, Greek χ.
+  X: { kind: 'fricative', voiced: false, noiseHz: 1900, noiseQ: 0.7, duration: 0.08 },
+  GX: { kind: 'fricative', voiced: true, noiseHz: 1500, noiseQ: 0.7, duration: 0.07 },
+  CX: { kind: 'fricative', voiced: false, noiseHz: 3100, noiseQ: 1, duration: 0.075 },
+  // Glottal stop: Indonesian and Malay final k, Arabic hamza, German onset.
+  Q: { kind: 'stop', voiced: false, noiseHz: 600, noiseQ: 0.5, duration: 0.03 },
 }

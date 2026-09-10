@@ -13,6 +13,7 @@ import { Empty, Field, Panel, Progress, Segmented, Slider } from '../components/
 import { isCancellation, useJob } from '../useJob'
 import { useStudio } from '../../state/store'
 import { SPEECH_VOICES } from '../../engine/voice/speech'
+import { detectLanguage, LANGUAGE_CHOICES, languageProfile, type LanguageId } from '../../engine/lang'
 import { formatDuration } from '../../engine/core/units'
 import type { ProcessOp, SpeakResult } from '../../workers/protocol'
 
@@ -43,15 +44,41 @@ export default function SpeechPage() {
   const [expressiveness, setExpressiveness] = useState(1)
   const [effect, setEffect] = useState<EffectPreset>('none')
   const [engine, setEngine] = useState<'builtin' | 'browser'>('builtin')
+  const [language, setLanguage] = useState<LanguageId | 'auto'>('auto')
 
   const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([])
   const [browserVoiceName, setBrowserVoiceName] = useState('')
   const [browserSpeaking, setBrowserSpeaking] = useState(false)
 
+  // Shown beside the automatic option so the reading is visible before it plays.
+  const detectedName = useMemo(() => {
+    if (!text.trim()) return undefined
+    return LANGUAGE_CHOICES.find((choice) => choice.id === detectLanguage(text))?.label
+  }, [text])
+
   const voice = useMemo(
     () => SPEECH_VOICES.find((v) => v.id === voiceId) ?? SPEECH_VOICES[0]!,
     [voiceId],
   )
+
+  /**
+   * System voices, with the ones that speak the text's own language first.
+   *
+   * A browser typically offers dozens; leaving an Indonesian line to be read by
+   * whichever voice happens to be first in the list is the difference between
+   * something usable and something comic.
+   */
+  const sortedBrowserVoices = useMemo(() => {
+    const detected = language === 'auto' ? detectLanguage(text) : language
+    const tags = languageProfile(detected).voiceTags.map((tag) => tag.toLowerCase())
+    if (tags.length === 0) return browserVoices
+    const rank = (voice: SpeechSynthesisVoice): number => {
+      const lang = voice.lang.toLowerCase().replace('_', '-')
+      const index = tags.findIndex((tag) => lang === tag || lang.startsWith(`${tag}-`))
+      return index === -1 ? tags.length : index
+    }
+    return browserVoices.slice().sort((a, b) => rank(a) - rank(b))
+  }, [browserVoices, language, text])
 
   const hasBrowserSpeech = typeof window !== 'undefined' && 'speechSynthesis' in window
 
@@ -82,7 +109,7 @@ export default function SpeechPage() {
         kind: 'speak',
         text: value,
         voice,
-        options: { speed, pitchSemitones: pitch, expressiveness, sampleRate: 44100, seed: value },
+        options: { speed, pitchSemitones: pitch, expressiveness, sampleRate: 44100, seed: value, language },
         ops,
       })
       setCurrent({
@@ -94,7 +121,7 @@ export default function SpeechPage() {
     } catch (error) {
       if (!isCancellation(error)) { /* reported by useJob */ }
     }
-  }, [text, voice, speed, pitch, expressiveness, effect, job, notify, setCurrent])
+  }, [text, voice, speed, pitch, expressiveness, effect, language, job, notify, setCurrent])
 
   const speakInBrowser = useCallback(() => {
     if (!hasBrowserSpeech) return
@@ -199,13 +226,13 @@ export default function SpeechPage() {
                 </Field>
               ) : (
                 <Field label="System voice">
-                  {browserVoices.length > 0 ? (
+                  {sortedBrowserVoices.length > 0 ? (
                     <select
                       className="select"
                       value={browserVoiceName}
                       onChange={(e) => setBrowserVoiceName(e.target.value)}
                     >
-                      {browserVoices.map((option) => (
+                      {sortedBrowserVoices.map((option) => (
                         <option key={`${option.name}-${option.lang}`} value={option.name}>
                           {option.name} · {option.lang}
                         </option>
@@ -216,6 +243,28 @@ export default function SpeechPage() {
                       No system voices are available in this browser.
                     </p>
                   )}
+                </Field>
+              )}
+
+              {engine === 'builtin' && (
+                <Field
+                  label="Language"
+                  htmlFor="speech-language"
+                  value={language === 'auto' ? detectedName : undefined}
+                  hint="Sets which sounds the letters stand for, so a name or a line in another language is not read as English."
+                >
+                  <select
+                    id="speech-language"
+                    className="select"
+                    value={language}
+                    onChange={(e) => setLanguage(e.target.value as LanguageId | 'auto')}
+                  >
+                    {LANGUAGE_CHOICES.map((choice) => (
+                      <option key={choice.id} value={choice.id}>
+                        {choice.id === 'auto' ? choice.label : `${choice.label} — ${choice.native}`}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
               )}
 

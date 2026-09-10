@@ -8,6 +8,7 @@ import { chordChart, composeSong, fitSyllablesToNotes, chordAtBeat } from '../..
 import { Rng } from '../../src/engine/core/rng'
 import { inScale } from '../../src/engine/theory/pitch'
 import { scoreDurationSeconds } from '../../src/engine/compose/types'
+import { englishSyllable } from '../../src/engine/lang'
 
 describe('prompt parsing', () => {
   it('detects genres from natural language', () => {
@@ -183,14 +184,16 @@ describe('drums', () => {
 
 describe('syllable placement', () => {
   const note = (start: number, duration: number) => ({ start, duration, midi: 60, velocity: 0.8 })
+  /** Written syllables, read as English, which is what the fitter is given. */
+  const say = (...words: string[]) => words.map(englishSyllable)
 
   it('matches one syllable per note when counts agree', () => {
-    const out = fitSyllablesToNotes([note(0, 1), note(1, 1)], ['la', 'la'])
+    const out = fitSyllablesToNotes([note(0, 1), note(1, 1)], say('la', 'la'))
     expect(out.map((n) => n.syllable)).toEqual(['la', 'la'])
   })
 
   it('splits notes when there are more syllables', () => {
-    const out = fitSyllablesToNotes([note(0, 2)], ['ver', 'y', 'good'])
+    const out = fitSyllablesToNotes([note(0, 2)], say('ver', 'y', 'good'))
     expect(out).toHaveLength(3)
     expect(out.map((n) => n.syllable)).toEqual(['ver', 'y', 'good'])
     expect(out[0]!.start).toBeCloseTo(0)
@@ -200,7 +203,7 @@ describe('syllable placement', () => {
   })
 
   it('holds syllables across extra notes', () => {
-    const out = fitSyllablesToNotes([note(0, 1), note(1, 1), note(2, 1)], ['love'])
+    const out = fitSyllablesToNotes([note(0, 1), note(1, 1), note(2, 1)], say('love'))
     expect(out).toHaveLength(3)
     expect(out[0]!.syllable).toBe('love')
     expect(out[1]!.syllable).toBeUndefined()
@@ -208,7 +211,7 @@ describe('syllable placement', () => {
   })
 
   it('handles empty inputs', () => {
-    expect(fitSyllablesToNotes([], ['a'])).toEqual([])
+    expect(fitSyllablesToNotes([], say('a'))).toEqual([])
     expect(fitSyllablesToNotes([note(0, 1)], [])).toHaveLength(1)
   })
 })

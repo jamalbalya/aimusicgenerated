@@ -7,6 +7,7 @@
  */
 
 import type { Score } from '../engine/compose/types'
+import type { LanguageId } from '../engine/lang'
 import type { PromptOverrides } from '../engine/compose/prompt'
 import type { LyricsRequest } from '../engine/lyrics/generator'
 import type { SongLyrics } from '../engine/compose/types'
@@ -185,6 +186,8 @@ export interface SingRequest {
   overrides: PromptOverrides
   quality: RenderQuality
   style: SingStyle
+  /** How to pronounce the lyric; `auto` reads it off the words themselves. */
+  language?: LanguageId | 'auto'
 }
 
 export type WorkerRequest =

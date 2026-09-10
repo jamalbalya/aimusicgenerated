@@ -108,6 +108,52 @@ test.describe('song studio', () => {
     expect(errors).toEqual([])
   })
 
+  test('sings the words you type, in the language you typed them in', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/')
+
+    await page.getByLabel('Style').fill('gentle acoustic ballad, 30 seconds')
+    await page.getByLabel('Lyrics').fill('Aku masih di sini menunggu\nSampai malam berganti pagi')
+
+    // The reading is shown before anything is generated, so it can be corrected.
+    await expect(page.getByText('Indonesian', { exact: true }).first()).toBeVisible()
+
+    await page.getByRole('button', { name: 'Generate song' }).click()
+    const title = page.getByRole('heading', { level: 2 }).first()
+    await expect(title).toBeVisible({ timeout: 150_000 })
+
+    // The lyric sheet is what was typed, not something the studio invented.
+    await page.getByRole('button', { name: 'Lyrics', exact: true }).click()
+    await expect(page.locator('.lyrics-body')).toContainText('Aku masih di sini menunggu')
+
+    // And the render is long enough to be a song rather than an empty buffer.
+    await expect(page.getByText(/0:00 \/ 0:\d\d/)).toBeVisible()
+
+    expect(errors).toEqual([])
+  })
+
+  test('exports the song as MIDI, subtitles and separate mixes', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/')
+
+    await page.getByLabel('Style').fill('a short pop song, 30 seconds')
+    await page.getByRole('button', { name: 'Generate song' }).click()
+    await expect(page.getByRole('heading', { level: 2 }).first()).toBeVisible({ timeout: 150_000 })
+
+    // The transport at the foot of the page has an Export button of its own.
+    const details = page.getByRole('main')
+    await details.getByRole('button', { name: 'Export', exact: true }).click()
+    for (const label of ['Instrumental', 'Vocals only', 'MIDI', 'Lyric sheet', 'Subtitles', 'Karaoke lyrics']) {
+      await expect(details.getByRole('button', { name: new RegExp(`^${label}`) })).toBeVisible()
+    }
+
+    const download = page.waitForEvent('download')
+    await details.getByRole('button', { name: /^MIDI/ }).click()
+    expect((await download).suggestedFilename()).toMatch(/\.mid$/)
+
+    expect(errors).toEqual([])
+  })
+
   test('the same seed reproduces the same song', async ({ page }) => {
     await page.goto('/')
     await page.getByRole('textbox').first().fill('a lo-fi beat, 20 seconds')

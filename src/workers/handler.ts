@@ -12,7 +12,7 @@ import { composeSong, fitSyllablesToNotes } from '../engine/compose/composer'
 import { renderScore } from '../engine/synth/render'
 import { SING_PRESETS } from '../engine/voice/singer'
 import { generateLyrics } from '../engine/lyrics/generator'
-import { lineSyllables } from '../engine/lyrics/syllables'
+import { pronounceLine, resolveLanguage } from '../engine/lang'
 import { separateStems, splitVocals } from '../engine/audio/separate'
 import { pitchShiftAudio, timeStretchAudio, varispeed } from '../engine/audio/pitchshift'
 import { detectKey, detectTempo, measureLoudness } from '../engine/audio/analyze'
@@ -27,6 +27,7 @@ import {
 } from './protocol'
 import type { AudioData } from '../engine/audio/wav'
 import type { Score, ScoreNote } from '../engine/compose/types'
+import type { LanguageId } from '../engine/lang'
 
 export type ProgressReporter = (progress: number, stage: string) => void
 
@@ -305,7 +306,7 @@ function handle(id: number, request: WorkerRequest): WorkerResult {
       if (vocal && lines.length > 0 && score.lyrics) {
         replaceLyricText(score.lyrics.lines, lines)
         score.lyrics.formatted = lines.join('\n')
-        applyLyricsToTrack(score, lines)
+        applyLyricsToTrack(score, lines, request.language ?? 'auto')
       }
       progress(id, 0.15, 'Rendering audio')
       const sampleRate = QUALITY_SAMPLE_RATES[request.quality]
@@ -342,9 +343,13 @@ function replaceLyricText(target: { text: string }[], lines: string[]): void {
  * the composer uses, so a user-written line is treated no differently from a
  * generated one.
  */
-function applyLyricsToTrack(score: Score, lines: string[]): void {
+function applyLyricsToTrack(score: Score, lines: string[], language: LanguageId | 'auto'): void {
   const track = score.tracks.find((t) => t.id === 'vocal')
   if (!track || track.notes.length === 0 || lines.length === 0) return
+
+  // The words decide the language: someone pasting a Spanish chorus should not
+  // have to also say it is Spanish.
+  score.language = resolveLanguage(language, lines.join('\n'))
 
   const phrases: ScoreNote[][] = []
   let current: ScoreNote[] = []
@@ -361,7 +366,7 @@ function applyLyricsToTrack(score: Score, lines: string[]): void {
   const rebuilt: ScoreNote[] = []
   phrases.forEach((phraseNotes, index) => {
     const line = lines[index % lines.length] ?? ''
-    const placed = fitSyllablesToNotes(phraseNotes, lineSyllables(line))
+    const placed = fitSyllablesToNotes(phraseNotes, pronounceLine(line, score.language))
     if (placed[0]) placed[0].phraseStart = true
     rebuilt.push(...placed)
   })

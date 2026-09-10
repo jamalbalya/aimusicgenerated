@@ -2,7 +2,7 @@
  * The Song Studio: a prompt in, a finished track out.
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Icon } from '../components/Icon'
 import { Empty, Field, Panel, Progress, Segmented, Slider, Stat } from '../components/controls'
 import { useJob, isCancellation } from '../useJob'
@@ -13,14 +13,32 @@ import { NOTE_NAMES, SCALE_NAMES, type ScaleName } from '../../engine/theory/pit
 import { chordChart } from '../../engine/compose/composer'
 import { formatDuration } from '../../engine/core/units'
 import { SING_PRESET_NAMES } from '../../engine/voice/singer'
+import { detectLanguage, LANGUAGE_CHOICES, type LanguageId } from '../../engine/lang'
 import {
   QUALITY_LABELS, QUALITY_SAMPLE_RATES,
   type GenerateResult, type RenderQuality,
 } from '../../workers/protocol'
 import { INSTRUMENT_LABELS, type Score, type SectionKind } from '../../engine/compose/types'
 import { downloadText, encodeAudio, downloadBlob, safeFilename } from '../../lib/files'
+import { isVocalStem, sumStems } from '../../lib/mixdown'
+import { scoreToMidi } from '../../engine/export/midi'
+import { scoreToLrc, scoreToSrt } from '../../engine/export/subtitles'
 import { newProjectId, saveProject } from '../../lib/library'
 import { linkProps } from '../../lib/router'
+
+/** Two lines of a lyric, to show the shape rather than to be sung. */
+const LYRIC_PLACEHOLDER = `Aku masih di sini menunggu
+Sampai malam berganti pagi`
+
+/** The result panel's tabs, named once so a label can never drift from its tab. */
+const DETAIL_TABS = [
+  { id: 'lyrics', label: 'Lyrics' },
+  { id: 'chords', label: 'Chords' },
+  { id: 'stems', label: 'Stems' },
+  { id: 'export', label: 'Export' },
+] as const
+
+type DetailTab = (typeof DETAIL_TABS)[number]['id']
 
 const EXAMPLES = [
   'a warm lo-fi beat for studying, no vocals',
@@ -64,10 +82,24 @@ export default function StudioPage() {
   const [vocals, setVocals] = useState<VocalChoice>('auto')
   const [singStyle, setSingStyle] = useState('')
   const [seed, setSeed] = useState('')
+  const [customLyrics, setCustomLyrics] = useState('')
+  const [language, setLanguage] = useState<LanguageId | 'auto'>('auto')
+
+  const lyricCount = useMemo(
+    () => customLyrics.split(/\r?\n/).filter((line) => line.trim().length > 0).length,
+    [customLyrics],
+  )
+  // Shown next to the automatic option so it is obvious which language the
+  // singer settled on before anything is rendered.
+  const detectedName = useMemo(() => {
+    if (!customLyrics.trim()) return undefined
+    const detected = detectLanguage(customLyrics)
+    return LANGUAGE_CHOICES.find((choice) => choice.id === detected)?.label
+  }, [customLyrics])
   const [keepStems, setKeepStems] = useState(true)
 
   const [result, setResult] = useState<GenerateResult | null>(null)
-  const [tab, setTab] = useState<'lyrics' | 'chords' | 'stems'>('lyrics')
+  const [tab, setTab] = useState<DetailTab>('lyrics')
   const [saving, setSaving] = useState(false)
   const [renderedAt, setRenderedAt] = useState<RenderQuality>(quality)
 
@@ -95,6 +127,8 @@ export default function StudioPage() {
           ...(scale ? { scale } : {}),
           ...(duration > 0 ? { durationSeconds: duration } : {}),
           ...(vocals !== 'auto' ? { vocals } : {}),
+          ...(customLyrics.trim() ? { customLyrics } : {}),
+          language,
           seed: usedSeed || `${text}|${Date.now()}`,
         },
       })
@@ -120,7 +154,8 @@ export default function StudioPage() {
         // useJob already surfaced the message.
       }
     }
-  }, [prompt, genreId, mood, bpm, tonic, scale, duration, vocals, singStyle, seed, quality, keepStems, job, notify, setCurrent])
+  }, [prompt, genreId, mood, bpm, tonic, scale, duration, vocals, customLyrics, language,
+      singStyle, seed, quality, keepStems, job, notify, setCurrent])
 
   /**
    * Renders the same score again at the selected quality. Auditioning in Draft
@@ -201,6 +236,63 @@ export default function StudioPage() {
     })
   }, [result, setCurrent])
 
+  /**
+   * Exports built from what the render already produced.
+   *
+   * The instrumental and the vocal-only version are the mix's own stems added
+   * back together, so they match the finished song exactly and cost no time.
+   */
+  const exportMix = useCallback(async (which: 'instrumental' | 'vocals') => {
+    if (!result) return
+    const stems = result.stems.map((stem) => ({
+      id: stem.id,
+      name: stem.name,
+      audio: { channels: stem.audio.channels, sampleRate: stem.audio.sampleRate },
+    }))
+    const mixed = sumStems(stems, (stem) =>
+      which === 'vocals' ? isVocalStem(stem.id) : !isVocalStem(stem.id))
+    if (!mixed) {
+      notify(
+        which === 'vocals'
+          ? 'This song has no vocal track.'
+          : 'Turn on “Render stems” in the controls and generate again.',
+        'error',
+      )
+      return
+    }
+    try {
+      const blob = await encodeAudio(mixed, 'wav16')
+      await downloadBlob(blob, `${safeFilename(result.score.title)}-${which}.wav`)
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Could not export.', 'error')
+    }
+  }, [result, notify])
+
+  const exportMidi = useCallback(async () => {
+    if (!result) return
+    try {
+      const bytes = scoreToMidi(result.score)
+      await downloadBlob(
+        new Blob([bytes as BlobPart], { type: 'audio/midi' }),
+        `${safeFilename(result.score.title)}.mid`,
+      )
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Could not write the MIDI file.', 'error')
+    }
+  }, [result, notify])
+
+  const exportSubtitles = useCallback(async (format: 'srt' | 'lrc') => {
+    if (!result) return
+    const text = format === 'srt' ? scoreToSrt(result.score) : scoreToLrc(result.score)
+    if (!text) {
+      notify('This song has no sung lyrics to time.', 'error')
+      return
+    }
+    await downloadText(text, `${safeFilename(result.score.title)}.${format}`)
+  }, [result, notify])
+
+  const hasVocalStem = result?.stems.some((stem) => isVocalStem(stem.id)) ?? false
+
   return (
     <div className="grid gap-4">
       <header className="grid gap-2">
@@ -216,31 +308,85 @@ export default function StudioPage() {
 
       <Panel>
         <div className="grid gap-3">
-          <Field label="What should it sound like?" htmlFor="prompt">
-            <textarea
-              id="prompt"
-              className="textarea"
-              placeholder="a warm lo-fi beat for studying, no vocals"
-              value={prompt}
-              rows={3}
-              onChange={(event) => setPrompt(event.target.value)}
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void generate()
-              }}
-            />
-          </Field>
-
-          <div className="scroll-x scroll-fade -mx-1 flex gap-1.5 px-1 pb-1">
-            {EXAMPLES.map((example) => (
-              <button
-                key={example}
-                type="button"
-                className="chip shrink-0"
-                onClick={() => setPrompt(example)}
+          {/*
+            Style and lyrics are the two things a song is made of, so they sit
+            side by side and both are visible from the start: nobody should have
+            to find a disclosure triangle to write their own words.
+          */}
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="grid content-start gap-3">
+              <Field
+                label="Style"
+                htmlFor="prompt"
+                hint="Genre, instruments, tempo, mood — whatever matters. Say “instrumental” for no vocals."
               >
-                {example}
-              </button>
-            ))}
+                <textarea
+                  id="prompt"
+                  className="textarea"
+                  placeholder="indie rock, soft punchy drums, 86 BPM, modern mix"
+                  value={prompt}
+                  rows={5}
+                  onChange={(event) => setPrompt(event.target.value)}
+                  onKeyDown={(event) => {
+                    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void generate()
+                  }}
+                />
+              </Field>
+
+              <div className="scroll-x scroll-fade -mx-1 flex gap-1.5 px-1 pb-1">
+                {EXAMPLES.map((example) => (
+                  <button
+                    key={example}
+                    type="button"
+                    className="chip shrink-0"
+                    onClick={() => setPrompt(example)}
+                  >
+                    {example}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid content-start gap-3">
+              <Field
+                label="Lyrics"
+                htmlFor="own-lyrics"
+                value={lyricCount > 0 ? `${lyricCount} lines` : 'Optional'}
+                hint="One line per phrase, a blank line between sections. Leave it empty and the studio writes its own."
+              >
+                <textarea
+                  id="own-lyrics"
+                  className="textarea"
+                  rows={5}
+                  placeholder={LYRIC_PLACEHOLDER}
+                  value={customLyrics}
+                  onChange={(event) => setCustomLyrics(event.target.value)}
+                  onKeyDown={(event) => {
+                    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void generate()
+                  }}
+                />
+              </Field>
+
+              <Field
+                label="Pronunciation"
+                htmlFor="lyric-language"
+                value={language === 'auto' ? detectedName : undefined}
+                hint="The singer uses this language\u2019s own vowels and consonants, not English ones."
+              >
+                <select
+                  id="lyric-language"
+                  className="select"
+                  value={language}
+                  onChange={(event) => setLanguage(event.target.value as LanguageId | 'auto')}
+                >
+                  {LANGUAGE_CHOICES.map((choice) => (
+                    <option key={choice.id} value={choice.id}>
+                      {choice.id === 'auto' ? choice.label : `${choice.label} — ${choice.native}`}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -436,14 +582,14 @@ export default function StudioPage() {
             title="Details"
             action={
               <div className="segmented">
-                {(['lyrics', 'chords', 'stems'] as const).map((option) => (
+                {DETAIL_TABS.map(({ id, label }) => (
                   <button
-                    key={option}
+                    key={id}
                     type="button"
-                    aria-pressed={tab === option}
-                    onClick={() => setTab(option)}
+                    aria-pressed={tab === id}
+                    onClick={() => setTab(id)}
                   >
-                    {option === 'lyrics' ? 'Lyrics' : option === 'chords' ? 'Chords' : 'Stems'}
+                    {label}
                   </button>
                 ))}
               </div>
@@ -561,6 +707,56 @@ export default function StudioPage() {
                 />
               )
             )}
+
+            {tab === 'export' && (
+              <div className="grid gap-4">
+                <p className="text-[12.5px] leading-relaxed text-[var(--text-dim)]">
+                  Everything here comes from the song that is already rendered, so nothing
+                  has to be generated again. Audio downloads in the player at the bottom of
+                  the screen, where the format is yours to pick.
+                </p>
+
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <ExportRow
+                    title="Instrumental"
+                    detail="The mix with every voice removed — WAV"
+                    disabled={result.stems.length === 0}
+                    onClick={() => void exportMix('instrumental')}
+                  />
+                  <ExportRow
+                    title="Vocals only"
+                    detail="The lead and its harmonies — WAV"
+                    disabled={!hasVocalStem}
+                    onClick={() => void exportMix('vocals')}
+                  />
+                  <ExportRow
+                    title="MIDI"
+                    detail="Every part as notes, for a DAW"
+                    onClick={() => void exportMidi()}
+                  />
+                  <ExportRow
+                    title="Lyric sheet"
+                    detail="Plain text with section headings"
+                    disabled={!score.lyrics}
+                    onClick={() => {
+                      if (score.lyrics) void downloadText(score.lyrics.formatted, `${safeFilename(score.title)}-lyrics.txt`)
+                    }}
+                  />
+                  <ExportRow
+                    title="Subtitles"
+                    detail="Timed to the mix — SRT, for video"
+                    disabled={!score.lyrics}
+                    onClick={() => void exportSubtitles('srt')}
+                  />
+                  <ExportRow
+                    title="Karaoke lyrics"
+                    detail="Timed to the mix — LRC, for players"
+                    disabled={!score.lyrics}
+                    onClick={() => void exportSubtitles('lrc')}
+                  />
+                </div>
+              </div>
+            )}
           </Panel>
         </>
       )}
@@ -633,3 +829,24 @@ export function humanizeScale(scale: string): string {
 }
 
 export type { RenderQuality }
+
+/** One line of the export list: what it is, what you get, and a button. */
+function ExportRow(
+  { title, detail, disabled, onClick }:
+  { title: string; detail: string; disabled?: boolean; onClick: () => void },
+) {
+  return (
+    <button
+      type="button"
+      className="panel-sunken flex items-center justify-between gap-3 px-3 py-2.5 text-left transition-opacity disabled:opacity-45"
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <span className="min-w-0">
+        <span className="block truncate text-[13px]">{title}</span>
+        <span className="block truncate text-[11.5px] text-[var(--text-faint)]">{detail}</span>
+      </span>
+      <Icon name="download" size={14} />
+    </button>
+  )
+}

@@ -5,7 +5,8 @@ import { renderScore, swingBeat } from '../../src/engine/synth/render'
 import { renderVoice, getPatch, voiceLength } from '../../src/engine/synth/instruments'
 import { drumLength, renderDrum } from '../../src/engine/synth/drumkit'
 import { renderSungNote, planSegments, SING_PRESETS, sungNoteLength } from '../../src/engine/voice/singer'
-import { syllablePhonemeList, syllableToPhonemes, isVowel } from '../../src/engine/voice/phonemes'
+import { isVowel } from '../../src/engine/voice/phonemes'
+import { englishSyllable, pronounceWord } from '../../src/engine/lang'
 import { vowelFormants, VOICE_TYPES } from '../../src/engine/voice/formants'
 import { estimateSpeechDuration, planSpeech, SPEECH_VOICES, splitSentences, synthesizeSpeech } from '../../src/engine/voice/speech'
 import { measureLoudness } from '../../src/engine/audio/analyze'
@@ -116,25 +117,25 @@ describe('drum kit', () => {
 
 describe('phonemes', () => {
   it('splits a syllable into onset, vowel and coda', () => {
-    expect(syllableToPhonemes('cat')).toEqual({ onset: ['K'], vowel: 'AE', coda: ['T'] })
-    expect(syllableToPhonemes('shine').vowel).toBe('AY')
-    expect(syllableToPhonemes('shine').onset).toEqual(['SH'])
-    expect(syllableToPhonemes('go').vowel).toBe('OW')
-    expect(syllableToPhonemes('night').vowel).toBe('AY')
-    expect(syllableToPhonemes('rain').vowel).toBe('EY')
+    expect(englishSyllable('cat')).toEqual({ text: 'cat', onset: ['K'], vowel: 'AE', coda: ['T'] })
+    expect(englishSyllable('shine').vowel).toBe('AY')
+    expect(englishSyllable('shine').onset).toEqual(['SH'])
+    expect(englishSyllable('go').vowel).toBe('OW')
+    expect(englishSyllable('night').vowel).toBe('AY')
+    expect(englishSyllable('rain').vowel).toBe('EY')
   })
 
   it('always returns a vowel, even for consonant clusters', () => {
     for (const text of ['', 'brr', 'xyz', '123', 'strength']) {
-      const parts = syllableToPhonemes(text)
+      const parts = englishSyllable(text)
       expect(isVowel(parts.vowel)).toBe(true)
     }
   })
 
   it('produces a full phoneme list', () => {
-    const list = syllablePhonemeList('start')
-    expect(list.filter(isVowel)).toHaveLength(1)
-    expect(list.length).toBeGreaterThan(2)
+    const [syllable] = pronounceWord('start', 'en')
+    expect(syllable).toBeDefined()
+    expect(syllable!.onset.length + 1 + syllable!.coda.length).toBeGreaterThan(2)
   })
 
   it('has formants for every vowel and voice type', () => {
@@ -156,7 +157,7 @@ describe('singing', () => {
   it('renders a sung syllable cleanly', () => {
     for (const preset of Object.values(SING_PRESETS)) {
       const buffer = renderSungNote({
-        midi: 60, duration: 0.5, velocity: 0.9, syllable: 'love',
+        midi: 60, duration: 0.5, velocity: 0.9, sounds: englishSyllable('love'),
         sampleRate: RATE, style: preset, seed: 7, legato: false,
       })
       isClean(buffer, `sing ${preset.voice}`)
@@ -166,7 +167,7 @@ describe('singing', () => {
 
   it('plans segments that fill the note', () => {
     const request = {
-      midi: 60, duration: 0.6, velocity: 0.8, syllable: 'shine',
+      midi: 60, duration: 0.6, velocity: 0.8, sounds: englishSyllable('shine'),
       sampleRate: RATE, style: SING_PRESETS.pop!, seed: 1, legato: false,
     }
     const segments = planSegments(request)
@@ -177,9 +178,11 @@ describe('singing', () => {
   })
 
   it('handles empty and legato syllables', () => {
-    for (const [syllable, legato] of [['', false], ['ah', true], ['', true]] as [string, boolean][]) {
+    const cases: [string, boolean][] = [['', false], ['ah', true], ['', true]]
+    for (const [syllable, legato] of cases) {
       const buffer = renderSungNote({
-        midi: 62, duration: 0.3, velocity: 0.8, syllable,
+        midi: 62, duration: 0.3, velocity: 0.8,
+        sounds: syllable ? englishSyllable(syllable) : null,
         sampleRate: RATE, style: SING_PRESETS.pop!, seed: 2, legato,
       })
       isClean(buffer, `sing "${syllable}" legato=${legato}`)
@@ -205,7 +208,7 @@ describe('singing', () => {
 
     for (const midi of [48, 60, 72]) {
       const buffer = renderSungNote({
-        midi, duration: 0.6, velocity: 0.9, syllable: 'ah',
+        midi, duration: 0.6, velocity: 0.9, sounds: englishSyllable('ah'),
         sampleRate: RATE, style: SING_PRESETS.robot!, seed: 1, legato: false,
       })
       const expected = 440 * Math.pow(2, (midi - 69) / 12)

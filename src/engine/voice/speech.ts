@@ -11,9 +11,9 @@
 import { clamp, midiToFreq } from '../core/units'
 import { Rng } from '../core/rng'
 import { Biquad, fastSin, Noise } from '../synth/dsp'
-import { syllableToPhonemes, type Consonant, type Vowel } from './phonemes'
+import type { Consonant, Vowel } from './phonemes'
 import { CONSONANTS, DIPHTHONG_TARGET, vowelFormants, VOICE_CENTER, type Formant, type VoiceType } from './formants'
-import { lineSyllables, splitSyllables, tokenizeWords } from '../lyrics/syllables'
+import { pronounceWord, resolveLanguage, tokenize, type LanguageId } from '../lang'
 import type { AudioData } from '../audio/wav'
 
 export interface SpeechVoice {
@@ -49,6 +49,8 @@ export interface SpeakOptions {
   pitchSemitones?: number
   /** 0..1 — how much intonation movement. 0 is monotone. */
   expressiveness?: number
+  /** How to pronounce the text; `auto` works it out from the text itself. */
+  language?: LanguageId | 'auto'
   sampleRate?: number
   seed?: string
 }
@@ -120,19 +122,20 @@ export function planSpeech(text: string, options: SpeakOptions): SpeechSegment[]
   const speed = clamp(options.speed ?? 1, 0.4, 3)
   const expressiveness = clamp(options.expressiveness ?? 1, 0, 2)
   const rng = new Rng(options.seed ?? text)
+  const language = resolveLanguage(options.language ?? 'auto', text)
 
   // Seconds per syllable, derived from words per minute at ~1.4 syllables/word.
   const syllableSeconds = 60 / (voice.rate * speed * 1.4)
   const segments: SpeechSegment[] = []
 
   for (const sentence of splitSentences(text)) {
-    const words = tokenizeWords(sentence.text)
+    const words = tokenize(sentence.text).map((word) => pronounceWord(word, language))
     if (words.length === 0) continue
-    const totalSyllables = Math.max(1, lineSyllables(sentence.text).length)
+    const totalSyllables = Math.max(1, words.reduce((sum, chunks) => sum + chunks.length, 0))
     let syllableIndex = 0
 
     for (let w = 0; w < words.length; w++) {
-      const chunks = splitSyllables(words[w]!)
+      const chunks = words[w]!
       for (let c = 0; c < chunks.length; c++) {
         const progress = syllableIndex / totalSyllables
         // Declination: pitch falls gradually through a sentence.
@@ -146,7 +149,7 @@ export function planSpeech(text: string, options: SpeakOptions): SpeechSegment[]
         if (sentence.terminator.includes('!')) pitchOffset += voice.intonation * 0.2 * expressiveness
         pitchOffset += rng.normal(0, 0.35 * expressiveness)
 
-        const parts = syllableToPhonemes(chunks[c]!)
+        const parts = chunks[c]!
         const vowelSet = vowelFormants(parts.vowel, voice.type)
         const rate = 1
 
@@ -156,7 +159,7 @@ export function planSpeech(text: string, options: SpeakOptions): SpeechSegment[]
 
         const consonantTime = parts.onset.length * 0.05 + parts.coda.length * 0.05
         const vowelSeconds = Math.max(0.05, syllableSeconds - consonantTime)
-        pushVowel(segments, parts.vowel, voice.type, vowelSeconds, pitchOffset, vowelSet)
+        pushVowel(segments, parts.vowel, parts.glide, voice.type, vowelSeconds, pitchOffset, vowelSet)
 
         for (const consonant of parts.coda) {
           segments.push(...consonantSegment(consonant, vowelSet, rate, pitchOffset))
@@ -179,12 +182,15 @@ export function planSpeech(text: string, options: SpeakOptions): SpeechSegment[]
 function pushVowel(
   segments: SpeechSegment[],
   vowel: Vowel,
+  glide: Vowel | undefined,
   voiceType: VoiceType,
   seconds: number,
   pitchOffset: number,
   vowelSet: Formant[],
 ): void {
-  const target = DIPHTHONG_TARGET[vowel]
+  // A language that writes its diphthongs out names the second target itself;
+  // English spells them with one letter, so the table has to supply it.
+  const target = glide ?? DIPHTHONG_TARGET[vowel]
   const common = { voicing: 1, noiseHz: 1200, noiseQ: 1, noiseLevel: 0.02, level: 1, pitchOffset }
   if (target) {
     segments.push({ ...common, seconds: seconds * 0.6, formants: vowelSet })

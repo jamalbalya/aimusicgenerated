@@ -12,11 +12,13 @@ import { generateDrums } from './drums'
 import { generateArp, generateBass, generateMelody, compRhythm, type MelodyContext } from './melody'
 import { planHarmony } from './harmony'
 import { generateLyrics, type LyricSectionRequest } from '../lyrics/generator'
-import { lineSyllables } from '../lyrics/syllables'
+import { pronounceLine, resolveLanguage } from '../lang'
+import type { Syllable } from '../voice/phonemes'
 import { MOODS, type SongSpec } from './prompt'
 import { GENRES } from './genres'
 import type {
-  InstrumentId, Score, ScoreNote, ScoreTrack, Section, SectionKind, TrackFx, TrackRole,
+  InstrumentId, LyricLine, Score, ScoreNote, ScoreTrack, Section, SectionKind,
+  SongLyrics, TrackFx, TrackRole,
 } from './types'
 
 /** Section kinds that carry a sung or rapped line. */
@@ -221,6 +223,7 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
     drums: generateDrums({
       genre, beatsPerBar, slots, slotStarts, rng: rng.fork('drums'), energy: spec.energy,
     }),
+    language: spec.language === 'auto' ? 'en' : spec.language,
     seed: spec.seed,
     genreId: genre.id,
   }
@@ -272,13 +275,23 @@ function attachVocals(
     return
   }
 
-  const lyrics = generateLyrics({
-    theme: spec.theme,
-    mood: spec.mood.id,
-    style: spec.vocals === 'rap' ? 'rap' : 'sung',
-    seed: spec.seed,
-    structure,
-  })
+  // Words the user wrote always win over invented ones, and they decide the
+  // language: someone who typed a chorus in Indonesian wants it sung in
+  // Indonesian whether or not they also picked that from the menu.
+  const lyrics = spec.customLyrics
+    ? layOutCustomLyrics(spec.customLyrics, structure, sectionOrder, slots, spec, rng)
+    : generateLyrics({
+      theme: spec.theme,
+      mood: spec.mood.id,
+      style: spec.vocals === 'rap' ? 'rap' : 'sung',
+      seed: spec.seed,
+      structure,
+    })
+
+  score.language = resolveLanguage(
+    spec.language,
+    lyrics.lines.map((line: LyricLine) => line.text).join('\n'),
+  )
 
   // 3. Place syllables on notes, phrase by phrase.
   const linesBySection = new Map<number, string[]>()
@@ -301,7 +314,7 @@ function attachVocals(
 
     result.phrases.forEach((phrase, phraseIndex) => {
       const phraseNotes = result.notes.slice(phrase.start, phrase.end)
-      const syllables = lineSyllables(lines[phraseIndex] ?? '')
+      const syllables = pronounceLine(lines[phraseIndex] ?? '', score.language)
       const placedPhrase = fitSyllablesToNotes(phraseNotes, syllables)
       if (placedPhrase[0]) placedPhrase[0].phraseStart = true
       placed.push(...placedPhrase)
@@ -339,11 +352,66 @@ function attachVocals(
 }
 
 /**
+ * Spreads the user's own lyrics over the song's sections.
+ *
+ * The melody is already written by this point, so the lines are laid onto the
+ * phrases in the order they were typed and wrapped round if the song is longer
+ * than the lyric. Blank lines separate sections, the way people write lyrics.
+ */
+function layOutCustomLyrics(
+  text: string,
+  structure: LyricSectionRequest[],
+  sectionOrder: number[],
+  slots: FormSlot[],
+  spec: SongSpec,
+  rng: Rng,
+): SongLyrics {
+  const written = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0)
+  if (written.length === 0) {
+    return generateLyrics({
+      theme: spec.theme, mood: spec.mood.id,
+      style: spec.vocals === 'rap' ? 'rap' : 'sung', seed: spec.seed, structure,
+    })
+  }
+
+  const lines: LyricLine[] = []
+  let cursor = 0
+  structure.forEach((section, sectionIndex) => {
+    for (let i = 0; i < section.lines; i++) {
+      lines.push({
+        text: written[cursor % written.length]!,
+        section: slots[sectionOrder[sectionIndex]!]!.kind,
+        sectionIndex,
+      })
+      cursor++
+    }
+  })
+
+  // The title comes from the first line the user wrote, trimmed to something
+  // that fits on a card.
+  const first = written[0]!
+  const title = first.length > 42 ? `${first.slice(0, 40).trimEnd()}…` : first
+  void rng
+
+  // The sheet shows what the user typed, not the wrapped-round version, which
+  // would repeat lines they only wrote once. It opens with the title, the same
+  // as a generated sheet does, so a download says what it is and the panel can
+  // drop that first line knowing it is there.
+  return { title, lines, formatted: `${title}\n\n${written.join('\n')}` }
+}
+
+/** The two fields a note needs to be sung: what it reads as, and what it sounds like. */
+function sing(syllable: Syllable | undefined): Pick<ScoreNote, 'syllable' | 'sounds'> {
+  if (!syllable) return { syllable: undefined, sounds: undefined }
+  return { syllable: syllable.text, sounds: syllable }
+}
+
+/**
  * Places a line's syllables on a phrase's notes. Extra syllables split the
  * notes they land on; spare notes are absorbed into the previous syllable so
  * the melody still runs its full length.
  */
-export function fitSyllablesToNotes(notes: ScoreNote[], syllables: string[]): ScoreNote[] {
+export function fitSyllablesToNotes(notes: ScoreNote[], syllables: Syllable[]): ScoreNote[] {
   if (notes.length === 0) return []
   if (syllables.length === 0) return notes.map((n) => ({ ...n }))
 
@@ -352,7 +420,7 @@ export function fitSyllablesToNotes(notes: ScoreNote[], syllables: string[]): Sc
   const syllableCount = syllables.length
 
   if (syllableCount === noteCount) {
-    return notes.map((note, i) => ({ ...note, syllable: syllables[i] }))
+    return notes.map((note, i) => ({ ...note, ...sing(syllables[i]) }))
   }
 
   if (syllableCount > noteCount) {
@@ -376,7 +444,7 @@ export function fitSyllablesToNotes(notes: ScoreNote[], syllables: string[]): Sc
           ...note,
           start: note.start + p * pieceDuration,
           duration: pieceDuration * 0.96,
-          syllable: syllables[syllableIndex++] ?? '',
+          ...sing(syllables[syllableIndex++]),
           legato: p > 0,
         })
       }
@@ -394,7 +462,7 @@ export function fitSyllablesToNotes(notes: ScoreNote[], syllables: string[]): Sc
     const count = perSyllable[s]!
     for (let c = 0; c < count; c++) {
       const note = notes[noteIndex++]!
-      out.push({ ...note, syllable: c === 0 ? syllables[s] : undefined, legato: c > 0 })
+      out.push({ ...note, ...sing(c === 0 ? syllables[s] : undefined), legato: c > 0 })
     }
   }
   return out
