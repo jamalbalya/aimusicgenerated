@@ -34,6 +34,15 @@ export interface MelodyContext {
   centerMidi: number
   /** Playable span around the centre, in semitones. */
   range: number
+  /**
+   * How many phrases this section needs — one per lyric line.
+   *
+   * Without it the melody is cut into phrases by bar count and the words are
+   * fitted to whatever comes out, which silently drops any line past the last
+   * phrase. The lyric decides how many phrases there are; the melody decides
+   * what they sound like.
+   */
+  phraseCount?: number
 }
 
 /** Rhythm cells, in beats, summing to one bar of 4/4. */
@@ -215,8 +224,9 @@ export function generateMelody(ctx: MelodyContext): MelodyResult {
   const phrases: { start: number; end: number }[] = []
   const density = Math.min(1, ctx.genre.density * 0.6 + ctx.intensity * 0.5)
 
-  const barsPerPhrase = ctx.bars >= 8 ? 2 : ctx.bars >= 4 ? 2 : 1
-  const phraseCount = Math.max(1, Math.floor(ctx.bars / barsPerPhrase))
+  const phraseCount = Math.max(1, ctx.phraseCount ?? Math.floor(ctx.bars / (ctx.bars >= 4 ? 2 : 1)))
+  // Share the section's bars out over however many phrases the words need.
+  const barsPerPhrase = ctx.bars / phraseCount
 
   const seedMotif = buildMotif(ctx, density)
   const answerMotif = buildMotif(ctx, density)
