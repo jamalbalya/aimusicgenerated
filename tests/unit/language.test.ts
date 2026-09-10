@@ -8,6 +8,11 @@ import { isVowel, type Syllable, type Vowel } from '../../src/engine/voice/phone
 import { CONSONANTS, vowelFormants, VOICE_TYPES } from '../../src/engine/voice/formants'
 import { planSegments, SING_PRESETS, renderSungNote } from '../../src/engine/voice/singer'
 import { stft } from '../../src/engine/audio/stft'
+import { readFileSync } from 'node:fs'
+import { handleRequest } from '../../src/workers/handler'
+import { describeResult } from '../../src/engine/synth/validate'
+import { checkSingability, STRUCTURE_TAGS } from '../../src/engine/lyrics/structure'
+import type { GenerateResult } from '../../src/workers/protocol'
 import { planSpeech, SPEECH_VOICES, synthesizeSpeech } from '../../src/engine/voice/speech'
 import { scoreToMidi } from '../../src/engine/export/midi'
 import { scoreToLrc, scoreToSrt, timedLyricLines } from '../../src/engine/export/subtitles'
@@ -727,5 +732,92 @@ describe('the voice carries words, not just pitch', () => {
 
     // Most of what is audible between 800 Hz and 5 kHz should be the singer.
     expect(vocal / (vocal + backing)).toBeGreaterThan(0.5)
+  })
+})
+
+describe('the pipeline reports what it actually produced', () => {
+  const LYRIC = readFileSync(new URL('./fixtures/koplo-lyric.txt', import.meta.url), 'utf8')
+
+  const generate = (overrides: Record<string, unknown>): GenerateResult =>
+    handleRequest({
+      kind: 'generate',
+      prompt: 'Indonesian dangdut koplo, sarcastic workplace anthem, powerful kendang, groovy bass, funky guitar, dramatic male vocal, explosive sing-along chorus',
+      quality: 'draft',
+      keepStems: true,
+      overrides: { seed: 'pipeline', ...overrides },
+    } as never, () => {}) as GenerateResult
+
+    it('calls a sung song a sung song, and an instrumental an instrumental', () => {
+    const song = generate({ customLyrics: LYRIC })
+    expect(song.validation.kind).toBe('vocal-song')
+    expect(song.validation.vocalRequested).toBe(true)
+    expect(song.validation.problems).toEqual([])
+    expect(describeResult(song.validation)).toMatch(/sung/)
+
+    const instrumental = generate({ vocals: 'none' })
+    expect(instrumental.validation.kind).toBe('instrumental')
+    expect(instrumental.validation.vocalRequested).toBe(false)
+    expect(describeResult(instrumental.validation)).toBe('Instrumental generated.')
+  })
+
+  it('renders the words that were written, in Indonesian, sung by a man', () => {
+    const song = generate({ customLyrics: LYRIC })
+    expect(song.score.language).toBe('id')
+    expect(song.score.vocalGender).toBe('male')
+
+    const vocal = song.score.tracks.find((track) => track.id === 'vocal')!
+    expect(vocal.notes.filter((note) => note.syllable).length).toBeGreaterThan(50)
+
+    // The mix is not the instrumental: subtracting the backing from it must
+    // leave a great deal behind, or the voice never reached the export.
+    const mix = song.audio.channels[0]!
+    const backing = new Float32Array(mix.length)
+    for (const stem of song.stems) {
+      if (stem.id === 'vocal' || stem.id === 'vocalHarmony') continue
+      const channel = stem.audio.channels[0]!
+      for (let i = 0; i < mix.length; i++) backing[i]! += channel[i] ?? 0
+    }
+    let difference = 0
+    let total = 0
+    for (let i = 0; i < mix.length; i++) {
+      difference += (mix[i]! - backing[i]!) ** 2
+      total += mix[i]! ** 2
+    }
+    expect(difference / (total || 1)).toBeGreaterThan(0.05)
+
+    // And the voice is carrying the range it is heard in.
+    expect(song.validation.voiceBandShare!).toBeGreaterThan(0.4)
+  })
+
+  it('notices a lyric a singer cannot perform', () => {
+    const count = (line: string): number => countLineSyllables(line, 'id')
+
+    expect(checkSingability('[Chorus]\nBos toxic bos toxic\nBos toxic bos toxic', count)).toEqual([])
+
+    const tooLong = checkSingability(
+      `[Verse 1]\n${'kata '.repeat(30)}`, count)
+    expect(tooLong.some((w) => w.reason.includes('more than a phrase holds'))).toBe(true)
+
+    // A production note left in the lyric box gets sung.
+    const note = checkSingability('[Full Koplo Kendang Groove 128bpm]\nsatu dua tiga', count)
+    expect(note.some((w) => w.reason.includes('will be sung as words'))).toBe(true)
+
+    // Only markers, nothing to sing.
+    expect(checkSingability('[Intro]\n[Chorus]', count).some((w) => w.reason.includes('no words'))).toBe(true)
+
+    // A chorus that never comes round again.
+    const noRepeat = checkSingability('[Chorus]\nsatu dua tiga empat\nlima enam tujuh lapan', count)
+    expect(noRepeat.some((w) => w.reason.includes('Nothing repeats'))).toBe(true)
+  })
+
+  it('offers plain section names, with no production notes among them', () => {
+    const tags = STRUCTURE_TAGS.flatMap((group) => group.tags)
+    expect(tags).toContain('Chorus')
+    expect(tags).toContain('Pre-Chorus')
+    expect(tags).toContain('Instrumental Break')
+    for (const tag of tags) {
+      expect(tag, `${tag} carries a production note`).not.toContain(',')
+      expect(tagToKind(tag), `${tag} is not a section`).not.toBeNull()
+    }
   })
 })

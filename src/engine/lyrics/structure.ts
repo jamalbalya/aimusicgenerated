@@ -140,10 +140,76 @@ export function parseLyricStructure(text: string): LyricBlock[] {
   return blocks
 }
 
-/** The structure tags offered by the insert button, grouped as lyricists use them. */
+/**
+ * The structure tags the insert button offers.
+ *
+ * Plain section names only. A tag saying how a section should be played is
+ * still understood if somebody writes one, but it is not suggested: how the
+ * music sounds belongs in the style description, and a lyric sheet reads
+ * better without production notes in it.
+ */
 export const STRUCTURE_TAGS: { group: string; tags: string[] }[] = [
-  { group: 'Basic', tags: ['Intro', 'Verse', 'Pre-Chorus', 'Chorus', 'Bridge', 'Outro'] },
-  { group: 'Sections', tags: ['Hook', 'Drop', 'Break', 'Interlude', 'Instrumental'] },
-  { group: 'Performance', tags: ['Solo', 'Ensemble', 'Improvisation', 'Call And Response'] },
-  { group: 'Shape', tags: ['Build', 'Breakdown', 'Transition', 'Final Chorus', 'End'] },
+  { group: 'Basic', tags: ['Intro', 'Verse 1', 'Verse 2', 'Pre-Chorus', 'Chorus', 'Bridge', 'Outro'] },
+  { group: 'More', tags: ['Hook', 'Final Chorus', 'Instrumental Break', 'Drop', 'Interlude', 'Guitar Solo'] },
 ]
+
+/* ------------------------------------------------------ singability check --- */
+
+export interface LyricWarning {
+  line: number
+  text: string
+  reason: string
+}
+
+/**
+ * Reads a lyric the way a singer would, and says where it will not work.
+ *
+ * These are the things that go wrong when words meet a melody: a line too long
+ * to fit a phrase, a line so short it leaves the phrase empty, production notes
+ * left in among the words, and a chorus that never repeats. None of them stop
+ * the song being made — they are warnings, not errors — but every one of them
+ * is audible.
+ */
+export function checkSingability(text: string, syllablesOf: (line: string) => number): LyricWarning[] {
+  const warnings: LyricWarning[] = []
+  const lines = text.split(/\r?\n/)
+
+  let sungLines = 0
+  const seen = new Map<string, number>()
+  let hasChorus = false
+
+  lines.forEach((raw, index) => {
+    const line = raw.trim()
+    if (!line) return
+
+    const tag = /^\s*[[(]\s*([^\])]+?)\s*[\])]\s*$/.exec(line)
+    if (tag) {
+      if (tagToKind(tag[1]!) === 'chorus') hasChorus = true
+      // A bracketed line that is not a section is a production note, and a
+      // production note in the lyric box is a line the singer will try to sing.
+      if (tagToKind(tag[1]!) === null) {
+        warnings.push({ line: index + 1, text: line, reason: 'Not a section name — it will be sung as words.' })
+      }
+      return
+    }
+
+    sungLines++
+    const syllables = syllablesOf(line)
+    if (syllables > 20) {
+      warnings.push({ line: index + 1, text: line, reason: `${syllables} syllables is more than a phrase holds — split it.` })
+    }
+    if (line.length > 4 && syllables < 2) {
+      warnings.push({ line: index + 1, text: line, reason: 'Too short to carry a phrase.' })
+    }
+    const key = line.toLowerCase()
+    seen.set(key, (seen.get(key) ?? 0) + 1)
+  })
+
+  if (sungLines === 0) {
+    warnings.push({ line: 0, text: '', reason: 'There are no words to sing — only section markers.' })
+  } else if (hasChorus && ![...seen.values()].some((count) => count > 1)) {
+    warnings.push({ line: 0, text: '', reason: 'Nothing repeats — a chorus people can sing back needs a line that comes round again.' })
+  }
+
+  return warnings
+}
