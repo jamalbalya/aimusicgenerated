@@ -54,11 +54,62 @@ export function swingBeat(beat: number, swing: number, subdivision: 8 | 16): num
   return index % 2 === 1 ? beat + swing * unit * 0.5 : beat
 }
 
+/**
+ * Rides the fader across the song's sections.
+ *
+ * A quiet section is 6 dB below a full one, which is about the range a band
+ * covers between a stripped bridge and a final chorus. The move between them is
+ * ramped over a beat so the level never steps audibly.
+ */
+function applySectionDynamics(
+  score: Score, left: Float32Array, right: Float32Array, sampleRate: number,
+): void {
+  if (score.sections.length < 2) return
+  const samplesPerBeat = (60 / score.bpm) * sampleRate
+  const rampSamples = Math.max(1, Math.round(samplesPerBeat))
+
+  /** Full energy plays at unity; the quietest section sits 6 dB down. */
+  const gainFor = (intensity: number): number =>
+    dbToGain(-6 * (1 - clamp(intensity, 0, 1)))
+
+  let cursor = 0
+  let previous = gainFor(score.sections[0]!.intensity)
+  for (const section of score.sections) {
+    const start = Math.round((section.startBeat * 60 / score.bpm) * sampleRate)
+    const end = Math.min(left.length, Math.round(
+      ((section.startBeat + section.lengthBeats) * 60 / score.bpm) * sampleRate))
+    if (end <= start) continue
+    const target = gainFor(section.intensity)
+
+    for (let i = Math.max(cursor, start); i < end; i++) {
+      const into = i - start
+      const gain = into < rampSamples
+        ? previous + (target - previous) * (into / rampSamples)
+        : target
+      left[i]! *= gain
+      right[i]! *= gain
+    }
+    previous = target
+    cursor = end
+  }
+}
+
 function trackSingStyle(score: Score, options: RenderOptions): SingStyle {
   if (options.singStyle) return options.singStyle
   const genre = getGenre(score.genreId)
   if (genre.vocalStyle === 'rap') return SING_PRESETS.rap!
   if (genre.vocalStyle === 'chant') return SING_PRESETS.choir!
+
+  // A request for a male or female vocal decides the voice outright: it is the
+  // most audible thing anyone asks for, and a genre default that overrides it
+  // is simply wrong.
+  if (score.vocalGender === 'male') {
+    return genre.density > 0.7 ? SING_PRESETS.power! : SING_PRESETS.baritone!
+  }
+  if (score.vocalGender === 'female') {
+    return genre.density > 0.7 ? SING_PRESETS.soprano! : SING_PRESETS.pop!
+  }
+
   switch (genre.id) {
     case 'metal':
     case 'punk':
@@ -216,8 +267,22 @@ export function renderScore(score: Score, options: RenderOptions = {}): RenderRe
   masterEq(masterLeft)
   masterEq(masterRight)
 
+  // Arrangement dynamics.
+  //
+  // The score already says how hard each section should be played, but dropping
+  // instruments out only goes so far: what is left plays at the same level, and
+  // the bus compressor closes what little difference remains. A gentle gain
+  // envelope across the sections is what a mix engineer rides on the fader, and
+  // it is applied before the compressor so the compressor works with it rather
+  // than against it. Applied after, the loudness pass would simply undo it.
+  applySectionDynamics(score, masterLeft, masterRight, sampleRate)
+
+  // Glue, not levelling. A 2.4:1 ratio from -14 dB flattens the difference
+  // between a stripped bridge and a final chorus into about a decibel, which is
+  // the arrangement's dynamics thrown away at the last stage. A gentler ratio
+  // from a higher threshold still holds the mix together.
   const busCompressor = new Compressor(sampleRate, {
-    thresholdDb: -14, ratio: 2.4, attackMs: 12, releaseMs: 180, makeupDb: 2.5,
+    thresholdDb: -9, ratio: 1.7, attackMs: 18, releaseMs: 220, makeupDb: 1.2,
   })
   const limiter = new Limiter(sampleRate, options.ceiling ?? 0.96)
 
