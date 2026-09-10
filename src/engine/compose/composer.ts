@@ -224,7 +224,9 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
     const riffNotes: ScoreNote[] = []
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i]!
-      if (slot.intensity < 0.5) continue
+      // The chop is part of the groove in these genres, so it plays under the
+      // verses too rather than appearing only when everything else does.
+      if (slot.intensity < 0.4) continue
       const ctx = context(slot, i, 52, 10)
       // A riff doubles the bass rhythm an octave up with chord thirds.
       for (const note of generateBass(ctx)) {
@@ -233,7 +235,9 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
     }
     if (riffNotes.length > 0) {
       tracks.push(makeTrack('riff', 'Riff', 'riff', riffInstrument, riffNotes, {
-        gainDb: bed(-11, -14), pan: rng.fork('pan4').float(-0.6, 0.6),
+        // In the guitar genres the riff is a lead part, not wallpaper: it has
+        // to be audible under the voice or the request for it went unanswered.
+        gainDb: bed(-11, -8), pan: rng.fork('pan4').float(-0.6, 0.6),
         fx: { reverbSend: 0.14, delaySend: 0.05, sidechain: 0.2, drive: 0.4, highPassHz: 140 },
       }))
     }
@@ -251,6 +255,7 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
       genre, beatsPerBar, slots, slotStarts, rng: rng.fork('drums'), energy: spec.energy,
     }),
     language: spec.language === 'auto' ? 'en' : spec.language,
+    vocalGender: spec.vocalGender,
     seed: spec.seed,
     genreId: genre.id,
   }
@@ -279,10 +284,16 @@ function attachVocals(
   blocks: LyricBlock[] | null,
 ): void {
   // 1. Write the melody first, so the lyrics can be measured against it.
+  //
+  // A topline is not one register repeated section after section: a verse is
+  // conversational and sits low, a pre-chorus climbs, and the chorus is the
+  // highest thing in the song. Lifting the centre by the section's own energy
+  // is what gives the song a shape to follow rather than a flat recitation.
   const perSection = new Map<number, { notes: ScoreNote[]; phrases: { start: number; end: number }[] }>()
   for (const i of vocalSections) {
     const slot = slots[i]!
-    perSection.set(i, generateMelody(context(slot, i, centerMidi, range)))
+    const lift = Math.round((slot.intensity - 0.5) * 10)
+    perSection.set(i, generateMelody(context(slot, i, centerMidi + lift, range)))
   }
 
   // 2. Ask for one lyric line per melodic phrase, sized to its note count.
@@ -372,7 +383,7 @@ function attachVocals(
   }))
   if (harmonyNotes.length > 0) {
     score.tracks.push(makeTrack('vocalHarmony', 'Vocal Harmony', 'vocalHarmony', vocalInstrument, harmonyNotes, {
-      gainDb: -12, pan: 0.25,
+      gainDb: -10, pan: 0.25,
       fx: { reverbSend: 0.34, delaySend: 0.16, sidechain: 0.15, drive: 0.05, highPassHz: 160 },
     }))
   }

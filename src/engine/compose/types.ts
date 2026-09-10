@@ -125,6 +125,8 @@ export interface Score {
   lyrics?: SongLyrics
   /** The language the lyrics are pronounced in. */
   language: LanguageId
+  /** Which voice sings it; `auto` lets the genre decide. */
+  vocalGender: 'male' | 'female' | 'auto'
   seed: string
   genreId: string
 }

@@ -569,3 +569,78 @@ Bos boleh tegas, jangan kejam`
     expect(flatChart).not.toMatch(/[A-G]#/)
   })
 })
+
+describe('the arrangement has a shape', () => {
+  const rms = (buffer: Float32Array): number => {
+    let sum = 0
+    for (let i = 0; i < buffer.length; i++) sum += buffer[i]! * buffer[i]!
+    return 20 * Math.log10(Math.max(1e-9, Math.sqrt(sum / buffer.length)))
+  }
+
+  it('sings with the voice that was asked for', () => {
+    expect(buildSpec('dramatic male vocal pop song', { seed: 'v' }).vocalGender).toBe('male')
+    expect(buildSpec('soaring female vocal', { seed: 'v' }).vocalGender).toBe('female')
+    expect(buildSpec('vokal pria dangdut', { seed: 'v' }).vocalGender).toBe('male')
+    expect(buildSpec('a pop song', { seed: 'v' }).vocalGender).toBe('auto')
+
+    // And it reaches the renderer, which is where it actually decides anything.
+    const male = composeSong(buildSpec('dangdut koplo, dramatic male vocal', { seed: 'v' }))
+    expect(male.vocalGender).toBe('male')
+  })
+
+  it('lifts the chorus above the verse', () => {
+    const score = composeSong(buildSpec('an anthemic pop song', {
+      seed: 'lift', durationSeconds: 90, vocals: 'sung',
+    }))
+    const vocal = score.tracks.find((track) => track.id === 'vocal')!
+    const average = (kind: string): number => {
+      const notes = score.sections
+        .filter((section) => section.kind === kind)
+        .flatMap((section) => vocal.notes.filter((note) =>
+          note.start >= section.startBeat && note.start < section.startBeat + section.lengthBeats))
+      return notes.reduce((sum, note) => sum + note.midi, 0) / Math.max(1, notes.length)
+    }
+    expect(average('chorus')).toBeGreaterThan(average('verse'))
+  })
+
+  it('never writes a phrase that stays on one note', () => {
+    // A melody that never moves is a recitation. Check every section of a few
+    // songs rather than trusting one lucky seed.
+    for (const seed of ['a', 'b', 'c', 'd']) {
+      const score = composeSong(buildSpec('a pop song', {
+        seed, durationSeconds: 60, vocals: 'sung',
+      }))
+      const vocal = score.tracks.find((track) => track.id === 'vocal')!
+      for (const section of score.sections) {
+        const pitches = vocal.notes
+          .filter((note) => note.start >= section.startBeat
+            && note.start < section.startBeat + section.lengthBeats)
+          .map((note) => note.midi)
+        if (pitches.length < 4) continue
+        expect(Math.max(...pitches) - Math.min(...pitches), `${seed} ${section.label}`)
+          .toBeGreaterThan(0)
+      }
+    }
+  })
+
+  it('plays the quiet sections quietly', () => {
+    const score = composeSong(buildSpec('an anthemic pop song', {
+      seed: 'dyn', durationSeconds: 90, vocals: 'sung',
+    }))
+    const rendered = renderScore(score, { sampleRate: 22050 })
+    const level = (section: (typeof score.sections)[number]): number => {
+      const from = Math.floor((section.startBeat * 60 / score.bpm) * 22050)
+      const to = Math.min(rendered.left.length,
+        Math.floor(((section.startBeat + section.lengthBeats) * 60 / score.bpm) * 22050))
+      return to > from ? rms(rendered.left.slice(from, to)) : -99
+    }
+    const levels = score.sections.map(level).filter((value) => value > -90)
+    // A song that plays everything flat out from beginning to end has no
+    // arrangement, only content.
+    expect(Math.max(...levels) - Math.min(...levels)).toBeGreaterThan(2)
+
+    const loudest = score.sections[levels.indexOf(Math.max(...levels))]!
+    const quietest = score.sections[levels.indexOf(Math.min(...levels))]!
+    expect(loudest.intensity).toBeGreaterThan(quietest.intensity)
+  })
+})

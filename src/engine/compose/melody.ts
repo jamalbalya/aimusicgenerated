@@ -117,7 +117,32 @@ function buildMotif(ctx: MelodyContext, density: number): Motif {
     else move = ctx.rng.pick([3, -3, 4, -4])
     steps.push(move)
   }
+
+  // A phrase that never leaves its starting note is a recitation, not a tune.
+  // If the rolls happened to produce no movement — or a cell so short there was
+  // never a chance of any — put a step in by hand.
+  const span = contourSpan(steps)
+  if (span < 2) {
+    if (steps.length < 2) steps.push(ctx.rng.pick([2, -2]))
+    else {
+      const at = 1 + Math.floor(ctx.rng.next() * (steps.length - 1))
+      steps[at] = ctx.rng.pick([2, -2, 3, -3])
+    }
+  }
   return { steps, durations: cell }
+}
+
+/** How far a motif's contour travels from its lowest point to its highest. */
+function contourSpan(steps: number[]): number {
+  let position = 0
+  let low = 0
+  let high = 0
+  for (const step of steps) {
+    position += step
+    if (position < low) low = position
+    if (position > high) high = position
+  }
+  return high - low
 }
 
 type MotifTransform = 'repeat' | 'transpose' | 'invert' | 'retrograde' | 'varyTail' | 'augment'

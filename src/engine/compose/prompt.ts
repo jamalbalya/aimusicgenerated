@@ -70,9 +70,19 @@ export interface SongSpec {
    * given words rather than asked to invent them.
    */
   language: LanguageId | 'auto'
+  /** Which voice sings it; `auto` lets the genre decide. */
+  vocalGender: 'male' | 'female' | 'auto'
   /** Lyrics the user wrote, sung instead of generated ones. */
   customLyrics?: string
 }
+
+// Said in the languages this is most often asked in. A request for "dramatic
+// male vocal" is not a decoration on the prompt — it names who sings.
+//
+// Matched on word boundaries, because "female" ends in "male": a plain
+// substring test hears every request for a female vocal as a male one.
+const MALE_PATTERN = /\b(male (vocal|voice|singer)s?|man singing|baritone|tenor|bass vocals?|vokal pria|penyanyi pria|suara pria|cowok|laki-laki|pria)\b/
+const FEMALE_PATTERN = /\b(female (vocal|voice|singer)s?|woman singing|soprano|alto|vokal wanita|penyanyi wanita|suara wanita|cewek|perempuan|wanita)\b/
 
 const INSTRUMENTAL_WORDS = ['instrumental', 'no vocals', 'no vocal', 'without vocals', 'karaoke', 'beat only', 'backing track', 'bgm', 'background music']
 const RAP_WORDS = ['rap', 'rapping', 'bars', 'verse spitting', 'mc', 'freestyle']
@@ -185,6 +195,7 @@ export interface PromptOverrides {
   progressionId?: string
   language?: LanguageId | 'auto'
   customLyrics?: string
+  vocalGender?: 'male' | 'female' | 'auto'
 }
 
 /**
@@ -266,6 +277,8 @@ export function buildSpec(prompt: string, overrides: PromptOverrides = {}): Song
     energy: clamp01(mood.energy * 0.6 + genre.density * 0.4),
     progressionId: overrides.progressionId,
     language: overrides.language ?? 'auto',
+    vocalGender: overrides.vocalGender
+      ?? (FEMALE_PATTERN.test(text) ? 'female' : MALE_PATTERN.test(text) ? 'male' : 'auto'),
     ...(overrides.customLyrics?.trim() ? { customLyrics: overrides.customLyrics.trim() } : {}),
   }
 }
