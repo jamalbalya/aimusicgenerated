@@ -190,6 +190,36 @@ test.describe('song studio', () => {
     expect(errors).toEqual([])
   })
 
+  test('downloads the finished song as an audio file', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/')
+
+    await page.getByLabel('Style').fill('a short pop song, 30 seconds')
+    await page.getByRole('button', { name: 'Generate song' }).click()
+    await expect(page.getByRole('heading', { level: 2 }).first()).toBeVisible({ timeout: 150_000 })
+
+    // The transport at the foot of every page is where audio leaves the studio.
+    await page.getByRole('button', { name: 'Export' }).last().click()
+    const dialog = page.getByRole('dialog', { name: 'Export audio' })
+    await expect(dialog).toBeVisible()
+
+    for (const format of ['MP3 · 320 kbps', 'WAV · 16-bit']) {
+      await dialog.getByRole('button', { name: format }).click()
+      const started = page.waitForEvent('download')
+      await dialog.getByRole('button', { name: 'Download' }).click()
+      const file = await started
+      expect(file.suggestedFilename()).toMatch(format.startsWith('MP3') ? /\.mp3$/ : /\.wav$/)
+      // A real file, not an empty placeholder.
+      const path = await file.path()
+      expect(path).toBeTruthy()
+      const { statSync } = await import('node:fs')
+      expect(statSync(path!).size).toBeGreaterThan(50_000)
+      await page.getByRole('button', { name: 'Export' }).last().click()
+    }
+
+    expect(errors).toEqual([])
+  })
+
   test('the same seed reproduces the same song', async ({ page }) => {
     await page.goto('/')
     await page.getByRole('textbox').first().fill('a lo-fi beat, 20 seconds')

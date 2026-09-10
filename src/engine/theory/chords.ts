@@ -1,6 +1,6 @@
 /** Chord construction, roman-numeral parsing and voicing. */
 
-import { NOTE_NAMES, SCALES, type PitchClass, type ScaleName } from './pitch'
+import { FLAT_NAMES, NOTE_NAMES, SCALES, type PitchClass, type ScaleName } from './pitch'
 
 export type ChordQuality =
   | 'maj' | 'min' | 'dim' | 'aug'
@@ -45,10 +45,30 @@ export interface Chord {
   bass?: PitchClass
 }
 
-export function chordName(chord: Chord): string {
-  const base = `${NOTE_NAMES[chord.root]}${QUALITY_LABEL[chord.quality]}`
+/**
+ * Keys whose scale is written with flats.
+ *
+ * A chord chart in C minor reads B♭ and A♭, never A♯ and G♯: the letters have
+ * to run A-B-C-D-E-F-G once each, and a player reading sharps in a flat key has
+ * to translate every bar. The same twelve sounds, spelled the way the key
+ * spells them.
+ */
+const FLAT_TONICS = new Set<PitchClass>([1, 3, 5, 8, 10])
+
+/** True when this key is conventionally written with flats. */
+export function keyUsesFlats(tonic: PitchClass, scale: ScaleName): boolean {
+  // A minor key is written like its relative major, three semitones up.
+  const relativeMajor = scale.includes('inor') || scale === 'dorian' || scale === 'phrygian'
+    ? (((tonic + 3) % 12) as PitchClass)
+    : tonic
+  return FLAT_TONICS.has(relativeMajor)
+}
+
+export function chordName(chord: Chord, useFlats = false): string {
+  const names = useFlats ? FLAT_NAMES : NOTE_NAMES
+  const base = `${names[chord.root]}${QUALITY_LABEL[chord.quality]}`
   if (chord.bass !== undefined && chord.bass !== chord.root) {
-    return `${base}/${NOTE_NAMES[chord.bass]}`
+    return `${base}/${names[chord.bass]}`
   }
   return base
 }

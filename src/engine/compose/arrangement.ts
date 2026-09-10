@@ -59,6 +59,33 @@ function defaultBars(kind: SectionKind, scale: number): number {
 }
 
 /**
+ * Builds the song's shape from the structure the lyricist wrote.
+ *
+ * When somebody has written `[Verse]`, `[Chorus]`, `[Bridge]` into their
+ * lyrics, that *is* the arrangement — the order, the count and the emphasis
+ * are all stated. The only thing left to decide is how many bars each section
+ * needs, which is however many its lines take to sing: two lines to a bar of
+ * four, rounded to an even number so sections still land on phrase boundaries.
+ */
+export function formFromBlocks(
+  blocks: { kind: SectionKind; lines: number; intensity?: number }[],
+): FormSlot[] {
+  return blocks.map((block) => {
+    const sung = Math.max(0, block.lines)
+    // A section with no lines is an instrumental passage and keeps its default
+    // length; one with lines is sized to hold them.
+    const bars = sung === 0
+      ? defaultBars(block.kind, 1)
+      : Math.max(2, Math.round(sung / 2) * 2)
+    return {
+      kind: block.kind,
+      bars: Math.min(32, bars),
+      intensity: block.intensity ?? INTENSITY[block.kind],
+    }
+  })
+}
+
+/**
  * Chooses a form that lands close to `targetSeconds`. Sections are added or
  * dropped from the middle of the template, so the song always keeps its
  * intro, first chorus and outro no matter how short the target.

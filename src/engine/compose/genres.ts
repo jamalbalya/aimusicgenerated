@@ -11,7 +11,7 @@ export type DrumStyle =
   | 'fourFloor' | 'boomBap' | 'trap' | 'drill' | 'rock' | 'pop' | 'breakbeat'
   | 'dnb' | 'halfTime' | 'shuffle' | 'latin' | 'reggaeton' | 'afrobeat'
   | 'jazzSwing' | 'ambient' | 'march' | 'disco' | 'punk' | 'metal' | 'bossa'
-  | 'phonk' | 'chiptune' | 'waltz' | 'none'
+  | 'phonk' | 'chiptune' | 'waltz' | 'koplo' | 'none'
 
 export type VocalStyle = 'sung' | 'rap' | 'chant' | 'none'
 
@@ -54,6 +54,23 @@ export interface GenreDef {
 const G = (def: GenreDef): GenreDef => def
 
 export const GENRES: GenreDef[] = [
+  // Dangdut koplo. Kendang carries the groove, the bass dances rather than
+  // holds, a clean guitar chops on the off-beats, and the suling — a bamboo
+  // flute, closest here to the flute patch — answers the singer between lines.
+  // Minor keys throughout: koplo is festive and serious at the same time.
+  G({
+    id: 'koplo', label: 'Dangdut Koplo', family: 'Indonesian',
+    tags: ['dangdut', 'koplo', 'kendang', 'indonesian', 'jaipong', 'pargoy', 'orkes'],
+    bpm: [98, 132], beatsPerBar: 4, scales: ['minor', 'harmonicMinor', 'dorian'],
+    progressions: ['andalusian', 'minor-pop', 'axis-rot', 'anthem'],
+    drumStyle: 'koplo', swing: 0.08, swingSubdivision: 16, density: 0.74, brightness: 0.7,
+    instruments: {
+      chords: ['organ', 'electricPiano'], bass: ['electricBass', 'synthBass'],
+      lead: ['flute', 'sawLead'], pad: ['strings', 'warmPad'],
+      arp: ['pluck', 'marimba'], riff: ['cleanGuitar', 'crunchGuitar'],
+    },
+    vocalStyle: 'sung', formStyle: 'song', space: 0.35,
+  }),
   G({
     id: 'pop', label: 'Pop', family: 'Popular', tags: ['pop', 'catchy', 'radio', 'mainstream', 'upbeat'],
     bpm: [96, 124], beatsPerBar: 4, scales: ['major', 'minor', 'mixolydian'],
