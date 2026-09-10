@@ -1,0 +1,77 @@
+{
+  "queued": {
+    "data": [
+      {
+        "task_id": "task-queued",
+        "result": "[{\"file\": \"\", \"wave\": \"\", \"status\": 0, \"create_time\": 1767225600, \"env\": \"development\", \"prompt\": \"\", \"lyrics\": \"\", \"metas\": {}, \"progress\": 0.0, \"stage\": \"queued\", \"error\": null}]",
+        "status": 0,
+        "progress_text": "Loading DiT model..."
+      }
+    ],
+    "code": 200,
+    "error": null,
+    "timestamp": 1767225600
+  },
+  "running": {
+    "data": [
+      {
+        "task_id": "task-running",
+        "result": "[{\"file\": \"\", \"wave\": \"\", \"status\": 0, \"create_time\": 1767225600, \"env\": \"development\", \"prompt\": \"\", \"lyrics\": \"\", \"metas\": {}, \"progress\": 0.42, \"stage\": \"diffusion\", \"error\": null}]",
+        "status": 0,
+        "progress_text": "Loading DiT model..."
+      }
+    ],
+    "code": 200,
+    "error": null,
+    "timestamp": 1767225600
+  },
+  "succeeded": {
+    "data": [
+      {
+        "task_id": "task-done",
+        "result": "[{\"file\": \"/v1/audio?path=%2Ftmp%2Facestep%2Fbos-toxic-0.wav\", \"wave\": \"\", \"status\": 1, \"create_time\": 1767225600, \"env\": \"development\", \"prompt\": \"Indonesian dangdut koplo\", \"lyrics\": \"[Intro]\\nPagi datang\", \"metas\": {\"bpm\": 112, \"duration\": 158.4, \"genres\": \"dangdut, koplo\", \"keyscale\": \"A Minor\", \"timesignature\": \"4/4\"}}]",
+        "status": 1,
+        "progress_text": "done"
+      }
+    ],
+    "code": 200,
+    "error": null,
+    "timestamp": 1767225600
+  },
+  "failed": {
+    "data": [
+      {
+        "task_id": "task-failed",
+        "result": "[{\"file\": \"\", \"wave\": \"\", \"status\": 2, \"create_time\": 1767225600, \"env\": \"development\", \"prompt\": \"\", \"lyrics\": \"\", \"metas\": {}, \"progress\": 0.0, \"stage\": \"load_model\", \"error\": \"CUDA out of memory\"}]",
+        "status": 2,
+        "progress_text": "failed"
+      }
+    ],
+    "code": 200,
+    "error": null,
+    "timestamp": 1767225600
+  },
+  "unknown_task": {
+    "data": [
+      {
+        "task_id": "task-missing",
+        "result": "[]",
+        "status": 0
+      }
+    ],
+    "code": 200,
+    "error": null,
+    "timestamp": 1767225600
+  },
+  "_meta": {
+    "source": "github.com/ACE-Step/ace-step-1.5",
+    "commit": "ca1e85fe9430179831e6bc6be790c332190a3866",
+    "generated_by": "acestep.api.http.query_result_service (upstream code, run directly)",
+    "status_map": {
+      "queued": 0,
+      "running": 0,
+      "succeeded": 1,
+      "failed": 2
+    }
+  }
+}
