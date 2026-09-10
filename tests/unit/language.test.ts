@@ -11,7 +11,8 @@ import { planSpeech, SPEECH_VOICES, synthesizeSpeech } from '../../src/engine/vo
 import { scoreToMidi } from '../../src/engine/export/midi'
 import { scoreToLrc, scoreToSrt, timedLyricLines } from '../../src/engine/export/subtitles'
 import { buildSpec } from '../../src/engine/compose/prompt'
-import { composeSong } from '../../src/engine/compose/composer'
+import { chordChart, composeSong } from '../../src/engine/compose/composer'
+import { hasStructureTags, parseLyricStructure, tagToKind } from '../../src/engine/lyrics/structure'
 import { renderScore } from '../../src/engine/synth/render'
 import { sumStems, isVocalStem } from '../../src/lib/mixdown'
 
@@ -467,5 +468,104 @@ describe('the mix puts the voice in front', () => {
     }
     // And it is not so far forward that it is the only thing left.
     expect(vocal! - (levels.get('drums') ?? -60)).toBeLessThan(12)
+  })
+})
+
+describe('lyrics that carry their own structure', () => {
+  const LYRIC = `[Intro, Dark Koplo]
+Pagi datang hati berdebar
+
+[Verse 1]
+Salah sedikit langsung dimarahin
+Benar sedikit tetap dicurigain
+
+[Chorus, Full Koplo]
+Bos toxic, bos toxic
+Bikin kepala hampir meledak
+
+[Break, Kendang Call And Response]
+Kalau salah?
+Bicarakan!
+
+[Final Chorus, Explosive Koplo]
+Bos toxic, kami sudah lelah
+
+[Outro, Koplo Fade]
+Bos boleh tegas, jangan kejam`
+
+  it('reads the tags a lyricist writes', () => {
+    expect(hasStructureTags(LYRIC)).toBe(true)
+    expect(hasStructureTags('just some words\nwith no tags')).toBe(false)
+
+    const blocks = parseLyricStructure(LYRIC)
+    expect(blocks.map((block) => block.kind)).toEqual([
+      'intro', 'verse', 'chorus', 'breakdown', 'chorus', 'outro',
+    ])
+    // "Final Chorus" is a chorus; the modifier in front does not change that.
+    expect(tagToKind('Final Chorus')).toBe('chorus')
+    expect(tagToKind('Pre-Chorus')).toBe('prechorus')
+    expect(tagToKind('Kendang Break')).toBe('breakdown')
+    expect(tagToKind('Guitar Solo')).toBe('solo')
+    expect(tagToKind('not a section')).toBeNull()
+  })
+
+  it('reads emphasis from the qualifier, and a genre name as neither', () => {
+    const byLabel = new Map(parseLyricStructure(LYRIC).map((b) => [b.label, b.intensity]))
+    // "Dark" and "Fade" are quiet; "Full" and "Explosive" are not. "Koplo"
+    // appears in all four and must not decide any of them.
+    expect(byLabel.get('Intro, Dark Koplo')!).toBeLessThan(0.5)
+    expect(byLabel.get('Outro, Koplo Fade')!).toBeLessThan(0.5)
+    expect(byLabel.get('Chorus, Full Koplo')!).toBe(1)
+    expect(byLabel.get('Final Chorus, Explosive Koplo')!).toBe(1)
+    // A kendang break is a peak, not a lull.
+    expect(byLabel.get('Break, Kendang Call And Response')!).toBeGreaterThan(0.8)
+  })
+
+  it('builds the song to the shape the lyric describes', () => {
+    const score = composeSong(buildSpec('Indonesian dangdut koplo', {
+      seed: 'koplo', customLyrics: LYRIC,
+    }))
+
+    expect(score.genreId).toBe('koplo')
+    expect(score.language).toBe('id')
+    // One section per tag, in the order they were written, labelled as written.
+    expect(score.sections.map((section) => section.label)).toEqual([
+      'Intro, Dark Koplo', 'Verse 1', 'Chorus, Full Koplo',
+      'Break, Kendang Call And Response', 'Final Chorus, Explosive Koplo', 'Outro, Koplo Fade',
+    ])
+    // The energy rises into the choruses and falls away at the end.
+    const level = (label: string): number =>
+      score.sections.find((section) => section.label === label)!.intensity
+    expect(level('Chorus, Full Koplo')).toBeGreaterThan(level('Verse 1'))
+    expect(level('Outro, Koplo Fade')).toBeLessThan(level('Verse 1'))
+
+    // The tags themselves are never sung.
+    const vocal = score.tracks.find((track) => track.id === 'vocal')!
+    const sung = vocal.notes.map((note) => note.syllable).filter(Boolean).join(' ').toLowerCase()
+    for (const word of ['intro', 'chorus', 'verse', 'outro', 'koplo']) {
+      expect(sung, `sang the tag word "${word}"`).not.toContain(word)
+    }
+    expect(sung).toContain('bos')
+
+    // And the title is the hook, not the first line of the first verse.
+    expect(score.title).toBe('Bos Toxic')
+  })
+
+  it('spells a chord chart the way its key is written', () => {
+    const score = composeSong(buildSpec('Indonesian dangdut koplo', {
+      seed: 'koplo', customLyrics: LYRIC,
+    }))
+    const chords = chordChart(score).flatMap((section) => section.chords).join(' ')
+    // A chart is spelled one way or the other, never both at once: mixing a Bb
+    // and a G# in the same key is what makes a player stop and translate.
+    expect(/[A-G]#/.test(chords) && /[A-G]b/.test(chords)).toBe(false)
+
+    // And a flat key is written with flats.
+    const inCMinor = composeSong(buildSpec('Indonesian dangdut koplo', {
+      seed: 'koplo', customLyrics: LYRIC, tonic: 0, scale: 'minor',
+    }))
+    const flatChart = chordChart(inCMinor).flatMap((section) => section.chords).join(' ')
+    expect(flatChart).toContain('Cm')
+    expect(flatChart).not.toMatch(/[A-G]#/)
   })
 })

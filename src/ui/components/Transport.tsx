@@ -122,6 +122,9 @@ export function Transport() {
               type="button"
               className="btn h-9"
               disabled={disabled}
+              // The label is hidden on narrow screens to save room, so the
+              // button needs a name of its own or it announces as nothing.
+              aria-label="Export"
               aria-expanded={showExport}
               aria-haspopup="dialog"
               onClick={() => setShowExport((open) => !open)}

@@ -197,6 +197,25 @@ const PATTERNS: Record<DrumStyle, { core: Grid; extra: Grid }> = {
       cowbell: [0.4, _, _, _, 0.4, _, _, _, 0.4, _, _, _, 0.4, _, _, _],
     },
   },
+  // Dangdut koplo. The kendang is the whole point: a hand drum playing a busy,
+  // syncopated sixteenth pattern that never quite lands where a backbeat would,
+  // with the low and mid toms standing in for its two heads. Everything else
+  // stays out of its way — a light kick, rim rather than snare on the backbeat,
+  // and a tambourine on the off-beats to keep the dance floor moving.
+  koplo: {
+    core: {
+      kick: [1, _, _, _, _, _, 0.7, _, _, _, 0.8, _, _, _, _, _],
+      tomLow: [_, _, 0.7, _, _, 0.55, _, 0.45, _, _, 0.7, _, _, 0.5, _, 0.4],
+      tomMid: [_, 0.5, _, 0.6, _, _, _, 0.5, _, 0.55, _, 0.6, _, _, 0.45, _],
+      rim: [_, _, _, _, 0.7, _, _, _, _, _, _, _, 0.75, _, _, _],
+      hatClosed: [0.35, _, 0.35, _, 0.35, _, 0.35, _, 0.35, _, 0.35, _, 0.35, _, 0.35, _],
+    },
+    extra: {
+      tambourine: [_, _, 0.4, _, _, _, 0.4, _, _, _, 0.4, _, _, _, 0.45, _],
+      conga: [_, 0.35, _, _, 0.3, _, 0.35, _, _, 0.35, _, _, 0.3, _, 0.35, _],
+      crash: [0.6, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _],
+    },
+  },
   reggaeton: {
     core: {
       kick: [1, _, _, _, _, _, _, _, 1, _, _, _, _, _, _, _],

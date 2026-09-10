@@ -5,9 +5,10 @@
  */
 
 import { Rng } from '../core/rng'
-import { chordName, voiceChord, CHORD_INTERVALS } from '../theory/chords'
+import { chordName, keyUsesFlats, voiceChord, CHORD_INTERVALS } from '../theory/chords'
 import { snapToScale } from '../theory/pitch'
-import { buildForm, labelSlots, type FormSlot } from './arrangement'
+import { buildForm, formFromBlocks, labelSlots, type FormSlot } from './arrangement'
+import { hasStructureTags, parseLyricStructure, type LyricBlock } from '../lyrics/structure'
 import { generateDrums } from './drums'
 import { generateArp, generateBass, generateMelody, compRhythm, type MelodyContext } from './melody'
 import { planHarmony } from './harmony'
@@ -34,8 +35,22 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
   const genre = spec.genre
   const beatsPerBar = genre.beatsPerBar
 
-  const slots = buildForm(genre, spec.bpm, beatsPerBar, spec.durationSeconds, rng.fork('form'))
-  const labels = labelSlots(slots)
+  // A lyric that carries its own structure tags has already decided the shape
+  // of the song, so the arranger follows it rather than inventing a form and
+  // then trying to fit the words into it.
+  const blocks = spec.customLyrics && hasStructureTags(spec.customLyrics)
+    ? parseLyricStructure(spec.customLyrics)
+    : null
+  const slots = blocks
+    ? formFromBlocks(blocks.map((block) => ({
+      kind: block.kind,
+      lines: block.lines.length,
+      ...(block.intensity !== undefined ? { intensity: block.intensity } : {}),
+    })))
+    : buildForm(genre, spec.bpm, beatsPerBar, spec.durationSeconds, rng.fork('form'))
+  // The lyricist's own tag text is the better label: "Final Chorus" and
+  // "Break, Kendang Call And Response" say more than "Chorus 3" does.
+  const labels = blocks ? blocks.map((block) => block.label) : labelSlots(slots)
 
   const slotStarts: number[] = []
   let cursor = 0
@@ -176,7 +191,13 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
   const vocalSections: number[] = []
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i]!
-    if (hasVocals && VOCAL_SECTIONS.includes(slot.kind) && slot.kind !== 'outro') {
+    // With written lyrics, a section is sung exactly when its block has lines
+    // in it — including a break or a solo, if that is where the words are.
+    const written = blocks?.[i]
+    const sung = written
+      ? hasVocals && written.lines.length > 0
+      : hasVocals && VOCAL_SECTIONS.includes(slot.kind) && slot.kind !== 'outro'
+    if (sung) {
       vocalSections.push(i)
     } else if (slot.intensity >= 0.45 || !hasVocals) {
       leadSections.push(i)
@@ -198,7 +219,7 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
   }
 
   // ---- Riff (guitar-driven genres) ---------------------------------------
-  if (['rock', 'metal', 'punk', 'jpop', 'blues', 'disco'].includes(genre.id)) {
+  if (['rock', 'metal', 'punk', 'jpop', 'blues', 'disco', 'koplo'].includes(genre.id)) {
     const riffInstrument = rng.fork('inst6').pick(genre.instruments.riff)
     const riffNotes: ScoreNote[] = []
     for (let i = 0; i < slots.length; i++) {
@@ -235,7 +256,7 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
   }
 
   if (hasVocals && vocalSections.length > 0) {
-    attachVocals(score, spec, slots, vocalSections, context, vocalCenter, vocalRange, rng)
+    attachVocals(score, spec, slots, vocalSections, context, vocalCenter, vocalRange, rng, blocks)
   } else {
     score.title = defaultTitle(spec, rng)
   }
@@ -255,6 +276,7 @@ function attachVocals(
   centerMidi: number,
   range: number,
   rng: Rng,
+  blocks: LyricBlock[] | null,
 ): void {
   // 1. Write the melody first, so the lyrics can be measured against it.
   const perSection = new Map<number, { notes: ScoreNote[]; phrases: { start: number; end: number }[] }>()
@@ -285,7 +307,7 @@ function attachVocals(
   // language: someone who typed a chorus in Indonesian wants it sung in
   // Indonesian whether or not they also picked that from the menu.
   const lyrics = spec.customLyrics
-    ? layOutCustomLyrics(spec.customLyrics, structure, sectionOrder, slots, spec, rng)
+    ? layOutCustomLyrics(spec.customLyrics, structure, sectionOrder, slots, spec, rng, blocks)
     : generateLyrics({
       theme: spec.theme,
       mood: spec.mood.id,
@@ -373,8 +395,14 @@ function layOutCustomLyrics(
   slots: FormSlot[],
   spec: SongSpec,
   rng: Rng,
+  blocks: LyricBlock[] | null,
 ): SongLyrics {
-  const written = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0)
+  // Structure tags are instructions to the arranger, not words to sing, so
+  // they never reach the lyric lines.
+  const written = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !/^\[.+\]$/.test(line))
   if (written.length === 0) {
     return generateLyrics({
       theme: spec.theme, mood: spec.mood.id,
@@ -383,29 +411,94 @@ function layOutCustomLyrics(
   }
 
   const lines: LyricLine[] = []
-  let cursor = 0
-  structure.forEach((section, sectionIndex) => {
-    for (let i = 0; i < section.lines; i++) {
-      lines.push({
-        text: written[cursor % written.length]!,
-        section: slots[sectionOrder[sectionIndex]!]!.kind,
-        sectionIndex,
-      })
-      cursor++
-    }
-  })
+  if (blocks) {
+    // Tagged lyrics: each section sings the lines written under its own tag,
+    // in order, and nothing is borrowed from a neighbouring section.
+    structure.forEach((section, sectionIndex) => {
+      const block = blocks[sectionOrder[sectionIndex]!]
+      const own = block?.lines ?? []
+      for (let i = 0; i < section.lines; i++) {
+        const line = own[i]
+        if (line === undefined) break
+        lines.push({ text: line, section: slots[sectionOrder[sectionIndex]!]!.kind, sectionIndex })
+      }
+    })
+  } else {
+    let cursor = 0
+    structure.forEach((section, sectionIndex) => {
+      for (let i = 0; i < section.lines; i++) {
+        lines.push({
+          text: written[cursor % written.length]!,
+          section: slots[sectionOrder[sectionIndex]!]!.kind,
+          sectionIndex,
+        })
+        cursor++
+      }
+    })
+  }
 
-  // The title comes from the first line the user wrote, trimmed to something
-  // that fits on a card.
-  const first = written[0]!
-  const title = first.length > 42 ? `${first.slice(0, 40).trimEnd()}…` : first
+  // The title comes from the hook — the line the song says most often — and
+  // falls back to the opening line when nothing repeats. A song called "Bos
+  // Toxic" is named after what people will actually sing back at it, which the
+  // first line of the first verse almost never is.
+  const title = hookLine(written)
   void rng
 
   // The sheet shows what the user typed, not the wrapped-round version, which
   // would repeat lines they only wrote once. It opens with the title, the same
   // as a generated sheet does, so a download says what it is and the panel can
   // drop that first line knowing it is there.
-  return { title, lines, formatted: `${title}\n\n${written.join('\n')}` }
+  return { title, lines, formatted: `${title}\n\n${text.trim()}` }
+}
+
+/** True when a line says the same short phrase twice in a row. */
+function repeatsItself(line: string): boolean {
+  return /^(.{2,30}?)([,;]\s*|\s+)\1(\b|$)/iu.test(line.trim())
+}
+
+/**
+ * The most repeated line, preferring short ones.
+ *
+ * A hook is short and said often; a long line that happens to appear twice is
+ * a repeated verse, not a title. Ties go to whichever came first, so a chorus
+ * beats a later refrain.
+ */
+function hookLine(lines: string[]): string {
+  const counts = new Map<string, { count: number; first: number; text: string }>()
+  lines.forEach((line, index) => {
+    const key = line.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, '').trim()
+    if (!key) return
+    const seen = counts.get(key)
+    if (seen) seen.count++
+    // A line that repeats a phrase inside itself — "Bos toxic, bos toxic" — is
+    // a hook by construction, even the first time it is written down.
+    else counts.set(key, { count: repeatsItself(line) ? 2 : 1, first: index, text: line })
+  })
+
+  // Nothing repeated means there is no hook to find, and the opening line is a
+  // better title than whichever line happens to be shortest.
+  const repeated = [...counts.values()].filter((entry) => entry.count > 1)
+  let best = { count: 1, first: 0, text: lines[0] ?? 'Untitled' }
+  for (const entry of repeated) {
+    // Weight repetition against length: eight words said twice is a verse.
+    const words = entry.text.split(/\s+/).length
+    const score = entry.count * 10 - words
+    const bestScore = best.count * 10 - best.text.split(/\s+/).length
+    if (score > bestScore || (score === bestScore && entry.first < best.first)) best = entry
+  }
+
+  // A hook line often says the phrase twice — "Bos toxic, bos toxic" — which
+  // is right to sing and wrong to print on the sleeve.
+  const collapsed = best.text.replace(
+    /^(.{2,30}?)([,;]\s*|\s+)\1(\b|$).*$/iu,
+    (_match, phrase: string) => phrase,
+  )
+  const clean = collapsed.replace(/[,.;:!?]+$/, '').trim()
+  const title = clean.length > 42 ? `${clean.slice(0, 40).trimEnd()}…` : clean
+  // Titles are title-cased when the source line is a short hook.
+  return title.split(/\s+/).length <= 4
+    ? title.replace(/\b\p{L}/gu, (c) => c.toUpperCase())
+    : title
 }
 
 /** The two fields a note needs to be sung: what it reads as, and what it sounds like. */
@@ -536,9 +629,10 @@ function defaultTitle(spec: SongSpec, rng: Rng): string {
 
 /** Human-readable chord chart, one entry per section. */
 export function chordChart(score: Score): { label: string; chords: string[] }[] {
+  const flats = keyUsesFlats(score.key.tonic, score.key.scale)
   return score.sections.map((section) => ({
     label: section.label,
-    chords: section.chords.map(chordName),
+    chords: section.chords.map((chord) => chordName(chord, flats)),
   }))
 }
 
@@ -548,7 +642,7 @@ export function chordAtBeat(score: Score, beat: number): string | null {
     if (beat >= section.startBeat && beat < section.startBeat + section.lengthBeats) {
       const bar = Math.floor((beat - section.startBeat) / score.beatsPerBar)
       const chord = section.chords[Math.min(section.chords.length - 1, bar)]
-      return chord ? chordName(chord) : null
+      return chord ? chordName(chord, keyUsesFlats(score.key.tonic, score.key.scale)) : null
     }
   }
   return null
