@@ -36,12 +36,14 @@ jobs:
           npm run lint
           npm test
 
+      # Pages has to be switched on once, by hand, in the repository settings:
+      # Settings -> Pages -> Build and deployment -> Source: GitHub Actions.
+      # The workflow token cannot do it — enabling Pages needs admin rights that
+      # GITHUB_TOKEN is never granted — so this step reads the configuration
+      # rather than trying to create it.
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v5
-        with:
-          # Turns Pages on for the repository if it is not enabled yet.
-          enablement: true
 
       - name: Build
         # The site is served from https://<owner>.github.io/<repo>/, so every

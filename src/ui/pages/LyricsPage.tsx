@@ -261,7 +261,11 @@ export default function LyricsPage() {
                   <button
                     type="button"
                     className="btn btn-ghost btn-sm"
-                    onClick={() => downloadText(edited, `${safeFilename(lyrics.title)}.txt`)}
+                    onClick={() => {
+                      void downloadText(edited, `${safeFilename(lyrics.title)}.txt`)
+                        .catch((error: unknown) =>
+                          notify(error instanceof Error ? error.message : 'Download failed.', 'error'))
+                    }}
                   >
                     <Icon name="download" size={13} />
                   </button>

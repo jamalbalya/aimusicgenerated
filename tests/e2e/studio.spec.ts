@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { expect, test, type Page } from '@playwright/test'
 import { writeFixture } from './make-fixture'
 
@@ -293,6 +296,31 @@ test.describe('cover', () => {
     // Loading a part swaps what the transport is playing.
     await page.getByRole('button', { name: /Backing track/ }).click()
     await expect(page.getByText(/— Backing track/)).toBeVisible()
+    expect(errors).toEqual([])
+  })
+})
+
+test.describe('single-file build', () => {
+  test.skip(({ isMobile }) => isMobile, 'The bundle is identical; running it once is enough.')
+
+  test('runs standalone, with no worker and no server', async ({ page }) => {
+    const built = resolve(process.cwd(), 'dist-single/resonant-studio.html')
+    test.skip(!existsSync(built), 'Run `npm run build:single` first.')
+
+    const errors = watchForErrors(page)
+    // Opened straight from disk: no origin, no worker, no network at all.
+    await page.goto(pathToFileURL(built).href)
+    await expect(page.getByRole('heading', { name: /Describe a song/i })).toBeVisible()
+
+    await page.getByRole('textbox').first().fill('a lofi beat, 20 seconds')
+    await page.getByRole('button', { name: 'Generate song' }).click()
+    await expect(page.getByText('Arrangement', { exact: true })).toBeVisible({ timeout: 150_000 })
+    await expect(page.getByText(/0:00 \/ 0:\d\d/)).toBeVisible()
+
+    // Routing has to work with no server able to rewrite paths.
+    await page.getByRole('link', { name: 'Audio Toolkit', exact: true }).first().click()
+    await expect(page.getByRole('heading', { name: /Edit, treat and measure/i })).toBeVisible()
+
     expect(errors).toEqual([])
   })
 })

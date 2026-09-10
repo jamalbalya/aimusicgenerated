@@ -202,8 +202,11 @@ export default function StemsPage() {
                           void encodeAudio(
                             { channels: stem.audio.channels, sampleRate: stem.audio.sampleRate },
                             'wav16',
-                          ).then((blob) =>
-                            downloadBlob(blob, `${safeFilename(file?.name ?? 'track')}-${stem.name}.wav`))
+                          )
+                            .then((blob) =>
+                              downloadBlob(blob, `${safeFilename(file?.name ?? 'track')}-${stem.name}.wav`))
+                            .catch((error: unknown) =>
+                              notify(error instanceof Error ? error.message : 'Download failed.', 'error'))
                         }}
                       >
                         <Icon name="download" size={13} />

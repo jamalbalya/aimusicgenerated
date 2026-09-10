@@ -53,8 +53,59 @@ export function safeFilename(name: string, fallback = 'resonant'): string {
   return cleaned.length > 0 ? cleaned : fallback
 }
 
-/** Triggers a browser download for a blob. */
-export function downloadBlob(blob: Blob, filename: string): void {
+/**
+ * A host that mediates saving on the page's behalf.
+ *
+ * Some sandboxed embeds refuse downloads a page starts itself, and offer an
+ * API instead. Detecting one lets a refused save say so, rather than looking
+ * like a button that does nothing.
+ */
+interface SaveHost {
+  use(name: 'downloads'): Promise<{
+    save(request: { filename: string; data: Blob }): Promise<{ status: string }>
+  } | null>
+}
+
+function saveHost(): SaveHost | null {
+  const host = (window as unknown as { claude?: SaveHost }).claude
+  return host && typeof host.use === 'function' ? host : null
+}
+
+/** True when the page is embedded somewhere that mediates saving. */
+export function savingIsMediated(): boolean {
+  return saveHost() !== null
+}
+
+/**
+ * Hands a file to the viewer.
+ *
+ * Normally that is an anchor click. Inside a mediating embed it goes through
+ * the host, which may refuse the file type outright — audio, in practice — and
+ * the caller is told why instead of the click quietly doing nothing.
+ */
+export async function downloadBlob(blob: Blob, filename: string): Promise<void> {
+  const host = saveHost()
+  if (host) {
+    const downloads = await host.use('downloads')
+    if (!downloads) {
+      throw new Error('This preview cannot save files. Open the full version to download.')
+    }
+    try {
+      await downloads.save({ filename, data: blob })
+      return
+    } catch (error) {
+      const code = (error as { code?: string } | null)?.code
+      if (code === 'declined') throw new Error('Download cancelled.', { cause: error })
+      if (code === 'rejected_extension' || code === 'extension_not_enabled') {
+        throw new Error(
+          'This preview cannot save audio files. Open the full version to download.',
+          { cause: error },
+        )
+      }
+      throw new Error('The download was refused by the app this page is embedded in.', { cause: error })
+    }
+  }
+
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
@@ -67,8 +118,8 @@ export function downloadBlob(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 20_000)
 }
 
-export function downloadText(text: string, filename: string): void {
-  downloadBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), filename)
+export async function downloadText(text: string, filename: string): Promise<void> {
+  await downloadBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), filename)
 }
 
 /**

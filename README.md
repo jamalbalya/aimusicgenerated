@@ -64,9 +64,10 @@ come out as cleanly as they would from a model trained on thousands of songs.
 
 ```bash
 npm install
-npm run dev        # development server
-npm run verify     # typecheck, lint, unit tests, production build
-npm run test:e2e   # end-to-end tests (desktop and mobile viewports)
+npm run dev            # development server
+npm run verify         # typecheck, lint, unit tests, both production builds
+npm run test:e2e       # end-to-end tests (desktop and mobile viewports)
+npm run build:single   # one self-contained HTML file
 ```
 
 Requires Node 22 or newer.
@@ -74,8 +75,14 @@ Requires Node 22 or newer.
 ### Deploying
 
 The production build is a static site with no backend, so it can be hosted
-anywhere. Pushing to the default branch publishes it to GitHub Pages via
-`.github/workflows/deploy.yml`.
+anywhere.
+
+**GitHub Pages.** Pages has to be switched on once by a repository admin —
+**Settings → Pages → Build and deployment → Source: GitHub Actions**. A
+workflow cannot do this for you: enabling Pages needs admin rights that
+`GITHUB_TOKEN` is never granted. Once it is on, every push to the default
+branch publishes automatically via `.github/workflows/deploy.yml`, and the site
+appears at `https://<owner>.github.io/<repo>/`.
 
 For any other host, set `VITE_BASE` to the path the site is served from — `/`
 for a domain root, `/repo-name/` for a subdirectory:
@@ -86,6 +93,13 @@ VITE_BASE=/ npx vite build
 
 The build writes `dist/404.html` alongside `dist/index.html` so deep links keep
 working on static hosts without rewrite rules.
+
+**A single file.** `npm run build:single` produces
+`dist-single/resonant-studio.html`: the whole studio — engine, worker, styles
+and all — in one 800 KB document with no external requests. Host it anywhere,
+email it, or open it straight from disk. Opened from a file there is no origin
+a worker can load from, so jobs run on the main thread instead; everything
+still works, the interface just cannot repaint while a render is in progress.
 
 ## Architecture
 

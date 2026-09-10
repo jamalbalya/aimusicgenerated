@@ -53,7 +53,7 @@ export function Transport() {
     setExporting(true)
     try {
       const blob = await encodeAudio(current.audio, format)
-      downloadBlob(blob, `${safeFilename(current.title)}.${extensionFor(format)}`)
+      await downloadBlob(blob, `${safeFilename(current.title)}.${extensionFor(format)}`)
       setShowExport(false)
       notify('Download started.', 'success')
     } catch (error) {

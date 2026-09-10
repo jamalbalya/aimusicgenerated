@@ -36,6 +36,7 @@ export default function AboutPage() {
               'Works offline once loaded',
               'Nothing uploaded, ever',
               'Covers: swap the voice on a finished song',
+              'Ships as one file you can keep',
             ].map((item) => (
               <li key={item} className="flex items-start gap-2">
                 <Icon name="check" size={14} className="mt-0.5 shrink-0 text-[var(--ok)]" />

@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, type Plugin } from 'vitest/config'
@@ -28,13 +28,82 @@ function spaFallback(): Plugin {
 // at a domain root (Netlify, Vercel, Cloudflare Pages, a custom domain, ...).
 const base = process.env.VITE_BASE ?? '/'
 
+/**
+ * Single-file mode bundles everything — including the worker — into one HTML
+ * document, so the studio can be opened straight from disk or hosted anywhere
+ * that serves a single page. It costs a larger initial download, so the normal
+ * build keeps its separate, cacheable chunks.
+ */
+const singleFile = process.env.VITE_SINGLE_FILE === '1'
+const outDir = singleFile ? 'dist-single' : 'dist'
+
+/** Folds the built script and stylesheet into index.html. */
+function inlineEverything(directory: string): Plugin {
+  return {
+    name: 'inline-everything',
+    apply: 'build',
+    closeBundle() {
+      const dist = resolve(projectRoot, directory)
+      const indexPath = resolve(dist, 'index.html')
+      if (!existsSync(indexPath)) return
+
+      let html = readFileSync(indexPath, 'utf8')
+
+      /** Built assets can sit at the dist root or under assets/. */
+      const findAsset = (reference: string): string | null => {
+        const name = reference.split('/').pop() ?? ''
+        for (const candidate of [resolve(dist, name), resolve(dist, 'assets', name)]) {
+          if (existsSync(candidate)) return candidate
+        }
+        return null
+      }
+
+      html = html.replace(
+        /<script[^>]*src="([^"]+)"[^>]*><\/script>/g,
+        (match, src: string) => {
+          const file = findAsset(src)
+          if (!file) return match
+          return `<script type="module">\n${readFileSync(file, 'utf8')}\n</script>`
+        },
+      )
+      html = html.replace(
+        /<link[^>]*rel="stylesheet"[^>]*href="([^"]+)"[^>]*>/g,
+        (match, href: string) => {
+          const file = findAsset(href)
+          if (!file) return match
+          return `<style>\n${readFileSync(file, 'utf8')}\n</style>`
+        },
+      )
+      // The manifest points at icons that are not bundled into the document.
+      html = html.replace(/<link[^>]*rel="manifest"[^>]*>/g, '')
+      // Nothing else is fetched, so drop the preload hints for files that are
+      // now embedded in the document.
+      html = html.replace(/<link[^>]*rel="modulepreload"[^>]*>/g, '')
+
+      writeFileSync(resolve(dist, 'resonant-studio.html'), html)
+      writeFileSync(indexPath, html)
+    },
+  }
+}
+
 export default defineConfig({
-  base,
-  plugins: [react(), tailwindcss(), spaFallback()],
+  base: singleFile ? './' : base,
+  plugins: [react(), tailwindcss(), ...(singleFile ? [inlineEverything(outDir)] : [spaFallback()])],
+  define: {
+    // A compile-time constant, so the branch it guards is removed entirely
+    // from whichever build does not need it.
+    'import.meta.env.VITE_INLINE_WORKER': JSON.stringify(singleFile),
+  },
   build: {
+    outDir,
     target: 'es2022',
     sourcemap: false,
-    chunkSizeWarningLimit: 1200,
+    chunkSizeWarningLimit: singleFile ? 4000 : 1200,
+    assetsInlineLimit: singleFile ? Number.MAX_SAFE_INTEGER : 4096,
+    cssCodeSplit: !singleFile,
+    rollupOptions: singleFile
+      ? { output: { inlineDynamicImports: true, entryFileNames: 'app.js', assetFileNames: 'app[extname]' } }
+      : {},
   },
   worker: {
     format: 'es',

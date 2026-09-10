@@ -3,7 +3,7 @@
  * carry a binary blob and the fixture always matches the decoder under test.
  */
 
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { encodeWav } from '../../src/engine/audio/wav'
@@ -35,6 +35,9 @@ const here = dirname(fileURLToPath(import.meta.url))
 export const FIXTURE_PATH = resolve(here, 'fixtures/test-mix.wav')
 
 export function writeFixture(): string {
+  // The directory is not in version control — the fixture is generated — so a
+  // fresh checkout has to create it before writing.
+  mkdirSync(dirname(FIXTURE_PATH), { recursive: true })
   writeFileSync(FIXTURE_PATH, Buffer.from(buildFixture()))
   return FIXTURE_PATH
 }

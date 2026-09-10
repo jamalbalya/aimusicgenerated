@@ -84,7 +84,7 @@ export default function LibraryPage() {
       const stored = await loadProject(project.id)
       if (!stored) return
       const extension = stored.audioType.includes('mpeg') ? 'mp3' : 'wav'
-      downloadBlob(stored.audio, `${safeFilename(stored.title)}.${extension}`)
+      await downloadBlob(stored.audio, `${safeFilename(stored.title)}.${extension}`)
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not export that project.', 'error')
     } finally {

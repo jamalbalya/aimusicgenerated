@@ -459,7 +459,11 @@ export default function StudioPage() {
                     <button
                       type="button"
                       className="btn btn-sm"
-                      onClick={() => downloadText(score.lyrics!.formatted, `${safeFilename(score.title)}-lyrics.txt`)}
+                      onClick={() => {
+                        void downloadText(score.lyrics!.formatted, `${safeFilename(score.title)}-lyrics.txt`)
+                          .catch((error: unknown) =>
+                            notify(error instanceof Error ? error.message : 'Download failed.', 'error'))
+                      }}
                     >
                       <Icon name="download" size={13} />
                       Download lyrics
@@ -537,8 +541,11 @@ export default function StudioPage() {
                             void encodeAudio(
                               { channels: stem.audio.channels, sampleRate: stem.audio.sampleRate },
                               'wav16',
-                            ).then((blob) =>
-                              downloadBlob(blob, `${safeFilename(score.title)}-${safeFilename(stem.name)}.wav`))
+                            )
+                              .then((blob) =>
+                                downloadBlob(blob, `${safeFilename(score.title)}-${safeFilename(stem.name)}.wav`))
+                              .catch((error: unknown) =>
+                                notify(error instanceof Error ? error.message : 'Download failed.', 'error'))
                           }}
                         >
                           <Icon name="download" size={13} />
