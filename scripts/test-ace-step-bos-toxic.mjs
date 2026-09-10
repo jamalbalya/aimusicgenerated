@@ -16,13 +16,17 @@
  */
 
 import { mkdir, writeFile } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
-const OUT_DIR = join(ROOT, 'evaluation', 'ace-step')
+const OUT_DIR = join(ROOT, 'evaluation', 'bos-toxic')
+const ACE_STEP_HOME = process.env.ACE_STEP_HOME
+  || join(homedir(), 'Applications', 'ACE-Step-1.5')
 
 const BASE_URL = (process.env.ACE_STEP_API_URL || 'http://127.0.0.1:8001').replace(/\/+$/, '')
 const API_KEY = process.env.ACE_STEP_API_KEY || ''
@@ -80,6 +84,45 @@ async function unwrap(response, what) {
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 
+/**
+ * What ACE-Step this is, read off the checkout rather than guessed.
+ *
+ * The API's own /health reports the API contract version ("1.0"), not the
+ * project's, so the commit and pyproject version come from the source on disk
+ * when it is there. Anything that cannot be read is reported as unknown rather
+ * than filled in.
+ */
+function aceStepVersion() {
+  const out = { commit: 'unknown', version: 'unknown', home: ACE_STEP_HOME }
+  try {
+    out.commit = execFileSync('git', ['-C', ACE_STEP_HOME, 'rev-parse', '--short', 'HEAD'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch { /* not a checkout, or git missing */ }
+  try {
+    const pyproject = readFileSync(join(ACE_STEP_HOME, 'pyproject.toml'), 'utf8')
+    out.version = pyproject.match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? 'unknown'
+  } catch { /* not installed here */ }
+  if (!existsSync(ACE_STEP_HOME)) out.home = `${ACE_STEP_HOME} (not found)`
+  return out
+}
+
+/**
+ * The compute this was generated on.
+ *
+ * Only reported for a backend on this machine — which is the workflow these
+ * scripts are for. Against a remote backend the host's own hardware says
+ * nothing about what ran, so it is labelled as unknown instead.
+ */
+function describeBackend(baseUrl) {
+  const local = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|$)/i.test(baseUrl)
+  if (!local) return 'remote backend (not determinable from here)'
+  const lm = process.env.ACESTEP_LM_BACKEND
+  if (process.platform === 'darwin' && process.arch === 'arm64') {
+    return `Apple Silicon / ${lm === 'mlx' || !lm ? 'MLX' : lm}`
+  }
+  return `${process.platform}/${process.arch}${lm ? ` / ${lm}` : ''}`
+}
+
 async function main() {
   console.log('ACE-Step 1.5 — Bos Toxic smoke test')
   console.log(`  backend        ${BASE_URL}`)
@@ -90,7 +133,8 @@ async function main() {
     health = await unwrap(await fetch(`${BASE_URL}/health`, { headers: headers(false) }), 'GET /health')
   } catch (error) {
     fail(`Could not reach the ACE-Step backend at ${BASE_URL}: ${error.message}\n` +
-      '  Start it with ./start_api_server.sh (or start_api_server_macos.sh on Apple Silicon).')
+      '  Start it with ./scripts/start-ace-step-macos.sh, then check it with\n' +
+      '  ./scripts/diagnose-ace-step-macos.sh or node scripts/ace-step-status.mjs.')
   }
   if (String(health.status).toLowerCase() !== 'ok') fail(`Backend reported status "${health.status}".`)
   console.log(`  service        ${health.service} ${health.version}`)
@@ -149,10 +193,18 @@ async function main() {
   const audioPath = join(OUT_DIR, `bos-toxic-${body.model}-${stamp}.wav`)
   await writeFile(audioPath, bytes)
 
+  const acestep = aceStepVersion()
+  const backend = describeBackend(BASE_URL)
   const metadata = {
     task_id: taskId,
-    backend: BASE_URL,
+    backend_url: BASE_URL,
     service: `${health.service} ${health.version}`,
+    acestep_version: acestep.version,
+    acestep_commit: acestep.commit,
+    acestep_home: acestep.home,
+    device_backend: backend,
+    loaded_model: health.loaded_model ?? null,
+    loaded_lm_model: health.loaded_lm_model ?? null,
     model: body.model,
     lm_model: body.lm_model_path,
     vocal_language: body.vocal_language,
@@ -167,19 +219,25 @@ async function main() {
     lyric_lines_sent: lyricLines.length,
     generated_at: new Date().toISOString(),
   }
-  await writeFile(join(OUT_DIR, `bos-toxic-${body.model}-${stamp}.json`),
-    JSON.stringify(metadata, null, 2))
+  await writeFile(audioPath.replace(/\.wav$/, '.json'), JSON.stringify(metadata, null, 2))
 
   /* 6-9. Report -------------------------------------------------------- */
   console.log('\n✓ ACE-Step generated a song')
-  console.log(`  model          ${metadata.model}`)
-  console.log(`  lm model       ${metadata.lm_model}`)
+  console.log(`  ACE-Step       ${acestep.version} (${acestep.commit})`)
+  console.log(`  service        ${metadata.service}`)
+  console.log(`  DiT model      ${metadata.loaded_model ?? metadata.model}`)
+  console.log(`  LM model       ${metadata.loaded_lm_model ?? metadata.lm_model}`)
+  console.log(`  device/backend ${backend}`)
+  console.log(`  task id        ${taskId}`)
   console.log(`  generation     ${metadata.generation_seconds}s`)
   console.log(`  output length  ${metadata.output_seconds ?? 'unreported'}s`)
   console.log(`  bpm / key      ${metadata.bpm ?? '—'} / ${metadata.keyscale ?? '—'}`)
   console.log(`  size           ${(bytes.length / 1e6).toFixed(2)} MB`)
   console.log(`  audio          ${audioPath}`)
-  console.log('\nListen to it before drawing any conclusion about quality.')
+  console.log(`  metadata       ${audioPath.replace(/\.wav$/, '.json')}`)
+  console.log('')
+  console.log('  Nothing above says anything about how it sounds.')
+  console.log('  Listen to it before drawing any conclusion about quality.')
 }
 
 // Only run when invoked directly; the unit test imports the body builder.
