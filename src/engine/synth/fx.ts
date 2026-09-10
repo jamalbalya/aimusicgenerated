@@ -271,7 +271,7 @@ export function buildSidechainEnvelope(
 export function applyTrackEq(
   buffer: Float32Array,
   sampleRate: number,
-  options: { highPassHz?: number; lowShelfDb?: number; highShelfDb?: number },
+  options: { highPassHz?: number; lowShelfDb?: number; highShelfDb?: number; presenceDb?: number },
 ): void {
   if (options.highPassHz && options.highPassHz > 20) {
     const filter = new Biquad(sampleRate)
@@ -286,6 +286,13 @@ export function applyTrackEq(
   if (options.highShelfDb) {
     const filter = new Biquad(sampleRate)
     filter.highShelf(6000, options.highShelfDb)
+    filter.processBuffer(buffer)
+  }
+  if (options.presenceDb) {
+    // A wide bell rather than a narrow one: the aim is to open the whole
+    // consonant band, not to ring on one frequency.
+    const filter = new Biquad(sampleRate)
+    filter.peaking(3000, 0.8, options.presenceDb)
     filter.processBuffer(buffer)
   }
 }

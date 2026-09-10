@@ -132,6 +132,42 @@ test.describe('song studio', () => {
     expect(errors).toEqual([])
   })
 
+  test('picks a genre from the chips and turns vocals off', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/')
+
+    // The popular genres are offered up front; the rest are behind the chevron.
+    await expect(page.getByRole('button', { name: 'Pop', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Reggaeton / Latin', exact: true })).toBeHidden()
+    await page.getByRole('button', { name: 'Show every genre' }).click()
+    await expect(page.getByRole('button', { name: 'Reggaeton / Latin', exact: true })).toBeVisible()
+
+    const jazz = page.getByRole('button', { name: 'Jazz', exact: true })
+    await jazz.click()
+    await expect(jazz).toHaveAttribute('aria-pressed', 'true')
+    // Clicking the chosen genre again clears it.
+    await jazz.click()
+    await expect(jazz).toHaveAttribute('aria-pressed', 'false')
+    await jazz.click()
+
+    // The switch is a real checkbox behind its own label, so the label is what
+    // receives the click.
+    const instrumental = page.getByLabel('Instrumental')
+    await expect(instrumental).not.toBeChecked()
+    await instrumental.check({ force: true })
+    await expect(instrumental).toBeChecked()
+
+    await page.getByLabel('Style').fill('30 seconds')
+    await page.getByRole('button', { name: 'Generate song' }).click()
+    await expect(page.getByRole('heading', { level: 2 }).first()).toBeVisible({ timeout: 150_000 })
+
+    // No vocals means no lyric sheet to show.
+    await page.getByRole('button', { name: 'Lyrics', exact: true }).click()
+    await expect(page.getByText('This is an instrumental', { exact: true })).toBeVisible()
+
+    expect(errors).toEqual([])
+  })
+
   test('exports the song as MIDI, subtitles and separate mixes', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/')

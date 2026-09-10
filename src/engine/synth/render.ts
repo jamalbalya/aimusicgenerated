@@ -120,6 +120,7 @@ export function renderScore(score: Score, options: RenderOptions = {}): RenderRe
       highPassHz: track.fx.highPassHz,
       lowShelfDb: track.fx.lowShelfDb,
       highShelfDb: track.fx.highShelfDb,
+      presenceDb: track.fx.presenceDb,
     })
     applyDrive(mono, track.fx.drive)
 

@@ -97,8 +97,15 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
       }
     }
   }
+  // A record with a singer on it is mixed around the singer: everything that
+  // is not the voice sits a few dB lower than it would in an instrumental, so
+  // the words stay in front instead of competing with the bed.
+  const hasVocals = spec.vocals !== 'none'
+  const bed = (instrumentalDb: number, underVocalDb: number): number =>
+    (hasVocals ? underVocalDb : instrumentalDb)
+
   tracks.push(makeTrack('chords', 'Chords', 'chords', chordInstrument, chordNotes, {
-    gainDb: -5, pan: rng.fork('pan1').float(-0.22, 0.22),
+    gainDb: bed(-5, -11), pan: rng.fork('pan1').float(-0.22, 0.22),
     fx: { reverbSend: 0.2 + genre.space * 0.2, delaySend: 0.05, sidechain: 0.25, drive: 0.1, highPassHz: 160 },
   }))
 
@@ -141,7 +148,7 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
     }
   }
   tracks.push(makeTrack('pad', 'Pad', 'pad', padInstrument, padNotes, {
-    gainDb: -12, pan: 0,
+    gainDb: bed(-12, -16), pan: 0,
     fx: { reverbSend: 0.4 + genre.space * 0.25, delaySend: 0.08, sidechain: 0.4, drive: 0, highPassHz: 220 },
   }))
 
@@ -156,13 +163,12 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
   }
   if (arpNotes.length > 0) {
     tracks.push(makeTrack('arp', 'Arp', 'arp', arpInstrument, arpNotes, {
-      gainDb: -13, pan: rng.fork('pan2').float(-0.5, 0.5),
+      gainDb: bed(-13, -17), pan: rng.fork('pan2').float(-0.5, 0.5),
       fx: { reverbSend: 0.28, delaySend: 0.22, sidechain: 0.35, drive: 0, highPassHz: 320 },
     }))
   }
 
   // ---- Vocals or lead melody ---------------------------------------------
-  const hasVocals = spec.vocals !== 'none'
   const vocalCenter = options.vocalCenterMidi ?? (spec.vocals === 'rap' ? 55 : 62)
   const vocalRange = spec.vocals === 'rap' ? 7 : 14
 
@@ -206,7 +212,7 @@ export function composeSong(spec: SongSpec, options: ComposeOptions = {}): Score
     }
     if (riffNotes.length > 0) {
       tracks.push(makeTrack('riff', 'Riff', 'riff', riffInstrument, riffNotes, {
-        gainDb: -11, pan: rng.fork('pan4').float(-0.6, 0.6),
+        gainDb: bed(-11, -14), pan: rng.fork('pan4').float(-0.6, 0.6),
         fx: { reverbSend: 0.14, delaySend: 0.05, sidechain: 0.2, drive: 0.4, highPassHz: 140 },
       }))
     }
@@ -337,12 +343,14 @@ function attachVocals(
 
   const vocalInstrument: InstrumentId = 'vocal'
   score.tracks.push(makeTrack('vocal', 'Lead Vocal', 'vocal', vocalInstrument, vocalNotes, {
-    gainDb: -9, pan: 0,
-    fx: { reverbSend: score.genreId === 'ambient' ? 0.42 : 0.22, delaySend: 0.14, sidechain: 0.15, drive: 0.08, highPassHz: 110 },
+    // The lead vocal is the loudest thing in the mix, because it is the thing
+    // the song is about. A little presence lift keeps the words readable.
+    gainDb: -3, pan: 0,
+    fx: { reverbSend: score.genreId === 'ambient' ? 0.38 : 0.18, delaySend: 0.12, sidechain: 0.12, drive: 0.1, highPassHz: 110, presenceDb: 3 },
   }))
   if (harmonyNotes.length > 0) {
     score.tracks.push(makeTrack('vocalHarmony', 'Vocal Harmony', 'vocalHarmony', vocalInstrument, harmonyNotes, {
-      gainDb: -19, pan: 0.25,
+      gainDb: -12, pan: 0.25,
       fx: { reverbSend: 0.34, delaySend: 0.16, sidechain: 0.15, drive: 0.05, highPassHz: 160 },
     }))
   }

@@ -4,7 +4,7 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import { Icon } from '../components/Icon'
-import { Empty, Field, Panel, Progress, Segmented, Slider, Stat } from '../components/controls'
+import { Empty, Field, Panel, Progress, Segmented, Slider, Stat, Toggle } from '../components/controls'
 import { useJob, isCancellation } from '../useJob'
 import { useStudio } from '../../state/store'
 import { GENRES } from '../../engine/compose/genres'
@@ -29,6 +29,9 @@ import { linkProps } from '../../lib/router'
 /** Two lines of a lyric, to show the shape rather than to be sung. */
 const LYRIC_PLACEHOLDER = `Aku masih di sini menunggu
 Sampai malam berganti pagi`
+
+/** The genres offered before the list is expanded — the ones people ask for most. */
+const POPULAR_GENRES = ['pop', 'rock', 'edm', 'hiphop', 'rnb', 'jazz', 'lofi', 'folk']
 
 /** The result panel's tabs, named once so a label can never drift from its tab. */
 const DETAIL_TABS = [
@@ -82,6 +85,7 @@ export default function StudioPage() {
   const [vocals, setVocals] = useState<VocalChoice>('auto')
   const [singStyle, setSingStyle] = useState('')
   const [seed, setSeed] = useState('')
+  const [allGenres, setAllGenres] = useState(false)
   const [customLyrics, setCustomLyrics] = useState('')
   const [language, setLanguage] = useState<LanguageId | 'auto'>('auto')
 
@@ -318,7 +322,14 @@ export default function StudioPage() {
               <Field
                 label="Style"
                 htmlFor="prompt"
-                hint="Genre, instruments, tempo, mood — whatever matters. Say “instrumental” for no vocals."
+                hint="Genre, instruments, tempo, mood — whatever matters."
+                action={
+                  <Toggle
+                    label="Instrumental"
+                    checked={vocals === 'none'}
+                    onChange={(on) => setVocals(on ? 'none' : 'auto')}
+                  />
+                }
               >
                 <textarea
                   id="prompt"
@@ -332,6 +343,36 @@ export default function StudioPage() {
                   }}
                 />
               </Field>
+
+              {/*
+                A genre is the one thing almost every request starts with, so
+                it gets a row of its own rather than being buried in the panel
+                of controls. The chips set the genre outright; the description
+                above is still free to say anything else about the sound.
+              */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  className="chip shrink-0 !px-2"
+                  aria-expanded={allGenres}
+                  aria-label={allGenres ? 'Show fewer genres' : 'Show every genre'}
+                  onClick={() => setAllGenres((open) => !open)}
+                >
+                  <Icon name="chevron" size={12} className={allGenres ? 'rotate-180' : ''} />
+                </button>
+                {(allGenres ? GENRES : GENRES.filter((genre) => POPULAR_GENRES.includes(genre.id)))
+                  .map((genre) => (
+                    <button
+                      key={genre.id}
+                      type="button"
+                      className="chip shrink-0"
+                      aria-pressed={genreId === genre.id}
+                      onClick={() => setGenreId(genreId === genre.id ? '' : genre.id)}
+                    >
+                      {genre.label}
+                    </button>
+                  ))}
+              </div>
 
               <div className="scroll-x scroll-fade -mx-1 flex gap-1.5 px-1 pb-1">
                 {EXAMPLES.map((example) => (
@@ -630,7 +671,7 @@ export default function StudioPage() {
               ) : (
                 <Empty
                   title="This is an instrumental"
-                  body="Set Vocals to Sung or Rap in the controls above, or write your own words in the Lyric Writer."
+                  body="Turn the Instrumental switch off, or write your own words in the box next to Style."
                   action={<a className="btn btn-sm" {...linkProps('/lyrics')}>Open the Lyric Writer</a>}
                 />
               )
