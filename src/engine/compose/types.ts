@@ -43,6 +43,14 @@ export interface ScoreNote {
    * phrase ending leaves no gap to find.
    */
   phraseStart?: boolean
+  /**
+   * The lyric line this phrase sings, exactly as written.
+   *
+   * Kept because punctuation is meaning: a question mark is what makes a line
+   * a call and the next one its response, and it is gone by the time the line
+   * has been cut into syllables.
+   */
+  phraseText?: string
 }
 
 export type DrumName =

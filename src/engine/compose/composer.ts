@@ -355,7 +355,10 @@ function attachVocals(
       const phraseNotes = result.notes.slice(phrase.start, phrase.end)
       const syllables = pronounceLine(lines[phraseIndex] ?? '', score.language)
       const placedPhrase = fitSyllablesToNotes(phraseNotes, syllables)
-      if (placedPhrase[0]) placedPhrase[0].phraseStart = true
+      if (placedPhrase[0]) {
+        placedPhrase[0].phraseStart = true
+        placedPhrase[0].phraseText = lines[phraseIndex] ?? ''
+      }
       placed.push(...placedPhrase)
     })
 

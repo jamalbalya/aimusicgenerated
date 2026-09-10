@@ -738,8 +738,8 @@ describe('the voice carries words, not just pitch', () => {
 describe('the pipeline reports what it actually produced', () => {
   const LYRIC = readFileSync(new URL('./fixtures/koplo-lyric.txt', import.meta.url), 'utf8')
 
-  const generate = (overrides: Record<string, unknown>): GenerateResult =>
-    handleRequest({
+  const generate = async (overrides: Record<string, unknown>): Promise<GenerateResult> =>
+    await handleRequest({
       kind: 'generate',
       prompt: 'Indonesian dangdut koplo, sarcastic workplace anthem, powerful kendang, groovy bass, funky guitar, dramatic male vocal, explosive sing-along chorus',
       quality: 'draft',
@@ -747,21 +747,21 @@ describe('the pipeline reports what it actually produced', () => {
       overrides: { seed: 'pipeline', ...overrides },
     } as never, () => {}) as GenerateResult
 
-    it('calls a sung song a sung song, and an instrumental an instrumental', () => {
-    const song = generate({ customLyrics: LYRIC })
+    it('calls a sung song a sung song, and an instrumental an instrumental', async () => {
+    const song = await generate({ customLyrics: LYRIC })
     expect(song.validation.kind).toBe('vocal-song')
     expect(song.validation.vocalRequested).toBe(true)
     expect(song.validation.problems).toEqual([])
     expect(describeResult(song.validation)).toMatch(/sung/)
 
-    const instrumental = generate({ vocals: 'none' })
+    const instrumental = await generate({ vocals: 'none' })
     expect(instrumental.validation.kind).toBe('instrumental')
     expect(instrumental.validation.vocalRequested).toBe(false)
     expect(describeResult(instrumental.validation)).toBe('Instrumental generated.')
   })
 
-  it('renders the words that were written, in Indonesian, sung by a man', () => {
-    const song = generate({ customLyrics: LYRIC })
+  it('renders the words that were written, in Indonesian, sung by a man', async () => {
+    const song = await generate({ customLyrics: LYRIC })
     expect(song.score.language).toBe('id')
     expect(song.score.vocalGender).toBe('male')
 

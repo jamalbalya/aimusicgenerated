@@ -18,12 +18,13 @@ function post(response: WorkerResponse, transfer: Transferable[] = []): void {
 
 scope.onmessage = (event: MessageEvent<WorkerMessage>) => {
   const { id, payload } = event.data
-  try {
-    const result = handleRequest(payload, (progress, stage) => {
-      post({ id, type: 'progress', progress, stage })
+  // A job is asynchronous because a vocal renderer may not be local: a model
+  // has to load, a service has to answer. Nothing about the transport changes.
+  void handleRequest(payload, (progress, stage) => {
+    post({ id, type: 'progress', progress, stage })
+  })
+    .then((result) => post({ id, type: 'done', result }, collectTransferables(result)))
+    .catch((error: unknown) => {
+      post({ id, type: 'error', message: error instanceof Error ? error.message : String(error) })
     })
-    post({ id, type: 'done', result }, collectTransferables(result))
-  } catch (error) {
-    post({ id, type: 'error', message: error instanceof Error ? error.message : String(error) })
-  }
 }
