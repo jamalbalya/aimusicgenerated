@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - claude/free-music-generation-tools-fy4esb
   workflow_dispatch:
 
 permissions:
