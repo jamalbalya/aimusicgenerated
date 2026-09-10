@@ -174,6 +174,135 @@ Asking for N takes in neural mode runs N **independent generations**, each with
 its own seed. One audio file is never varied into several: a variation of one
 render is not a second take of anything.
 
+## Mac M2 setup
+
+The whole path, in the order to run it. Everything below assumes an Apple
+Silicon Mac; CUDA is not required anywhere and is never used.
+
+### 1. Install
+
+```bash
+./scripts/setup-ace-step-macos.sh
+```
+
+Verifies macOS, arm64, the chip and the memory; installs `uv` if it is missing
+(the official `curl -LsSf https://astral.sh/uv/install.sh | sh`); clones or
+updates ACE-Step; runs `uv sync`; downloads the models; checks the files are
+really there; prints the disk usage; and checks MLX imports.
+
+Takes a while on first run — `uv sync` builds an environment and the weights are
+about 10 GB.
+
+### 2. Download models
+
+Step 1 does this for you. By hand, from inside the ACE-Step checkout:
+
+```bash
+export ACESTEP_CHECKPOINTS_DIR=~/Models/ACE-Step-1.5
+uv run acestep-download                              # main bundle
+uv run acestep-download --model acestep-5Hz-lm-0.6B  # the small LM
+```
+
+The main bundle carries `acestep-v15-turbo`, `vae`, `Qwen3-Embedding-0.6B` and
+`acestep-5Hz-lm-1.7B`. The **0.6B LM is separate** and must be named.
+
+### 3. Start ACE-Step
+
+```bash
+./scripts/start-ace-step-macos.sh
+```
+
+Checks Apple Silicon, the installation and every model file before starting
+anything, then hands over to ACE-Step's own `start_api_server_macos.sh` (which
+also repairs MLX against the running macOS version). Runs in the foreground —
+leave it open, Ctrl-C stops it.
+
+It exports `ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-0.6B`,
+`ACESTEP_LM_BACKEND=mlx` and `ACESTEP_CHECKPOINTS_DIR`, which is how the smaller
+LM and the shared weights directory are selected without editing anything
+upstream.
+
+The first *request* is what loads the models, so expect several minutes on it.
+
+### 4. Verify the backend
+
+In a second terminal:
+
+```bash
+./scripts/diagnose-ace-step-macos.sh     # full report, READY or NOT READY
+node scripts/ace-step-status.mjs         # the same answer in one screen
+```
+
+Both exit non-zero when not ready. Neither reports READY from configuration:
+the only evidence accepted is a reply from `/health`.
+
+### 5. Generate Bos Toxic
+
+```bash
+./scripts/generate-bos-toxic-macos.sh
+```
+
+The first real generation, fixed at:
+
+| | |
+|---|---|
+| DiT | `acestep-v15-turbo` |
+| LM | `acestep-5Hz-lm-0.6B` |
+| Language | `id` |
+| Vocal | male |
+| Instrumental | false |
+| `thinking` | true |
+
+No parameter sweep — one successful real generation first.
+
+### 6. Find the audio
+
+```
+evaluation/bos-toxic/bos-toxic-<model>-<timestamp>.wav
+evaluation/bos-toxic/bos-toxic-<model>-<timestamp>.json
+```
+
+`evaluation/` is gitignored. Generated audio is never committed.
+
+The JSON beside the WAV records the task id, the ACE-Step version and commit,
+the models the server said it loaded, the device and backend, the wall-clock
+generation time, the reported output duration, BPM and key.
+
+### 7. Connect the studio
+
+```bash
+cp .env.example .env      # VITE_ACE_STEP_API_URL=http://127.0.0.1:8001
+npm run dev
+```
+
+The Studio header shows **Neural Engine: ● Connected** once `/health` answers.
+Pick **Neural**, write a style and lyrics, and generate.
+
+### 8. Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `uv: command not found` after setup | The installer added it to `~/.local/bin`; open a new terminal. |
+| Setup fails downloading weights | Try `ACE_STEP_DOWNLOAD_SOURCE=modelscope ./scripts/setup-ace-step-macos.sh`. |
+| Diagnose says models missing | A partial download leaves directories with no weights file, which reads as missing. Re-run the setup script. |
+| `Something is already listening on port 8001` | An older server is still up. Stop it, or set `ACE_STEP_PORT`. |
+| MLX will not import | Run `uv pip install -U mlx mlx-lm` inside the ACE-Step checkout. The macOS launcher also attempts this. |
+| First generation seems to hang | Models load on the first request, not at startup. Watch the server terminal. |
+| Studio says Not Connected but curl works | The page must be `http://localhost` — an HTTPS page cannot call an `http://` backend, and the studio says so rather than probing. |
+| Generation fails with memory errors | 24 GB is comfortable for the 0.6B LM. Set `ACE_STEP_LM_MODEL=acestep-5Hz-lm-0.6B` and avoid the 1.7B and 4B until the small one works. |
+| Want to start over | Delete `~/Models/ACE-Step-1.5` and re-run setup. The clone can stay. |
+
+### Where things live
+
+| | Default | Override |
+|---|---|---|
+| ACE-Step source | `~/Applications/ACE-Step-1.5` | `ACE_STEP_HOME` |
+| Model weights | `~/Models/ACE-Step-1.5` | `ACE_STEP_MODELS` |
+| Generated audio | `evaluation/bos-toxic/` | — |
+
+All of them are read from `scripts/ace-step-env.sh`, which reads `.env` first.
+No personal path is hardcoded anywhere.
+
 ## Local setup
 
 ### 1. Get ACE-Step
@@ -181,20 +310,29 @@ render is not a second take of anything.
 ```bash
 git clone https://github.com/ACE-Step/ACE-Step-1.5
 cd ACE-Step-1.5
-./install_uv.sh          # or follow docs/en/INSTALL.md
+curl -LsSf https://astral.sh/uv/install.sh | sh   # if uv is not installed
+uv sync
 ```
 
 ### 2. Download the weights
 
 Model weights are **not** stored in this repository and never will be. They come
-from the ACE-Step project's own distribution:
+from the ACE-Step project's own distribution, using its own downloader:
 
 ```bash
-huggingface-cli download ACE-Step/Ace-Step1.5 --local-dir ./checkpoints
+uv run acestep-download                                # the main model bundle
+uv run acestep-download --model acestep-5Hz-lm-0.6B    # the smaller LM
+uv run acestep-download --list                         # everything available
+uv run acestep-download --download-source modelscope   # if HuggingFace is slow
 ```
 
-ACE-Step also supports ModelScope as a source, and its downloader picks between
-them automatically.
+The **main bundle** contains `acestep-v15-turbo`, `vae`, `Qwen3-Embedding-0.6B`
+and `acestep-5Hz-lm-1.7B`. Note what that means: the 1.7B LM ships with it, and
+**`acestep-5Hz-lm-0.6B` is a separate sub-model** that has to be asked for by
+name. Models also download automatically on first run if you skip this step.
+
+`ACESTEP_CHECKPOINTS_DIR` decides where they land, which is how the scripts here
+keep them out of both repositories.
 
 ### 3. Start the backend
 
@@ -245,7 +383,7 @@ The header shows **Neural Engine: ● Connected** once the backend answers
 ## Verifying it end to end
 
 ```bash
-node scripts/test-ace-step-bos-toxic.mjs
+./scripts/generate-bos-toxic-macos.sh
 ```
 
 Checks the backend is up, submits the Bos Toxic style and lyrics in Indonesian
@@ -312,10 +450,16 @@ without the hardware:**
   running, the weights downloaded, and a GPU or Apple Silicon machine.
 - Anything at all about how the result sounds.
 
-`node scripts/test-ace-step-bos-toxic.mjs` is the step that closes that gap, and
-it is written to fail loudly rather than pass vacuously. Until it has been run
-and the audio listened to, no quality claim about the neural path should be made
-— including by this repository's own documentation.
+`./scripts/generate-bos-toxic-macos.sh` is the step that closes that gap, and it
+is written to fail loudly rather than pass vacuously. Until it has been run and
+the audio listened to, no quality claim about the neural path should be made —
+including by this repository's own documentation.
+
+The project's quality level therefore stands at **LEVEL 1**, which is the
+measured grade of the *procedural* engine. Nothing about the neural path's
+quality is known, and "ACE-Step generated audio successfully" would not be
+LEVEL 3 in any case: LEVEL 3 means the same perceived quality class as the
+TopMediai reference, judged by listening.
 
 ## Limitations
 

@@ -83,19 +83,22 @@ downloaded from the ACE-Step project's own distribution at setup time.
 
 Running it locally:
 
-```bash
-git clone https://github.com/ACE-Step/ACE-Step-1.5
-cd ACE-Step-1.5 && ./install_uv.sh
-huggingface-cli download ACE-Step/Ace-Step1.5 --local-dir ./checkpoints
-./start_api_server.sh            # ./start_api_server_macos.sh on Apple Silicon
-```
-
-Then point the studio at it with `VITE_ACE_STEP_API_URL` (see `.env.example`) and
-verify the whole path end to end:
+On an Apple Silicon Mac, three scripts do the whole thing — install, start,
+generate:
 
 ```bash
-node scripts/test-ace-step-bos-toxic.mjs
+./scripts/setup-ace-step-macos.sh       # clone, uv sync, download the weights
+./scripts/start-ace-step-macos.sh       # start the API server on MLX
+./scripts/generate-bos-toxic-macos.sh   # generate the real test song
 ```
+
+`./scripts/diagnose-ace-step-macos.sh` reports READY or NOT READY with the
+reason, and `node scripts/ace-step-status.mjs` gives the same answer in one
+screen. Neither infers readiness from configuration: only a reply from the
+backend counts.
+
+On other platforms, follow ACE-Step's own installation guide, then point the
+studio at the server with `VITE_ACE_STEP_API_URL` (see `.env.example`).
 
 A neural request is never quietly served by the offline engine: if the backend
 is not reachable the request fails and offers to switch, rather than returning a
@@ -188,7 +191,12 @@ docs/
   vocal-renderers.md          The seam a different singer plugs into
   quality/                    Measured assessments of what comes out
 scripts/
-  test-ace-step-bos-toxic.mjs Real-model smoke test (needs a running backend)
+  setup-ace-step-macos.sh     Install ACE-Step and download its weights
+  start-ace-step-macos.sh     Start the ACE-Step API server on MLX
+  diagnose-ace-step-macos.sh  READY / NOT READY, with the reason
+  ace-step-status.mjs         The same answer in one screen
+  generate-bos-toxic-macos.sh Generate the real test song
+  test-ace-step-bos-toxic.mjs The smoke test the two above drive
 ```
 
 The engine has no browser dependencies at all — it is plain TypeScript over
