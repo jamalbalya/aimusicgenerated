@@ -12,3 +12,8 @@ test-results
 !.env.example
 tests/e2e/fixtures/
 dist-single
+
+# Audio and metadata written by the ACE-Step smoke test. Generated output is
+# never committed: it is large, it is not source, and it goes stale the moment
+# the model or the parameters change.
+/evaluation/

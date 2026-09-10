@@ -66,6 +66,47 @@ depths, as the instrumental or the vocal on their own, as every instrument
 separately, as a standard MIDI file of the whole arrangement, or as lyrics
 timed against the mix in SRT for video and LRC for music players.
 
+## Neural music generation
+
+Resonant Studio supports **ACE-Step 1.5** as an optional neural music generation
+backend. Choose **Neural** in the studio and a style plus lyrics go to the model,
+which writes the whole song — melody, harmony, rhythm, arrangement, instruments
+and a sung vocal — and hands back a finished mix.
+
+It is optional in the real sense: the studio works with nothing installed. The
+offline engine composes and sings in the tab, exactly as it always has, and the
+neural engine simply shows **● Not Connected** until a backend answers.
+
+**Model weights are not stored in this repository**, and no model architecture is
+vendored into it. ACE-Step runs as its own backend, and its weights are
+downloaded from the ACE-Step project's own distribution at setup time.
+
+Running it locally:
+
+```bash
+git clone https://github.com/ACE-Step/ACE-Step-1.5
+cd ACE-Step-1.5 && ./install_uv.sh
+huggingface-cli download ACE-Step/Ace-Step1.5 --local-dir ./checkpoints
+./start_api_server.sh            # ./start_api_server_macos.sh on Apple Silicon
+```
+
+Then point the studio at it with `VITE_ACE_STEP_API_URL` (see `.env.example`) and
+verify the whole path end to end:
+
+```bash
+node scripts/test-ace-step-bos-toxic.mjs
+```
+
+A neural request is never quietly served by the offline engine: if the backend
+is not reachable the request fails and offers to switch, rather than returning a
+synthesised vocal that would be mistaken for a neural one. Every result says
+which engine made it.
+
+GitHub Pages cannot run the model — it serves static files and has no GPU — so
+the deployed site runs the offline engine. `docs/architecture/neural-generation.md`
+covers the architecture, Apple Silicon setup, environment variables,
+troubleshooting, production deployment and the limitations.
+
 ### What it is not
 
 This is not a large neural model. Those need a data centre full of GPUs, which
@@ -134,6 +175,7 @@ src/
     lyrics/        Syllables, rhyme, inflection, vocabulary, the writer
     export/        MIDI and timed-lyric files
     audio/         FFT, STFT, separation, pitch shifting, analysis, WAV, MP3
+    providers/     The engine boundary: ACE-Step and the offline composer
   workers/         The worker protocol and its typed client
   ui/              Components and pages
   lib/             Player, file handling, IndexedDB library, router
@@ -142,8 +184,11 @@ tests/
   unit/            Engine tests (Vitest, runs in Node)
   e2e/             Browser tests (Playwright, desktop and mobile)
 docs/
+  architecture/               How the neural path is put together
   vocal-renderers.md          The seam a different singer plugs into
   quality/                    Measured assessments of what comes out
+scripts/
+  test-ace-step-bos-toxic.mjs Real-model smoke test (needs a running backend)
 ```
 
 The engine has no browser dependencies at all — it is plain TypeScript over

@@ -27,6 +27,48 @@ import { scoreToMidi } from '../../engine/export/midi'
 import { scoreToLrc, scoreToSrt } from '../../engine/export/subtitles'
 import { newProjectId, saveProject } from '../../lib/library'
 import { linkProps } from '../../lib/router'
+import { useNeuralEngine } from '../useNeuralEngine'
+import { decodeWav } from '../../engine/audio/wav'
+import {
+  AceStepProvider, EngineUnavailableError, GenerationCancelledError,
+  engineLabel, type EngineMode, type GenerationStatus, type MusicGenerationResult,
+} from '../../engine/providers'
+
+/**
+ * A title for a neural result.
+ *
+ * ACE-Step returns audio, not a name. The first sung line is what people
+ * actually call a song by, so use that and fall back to the style.
+ */
+function songTitle(style: string, lyrics: string): string {
+  const firstLine = lyrics.split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.length > 0 && !/^\[[^\]]+\]$/.test(line))
+  const source = firstLine ?? style.trim()
+  const words = source.split(/\s+/).slice(0, 6).join(' ')
+  return words.replace(/[.,;:!?]+$/, '') || 'Untitled'
+}
+
+/**
+ * What each generation state is called on screen.
+ *
+ * `idle` and `completed` say nothing, because the absence of a message is the
+ * message. None of these carry a percentage: ACE-Step reports a stage, and a
+ * bar that moved on a timer would be inventing the rest.
+ */
+const NEURAL_STATE_TEXT: Partial<Record<GenerationStatus['state'], string>> = {
+  initializing: 'Preparing neural music engine…',
+  queued: 'Waiting for the neural music engine…',
+  generating: 'Generating song…',
+  failed: 'Generation failed.',
+  cancelled: 'Stopped waiting.',
+}
+
+/** One neural take: what the engine returned, plus the audio decoded for the player. */
+interface NeuralTake {
+  result: MusicGenerationResult
+  audio: { channels: Float32Array[]; sampleRate: number }
+}
 
 /** Two lines of a lyric, to show the shape rather than to be sung. */
 const LYRIC_PLACEHOLDER = `Aku masih di sini menunggu
@@ -114,6 +156,31 @@ export default function StudioPage() {
   }, [customLyrics])
   const [keepStems, setKeepStems] = useState(true)
 
+  // Which engine makes the song. Never changed for the user: a neural request
+  // that cannot be served fails and says so, rather than arriving as a
+  // procedural song they would reasonably mistake for a neural one.
+  // Derived rather than stored: until the user picks, the mode simply *is*
+  // whatever the backend probe says, so there is no second copy of that fact
+  // to fall out of step with the first.
+  const [engineChoice, setEngineChoice] = useState<EngineMode | null>(null)
+  const [neuralTakes, setNeuralTakes] = useState<NeuralTake[]>([])
+  const [neuralIndex, setNeuralIndex] = useState(0)
+  const [neuralStatus, setNeuralStatus] = useState<GenerationStatus | null>(null)
+  const [engineError, setEngineError] = useState<string | null>(null)
+  const [neuralController, setNeuralController] = useState<AbortController | null>(null)
+  const neural = useNeuralEngine()
+
+  // Start on the neural engine when the backend is actually answering. This
+  // only decides the initial position of a control the user can see; it is not
+  // a fallback applied to a request they already made.
+  const engineMode: EngineMode = engineChoice
+    ?? (neural.connection === 'connected' ? 'neural' : 'procedural')
+
+  const chooseEngine = useCallback((mode: EngineMode) => {
+    setEngineChoice(mode)
+    setEngineError(null)
+  }, [])
+
   const [takeCount, setTakeCount] = useState(1)
   // A run can write more than one song from the same brief. They are all kept
   // so the two can be compared without generating twice; `takeIndex` is the
@@ -160,6 +227,30 @@ export default function StudioPage() {
     })
   }, [setCurrent])
 
+  /** Puts one neural take in the player. */
+  const openNeuralTake = useCallback((take: NeuralTake) => {
+    const meta = take.result.metadata
+    setCurrent({
+      title: songTitle(prompt, customLyrics),
+      subtitle: [
+        engineLabel('ace-step'),
+        meta?.model,
+        meta?.bpm ? `${meta.bpm} BPM` : null,
+        meta?.keyScale,
+      ].filter(Boolean).join(' · '),
+      audio: take.audio,
+      lyrics: customLyrics,
+      source: 'song',
+    })
+  }, [setCurrent, prompt, customLyrics])
+
+  const chooseNeuralTake = useCallback((index: number) => {
+    const take = neuralTakes[index]
+    if (!take) return
+    setNeuralIndex(index)
+    openNeuralTake(take)
+  }, [neuralTakes, openNeuralTake])
+
   const chooseTake = useCallback((index: number) => {
     const take = takes[index]
     if (!take) return
@@ -167,6 +258,80 @@ export default function StudioPage() {
     setSeed(take.score.seed)
     openTake(take)
   }, [takes, openTake])
+
+  /**
+   * Generates with ACE-Step.
+   *
+   * Every take is its own generation with its own seed — the model is asked
+   * afresh each time rather than one file being varied, because a variation of
+   * one render is not a second take of anything.
+   */
+  const generateNeural = useCallback(async (overrideSeed?: string) => {
+    const style = prompt.trim()
+    const lyrics = customLyrics.trim()
+    if (!style) {
+      notify('Describe the song you want.', 'error')
+      return
+    }
+    if (!lyrics) {
+      notify('The neural engine sings the lyrics you write. Add some, or switch to Offline Procedural Mode.', 'error')
+      return
+    }
+
+    const controller = new AbortController()
+    setNeuralController(controller)
+    setEngineError(null)
+    setNeuralStatus({ state: 'initializing' })
+
+    const provider = new AceStepProvider()
+    const baseSeed = Number.parseInt(overrideSeed ?? seed.trim(), 10)
+    const collected: NeuralTake[] = []
+
+    try {
+      for (let index = 0; index < takeCount; index++) {
+        const label = takeCount > 1 ? ` (take ${index + 1} of ${takeCount})` : ''
+        const result = await provider.generate({
+          style,
+          lyrics,
+          language: language === 'auto' ? (detectLanguage(lyrics) as string) : language,
+          ...(duration > 0 ? { duration } : {}),
+          ...(vocals === 'none' ? { instrumental: true } : {}),
+          ...(Number.isFinite(baseSeed) ? { seed: baseSeed + index } : {}),
+        }, {
+          signal: controller.signal,
+          onStatus: (status) => setNeuralStatus({
+            ...status,
+            ...(status.detail ? { detail: `${status.detail}${label}` } : {}),
+          }),
+        })
+
+        const buffer = await (await fetch(result.audioUrl)).arrayBuffer()
+        const decoded = decodeWav(buffer)
+        collected.push({ result, audio: decoded })
+        setNeuralTakes([...collected])
+        if (index === 0) {
+          setNeuralIndex(0)
+          openNeuralTake(collected[0]!)
+        }
+      }
+      setNeuralStatus({ state: 'completed' })
+      notify(`Song generated by ${engineLabel('ace-step').replace('Engine: ', '')}.`, 'success')
+    } catch (error) {
+      if (error instanceof GenerationCancelledError) {
+        setNeuralStatus({ state: 'cancelled' })
+        // ACE-Step has no cancellation endpoint, so this is the honest wording.
+        notify('Stopped waiting. The backend may still be finishing this song.', 'info')
+        return
+      }
+      setNeuralStatus({ state: 'failed' })
+      const message = error instanceof Error ? error.message : String(error)
+      if (error instanceof EngineUnavailableError) setEngineError(message)
+      notify(message, 'error')
+    } finally {
+      setNeuralController(null)
+    }
+  }, [prompt, customLyrics, language, duration, vocals, seed, takeCount,
+      notify, openNeuralTake])
 
   const generate = useCallback(async (overrideSeed?: string) => {
     const text = prompt.trim()
@@ -211,6 +376,28 @@ export default function StudioPage() {
     }
   }, [prompt, genreId, mood, bpm, tonic, scale, duration, vocals, customLyrics, language,
       singStyle, seed, quality, keepStems, takeCount, job, notify, reportResult, openTake])
+
+  /** One button, two engines. Which one is on screen, and never a substitute. */
+  const generateSong = useCallback(async (overrideSeed?: string) => {
+    if (engineMode === 'neural') {
+      setTakes([])
+      await generateNeural(overrideSeed)
+      return
+    }
+    setNeuralTakes([])
+    setNeuralStatus(null)
+    await generate(overrideSeed)
+  }, [engineMode, generate, generateNeural])
+
+  const busy = job.running || Boolean(neuralController)
+
+  const cancelGeneration = useCallback(() => {
+    if (neuralController) {
+      neuralController.abort()
+      return
+    }
+    job.cancel()
+  }, [neuralController, job])
 
   /**
    * Renders the same score again at the selected quality. Auditioning in Draft
@@ -501,24 +688,75 @@ export default function StudioPage() {
             </div>
           </div>
 
+          {/* Which engine, and whether the neural one is actually there. */}
+          <div className="grid gap-2 rounded-[10px] border border-[var(--line)] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Segmented
+                ariaLabel="Generation engine"
+                value={engineMode}
+                onChange={(value) => chooseEngine(value as EngineMode)}
+                options={[
+                  { value: 'neural', label: 'Neural', title: 'ACE-Step 1.5 — needs the backend running' },
+                  { value: 'procedural', label: 'Offline Procedural', title: 'Composes and sings in this tab' },
+                ]}
+              />
+              <p className="flex items-center gap-1.5 text-[12px] text-[var(--text-dim)]">
+                <span aria-hidden="true" style={{
+                  color: neural.connection === 'connected' ? 'var(--good, #4ade80)'
+                    : neural.connection === 'checking' ? 'var(--text-dim)' : 'var(--bad, #f87171)',
+                }}>●</span>
+                <span>
+                  Neural Engine:{' '}
+                  {neural.connection === 'connected' ? 'Connected'
+                    : neural.connection === 'checking' ? 'Checking…' : 'Not Connected'}
+                </span>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={neural.recheck}>
+                  Re-check
+                </button>
+              </p>
+            </div>
+            <p className="text-[12px] leading-relaxed text-[var(--text-dim)]">
+              {engineMode !== 'neural'
+                ? 'Composes, sings and mixes on this device. Works offline and costs nothing; the singer is synthesised.'
+                : neural.blockedReason
+                  ? neural.blockedReason
+                  : `ACE-Step 1.5 at ${neural.baseUrl}${neural.loadedModel ? ` — ${neural.loadedModel}` : ''}. Generates a complete song with a sung vocal.`}
+            </p>
+          </div>
+
+          {engineError && (
+            <div className="grid gap-2 rounded-[10px] border border-[var(--line)] p-3" role="alert">
+              <p className="text-[13px]">{engineError}</p>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className="btn btn-sm" onClick={neural.recheck}>
+                  Re-check the backend
+                </button>
+                <button type="button" className="btn btn-sm btn-primary"
+                  onClick={() => chooseEngine('procedural')}>
+                  Use Offline Procedural Mode
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               className="btn btn-primary min-w-[150px]"
-              disabled={job.running}
-              onClick={() => void generate()}
+              disabled={busy}
+              onClick={() => void generateSong()}
             >
-              {job.running ? 'Generating…' : 'Generate song'}
+              {busy ? 'Generating…' : 'Generate song'}
             </button>
-            {job.running ? (
-              <button type="button" className="btn" onClick={job.cancel}>Cancel</button>
+            {busy ? (
+              <button type="button" className="btn" onClick={cancelGeneration}>Cancel</button>
             ) : (
               <button
                 type="button"
                 className="btn"
-                disabled={!result}
+                disabled={engineMode === 'neural' ? neuralTakes.length === 0 : !result}
                 title="Same settings, a different take"
-                onClick={() => void generate(`${Date.now()}-${Math.random()}`)}
+                onClick={() => void generateSong(`${Date.now()}-${Math.random()}`)}
               >
                 <Icon name="dice" size={14} />
                 New take
@@ -538,6 +776,19 @@ export default function StudioPage() {
           </div>
 
           {job.running && <Progress value={job.progress} stage={job.stage} label="Generating" />}
+          {neuralStatus && NEURAL_STATE_TEXT[neuralStatus.state] && (
+            neuralStatus.progress !== undefined
+              ? <Progress
+                  value={neuralStatus.progress}
+                  stage={neuralStatus.detail ?? ''}
+                  label={NEURAL_STATE_TEXT[neuralStatus.state]!}
+                />
+              : <p className="text-[13px] text-[var(--text-dim)]" role="status">
+                  {NEURAL_STATE_TEXT[neuralStatus.state]}
+                  {neuralStatus.detail ? ` — ${neuralStatus.detail}` : ''}
+                  {neuralStatus.queuePosition ? ` (position ${neuralStatus.queuePosition} in the queue)` : ''}
+                </p>
+          )}
 
           {advanced && (
             <div className="grid gap-4 border-t border-[var(--line)] pt-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -657,12 +908,89 @@ export default function StudioPage() {
         </div>
       </Panel>
 
-      {!result && !job.running && (
+      {!result && neuralTakes.length === 0 && !busy && (
         <Panel>
           <Empty
             title="Nothing generated yet"
-            body="Describe a song above, or tap one of the examples. Everything happens on this device — the first render takes a few seconds and there is no limit on how many you make."
+            body={engineMode === 'neural'
+              ? 'Write a style and the lyrics you want sung, then generate. ACE-Step writes the whole song — melody, arrangement, instruments and a sung vocal.'
+              : 'Describe a song above, or tap one of the examples. Everything happens on this device — the first render takes a few seconds and there is no limit on how many you make.'}
           />
+        </Panel>
+      )}
+
+      {/* The neural result. Its own panel, because there is no score behind it:
+          ACE-Step returns a finished recording, not an arrangement to inspect. */}
+      {neuralTakes.length > 0 && neuralTakes[neuralIndex] && (
+        <Panel title="Result">
+          <div className="grid gap-4">
+            <p className="t-label">{engineLabel('ace-step')}</p>
+
+            {neuralTakes.length > 1 && (
+              <div className="grid gap-1.5">
+                <p className="t-label">{neuralTakes.length} takes from one brief</p>
+                <div className="flex flex-wrap gap-1.5" role="group" aria-label="Choose a take">
+                  {neuralTakes.map((take, index) => (
+                    <button
+                      key={take.result.id}
+                      type="button"
+                      className={`btn btn-sm ${index === neuralIndex ? 'btn-primary' : ''}`}
+                      aria-pressed={index === neuralIndex}
+                      disabled={busy}
+                      onClick={() => chooseNeuralTake(index)}
+                    >
+                      Take {index + 1}
+                      <span className="t-num text-[11px] opacity-70">
+                        {formatDuration(take.result.duration)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <h2 className="t-title text-[1.35rem] tracking-[-0.02em]">
+                {songTitle(prompt, customLyrics)}
+              </h2>
+              <p className="mt-1 text-[12.5px] text-[var(--text-dim)]">
+                Generated by ACE-Step 1.5 · {neuralTakes[neuralIndex]!.result.metadata?.model}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-5">
+              <Stat label="Engine" value="ACE-Step" tone="accent" />
+              <Stat label="Length" value={formatDuration(neuralTakes[neuralIndex]!.result.duration)} />
+              <Stat label="Language" value={neuralTakes[neuralIndex]!.result.metadata?.language ?? '—'} />
+              <Stat
+                label="Tempo"
+                value={neuralTakes[neuralIndex]!.result.metadata?.bpm
+                  ? String(neuralTakes[neuralIndex]!.result.metadata!.bpm) : '—'}
+              />
+              <Stat label="Key" value={neuralTakes[neuralIndex]!.result.metadata?.keyScale ?? '—'} />
+            </div>
+
+            <dl className="grid gap-1 text-[12.5px] text-[var(--text-dim)]">
+              <div className="flex gap-2">
+                <dt className="min-w-[7rem]">DiT model</dt>
+                <dd className="t-num">{neuralTakes[neuralIndex]!.result.metadata?.model ?? '—'}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="min-w-[7rem]">Language model</dt>
+                <dd className="t-num">{neuralTakes[neuralIndex]!.result.metadata?.lmModel ?? '—'}</dd>
+              </div>
+              {neuralTakes[neuralIndex]!.result.metadata?.seed !== undefined && (
+                <div className="flex gap-2">
+                  <dt className="min-w-[7rem]">Seed</dt>
+                  <dd className="t-num">{neuralTakes[neuralIndex]!.result.metadata!.seed}</dd>
+                </div>
+              )}
+            </dl>
+
+            <p className="text-[12.5px] text-[var(--text-dim)]">
+              Play and download it from the player at the bottom of the screen.
+            </p>
+          </div>
         </Panel>
       )}
 

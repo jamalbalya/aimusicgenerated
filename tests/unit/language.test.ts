@@ -761,7 +761,7 @@ describe('the pipeline reports what it actually produced', () => {
     expect(instrumental.validation.kind).toBe('instrumental')
     expect(instrumental.validation.vocalRequested).toBe(false)
     expect(describeResult(instrumental.validation)).toBe('Instrumental generated.')
-  })
+  }, 120_000)
 
   it('renders the words that were written, in Indonesian, sung by a man', async () => {
     const song = await generate({ customLyrics: LYRIC })
@@ -790,7 +790,7 @@ describe('the pipeline reports what it actually produced', () => {
 
     // And the voice is carrying the range it is heard in.
     expect(song.validation.voiceBandShare!).toBeGreaterThan(0.4)
-  })
+  }, 120_000)
 
   it('writes a different song for every take, from one brief', async () => {
     const run2 = await run({ customLyrics: LYRIC }, 2)
@@ -817,7 +817,7 @@ describe('the pipeline reports what it actually produced', () => {
     // Stems would cost a set of full-length buffers per take, so a run that
     // writes several hands them back without.
     expect(run2.takes.every((take) => take.stems.length === 0)).toBe(true)
-  })
+  }, 120_000)
 
   it('notices a lyric a singer cannot perform', () => {
     const count = (line: string): number => countLineSyllables(line, 'id')

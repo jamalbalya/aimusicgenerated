@@ -6,12 +6,24 @@ import { writeFixture } from './make-fixture'
 
 const FIXTURE = writeFixture()
 
-/** Fails the test if the page logged an error, so silent breakage cannot pass. */
+/**
+ * Fails the test if the page logged an error, so silent breakage cannot pass.
+ *
+ * One thing is filtered out: the studio probes for a neural backend on load,
+ * and no ACE-Step server runs in the test environment, so the browser logs a
+ * refused connection. That is the state under test rather than a fault — the
+ * whole point is that the studio keeps working with no backend — and nothing
+ * else in the app touches the network.
+ */
 function watchForErrors(page: Page): string[] {
   const errors: string[] = []
+  const expected = (text: string) =>
+    text.includes('ERR_CONNECTION_REFUSED') || text.includes('127.0.0.1:8001')
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`))
   page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(`console: ${message.text()}`)
+    if (message.type() === 'error' && !expected(message.text())) {
+      errors.push(`console: ${message.text()}`)
+    }
   })
   return errors
 }
@@ -238,6 +250,41 @@ test.describe('song studio', () => {
     await page.waitForTimeout(500)
     await expect(page.getByRole('heading', { level: 2 }).first()).toBeVisible({ timeout: 150_000 })
     expect(await page.getByRole('heading', { level: 2 }).first().innerText()).toBe(firstTitle)
+  })
+
+  test('shows the neural engine as not connected, and never silently substitutes', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/')
+
+    // No ACE-Step backend runs in the test environment, so the honest state is
+    // "Not Connected" — never "available", and never a quiet downgrade.
+    await expect(page.getByText(/Neural Engine:\s*(Not Connected|Checking)/)).toBeVisible()
+    await expect(page.getByText('Neural Engine: Not Connected')).toBeVisible({ timeout: 20_000 })
+
+    // The offline engine is the one selected, and it is named as such.
+    const engines = page.getByRole('group', { name: 'Generation engine' })
+    await expect(engines.getByRole('button', { name: 'Offline Procedural' }))
+      .toHaveAttribute('aria-pressed', 'true')
+
+    // Choosing Neural and generating must fail with the message that names
+    // both ways out, and must NOT return a procedural song.
+    await engines.getByRole('button', { name: 'Neural', exact: true }).click()
+    await page.getByLabel('Style').fill('Indonesian dangdut koplo, male vocal')
+    await page.getByLabel('Lyrics').fill('[Verse]\nPagi datang hati berdebar')
+    await page.getByRole('button', { name: 'Generate song' }).click()
+
+    const alert = page.getByRole('alert')
+    await expect(alert).toContainText('Neural music engine is unavailable', { timeout: 60_000 })
+    await expect(alert.getByRole('button', { name: 'Use Offline Procedural Mode' })).toBeVisible()
+    // Nothing was generated: no result panel appeared.
+    await expect(page.getByRole('heading', { level: 2 })).toHaveCount(0)
+
+    // The offer works, and puts the visible control where it says.
+    await alert.getByRole('button', { name: 'Use Offline Procedural Mode' }).click()
+    await expect(engines.getByRole('button', { name: 'Offline Procedural' }))
+      .toHaveAttribute('aria-pressed', 'true')
+
+    expect(errors).toEqual([])
   })
 
   test('writes several takes from one brief and lets you pick between them', async ({ page }) => {
