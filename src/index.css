@@ -310,6 +310,10 @@ body {
 /* Segmented control — one row of hard-edged cells. */
 .segmented {
   display: inline-flex;
+  /* Sized by its cells, not stretched to fill a grid cell. Callers that want
+     it full width on small screens set that explicitly. */
+  justify-self: start;
+  align-self: start;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
   overflow: hidden;
