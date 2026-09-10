@@ -199,7 +199,7 @@ async function runOnMainThread<T extends WorkerResult>(
   // Yield once so the browser can paint the pending state first.
   await new Promise((resolve) => setTimeout(resolve, 16))
   if (options.signal?.aborted) throw new Error('Cancelled')
-  const result = handleRequest(request, (progress, stage) => options.onProgress?.(progress, stage)) as T
+  const result = await handleRequest(request, (progress, stage) => options.onProgress?.(progress, stage)) as T
   options.onProgress?.(1, 'Done')
   return result
 }

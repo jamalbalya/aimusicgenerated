@@ -9,8 +9,7 @@
 
 import { buildSpec } from '../engine/compose/prompt'
 import { composeSong, fitSyllablesToNotes } from '../engine/compose/composer'
-import { renderScore } from '../engine/synth/render'
-import { validateRender } from '../engine/synth/validate'
+import { renderSong } from '../engine/synth/pipeline'
 import { SING_PRESETS } from '../engine/voice/singer'
 import { generateLyrics } from '../engine/lyrics/generator'
 import { pronounceLine, resolveLanguage } from '../engine/lang'
@@ -139,7 +138,7 @@ function applyOp(audio: AudioData, op: ProcessOp): AudioData {
   }
 }
 
-function handle(id: number, request: WorkerRequest): WorkerResult {
+async function handle(id: number, request: WorkerRequest): Promise<WorkerResult> {
   switch (request.kind) {
     case 'generate': {
       progress(id, 0.02, 'Writing the arrangement')
@@ -147,7 +146,7 @@ function handle(id: number, request: WorkerRequest): WorkerResult {
       const score = composeSong(spec)
       progress(id, 0.08, 'Rendering audio')
       const sampleRate = QUALITY_SAMPLE_RATES[request.quality]
-      const rendered = renderScore(score, {
+      const rendered = await renderSong(score, {
         sampleRate,
         keepStems: request.keepStems,
         singStyle: request.singStylePreset ? SING_PRESETS[request.singStylePreset] : undefined,
@@ -164,13 +163,13 @@ function handle(id: number, request: WorkerRequest): WorkerResult {
         })),
         loudnessDb: rendered.loudnessDb,
         peak: rendered.peak,
-        validation: validateRender(score, rendered),
+        validation: rendered.validation,
       }
     }
 
     case 'rerender': {
       const sampleRate = QUALITY_SAMPLE_RATES[request.quality]
-      const rendered = renderScore(request.score, {
+      const rendered = await renderSong(request.score, {
         sampleRate,
         keepStems: request.keepStems ?? false,
         excludeTrackIds: request.excludeTrackIds,
@@ -189,7 +188,7 @@ function handle(id: number, request: WorkerRequest): WorkerResult {
         })),
         loudnessDb: rendered.loudnessDb,
         peak: rendered.peak,
-        validation: validateRender(request.score, rendered),
+        validation: rendered.validation,
       }
     }
 
@@ -313,7 +312,7 @@ function handle(id: number, request: WorkerRequest): WorkerResult {
       }
       progress(id, 0.15, 'Rendering audio')
       const sampleRate = QUALITY_SAMPLE_RATES[request.quality]
-      const rendered = renderScore(score, {
+      const rendered = await renderSong(score, {
         sampleRate,
         singStyle: request.style,
         onProgress: (value) => progress(id, 0.15 + value * 0.83, 'Rendering audio'),
@@ -325,7 +324,7 @@ function handle(id: number, request: WorkerRequest): WorkerResult {
         stems: [],
         loudnessDb: rendered.loudnessDb,
         peak: rendered.peak,
-        validation: validateRender(score, rendered),
+        validation: rendered.validation,
       }
     }
   }
@@ -390,10 +389,12 @@ function applyLyricsToTrack(score: Score, lines: string[], language: LanguageId 
 
 
 /** Runs one job, reporting progress through `onProgress`. */
-export function handleRequest(request: WorkerRequest, onProgress: ProgressReporter): WorkerResult {
+export async function handleRequest(
+  request: WorkerRequest, onProgress: ProgressReporter,
+): Promise<WorkerResult> {
   reportProgress = onProgress
   try {
-    return handle(0, request)
+    return await handle(0, request)
   } finally {
     reportProgress = () => {}
   }

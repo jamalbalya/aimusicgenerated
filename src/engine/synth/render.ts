@@ -16,6 +16,7 @@ import { applyDrive, applyTrackEq, buildSidechainEnvelope, Compressor, Limiter, 
 import { Biquad } from './dsp'
 import { renderSungNote, SING_PRESETS, type SingStyle } from '../voice/singer'
 import { measureLoudness } from '../audio/analyze'
+import type { VocalStems } from '../voice/renderer'
 
 export interface RenderOptions {
   sampleRate?: number
@@ -25,6 +26,15 @@ export interface RenderOptions {
   keepStems?: boolean
   /** Overrides the singing style; defaults to one chosen from the genre. */
   singStyle?: SingStyle
+  /**
+   * Vocals already rendered by a `VocalRenderer`, keyed by role.
+   *
+   * When supplied the mixer does not synthesise the voice itself: it takes
+   * these buffers and treats them as any other track, applying the same gain,
+   * EQ, panning and sends. That is what lets a different singer — a neural
+   * model, a hosted service — be dropped in without the mix changing shape.
+   */
+  vocalStems?: VocalStems
   /** Master peak ceiling, linear. */
   ceiling?: number
   /** Track ids to exclude — used for instrumental and karaoke exports. */
@@ -92,6 +102,31 @@ function applySectionDynamics(
     previous = target
     cursor = end
   }
+}
+
+/**
+ * The pre-rendered voice belonging to one track, at the mix's own length.
+ *
+ * The lead track carries the answering voices as well as the lead: a call and
+ * its response are one performance sharing a fader, not two parts of the
+ * arrangement. Returns null for a track the renderer produced nothing for, so
+ * the mixer falls back to synthesising it.
+ */
+function suppliedVocal(stems: VocalStems, trackId: string, length: number): Float32Array | null {
+  const roles = trackId === 'vocalHarmony'
+    ? (['harmony'] as const)
+    : trackId === 'vocal' ? (['lead', 'response'] as const) : null
+  if (!roles) return null
+
+  const present = roles.map((role) => stems[role]).filter((buffer): buffer is Float32Array => Boolean(buffer))
+  if (present.length === 0) return null
+
+  const out = new Float32Array(length)
+  for (const buffer of present) {
+    const count = Math.min(length, buffer.length)
+    for (let i = 0; i < count; i++) out[i]! += buffer[i]!
+  }
+  return out
 }
 
 function trackSingStyle(score: Score, options: RenderOptions): SingStyle {
@@ -165,7 +200,11 @@ export function renderScore(score: Score, options: RenderOptions = {}): RenderRe
   report()
 
   for (const track of tracks) {
-    const mono = renderTrack(track, score, sampleRate, brightness, swing, subdivision, totalSamples, singStyle, cache)
+    const supplied = options.vocalStems
+      ? suppliedVocal(options.vocalStems, track.id, totalSamples)
+      : undefined
+    const mono = supplied
+      ?? renderTrack(track, score, sampleRate, brightness, swing, subdivision, totalSamples, singStyle, cache)
 
     applyTrackEq(mono, sampleRate, {
       highPassHz: track.fx.highPassHz,
