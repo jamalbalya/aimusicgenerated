@@ -10,7 +10,7 @@ import { GENRES } from '../../engine/compose/genres'
 import { SPEECH_VOICES } from '../../engine/voice/speech'
 import { SING_PRESET_NAMES } from '../../engine/voice/singer'
 import { PROGRESSIONS } from '../../engine/theory/progressions'
-import { BUILD_INFO, buildLabel, buildTimeLabel } from '../../lib/buildInfo'
+import { BUILD_INFO, buildLabel, buildTimeIso, buildTimeLabel } from '../../lib/buildInfo'
 
 export default function AboutPage() {
   return (
@@ -203,7 +203,15 @@ export default function AboutPage() {
           {buildTimeLabel() && (
             <>
               <span aria-hidden="true"> · </span>
-              <span>built {buildTimeLabel()}</span>
+              {/* Shown on the reader's own clock, because that is the one they
+                  are comparing against. The exact instant stays in `dateTime`
+                  and in the tooltip, so the UTC value a deploy log records is
+                  still recoverable from the page. */}
+              <span>
+                built <time dateTime={buildTimeIso()} title={`${buildTimeIso()} (UTC)`}>
+                  {buildTimeLabel()}
+                </time>
+              </span>
             </>
           )}
         </p>

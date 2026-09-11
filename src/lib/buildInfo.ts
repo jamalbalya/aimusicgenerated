@@ -35,12 +35,68 @@ export function buildLabel(info: BuildInfo = BUILD_INFO): string {
   return `v${info.version} · build ${info.commit}`
 }
 
-/** The build time as a person reads it, in UTC; empty when it is unknown. */
-export function buildTimeLabel(info: BuildInfo = BUILD_INFO): string {
+/**
+ * How to write a moment down. Both are the reader's own by default; tests pass
+ * them explicitly so an expected string does not depend on the machine.
+ */
+export interface TimeFormat {
+  /** BCP 47 tag. Absent means whatever the browser is set to. */
+  locale?: string | string[]
+  /** IANA zone. Absent means whatever the device's clock is set to. */
+  timeZone?: string
+}
+
+/** The stored instant, written out exactly, for when a local one is no use. */
+function utcLabel(at: Date): string {
+  return `${at.toISOString().slice(0, 16).replace('T', ' ')} UTC`
+}
+
+/** The exact instant the build was made, unambiguous; empty when unknown. */
+export function buildTimeIso(info: BuildInfo = BUILD_INFO): string {
+  if (!info.builtAt) return ''
+  const at = new Date(info.builtAt)
+  return Number.isNaN(at.getTime()) ? '' : at.toISOString()
+}
+
+/**
+ * The build time on the reader's own clock.
+ *
+ * `BUILD_TIME` is baked in as UTC because that is the only way to write an
+ * instant down without ambiguity. Nobody reads their own day in UTC, though, so
+ * a visitor in Jakarta comparing this line against the deploy they just watched
+ * finish should not have to add seven hours in their head.
+ *
+ * The zone and the language both come from the device rather than from here.
+ * That is what lets the short zone name be a real one: `WIB` for a Jakarta
+ * reader whose browser is set to Indonesian, `EDT` for one in New York. Where a
+ * locale has no name for the zone, Intl writes the offset — `GMT+7` — which is
+ * unambiguous and, unlike a guessed abbreviation, true.
+ *
+ * This formats the recorded instant and nothing else. It never reads the clock,
+ * so a stale deployment still says when it was built and not when it was opened.
+ */
+export function buildTimeLabel(info: BuildInfo = BUILD_INFO, format: TimeFormat = {}): string {
   if (!info.builtAt) return ''
   const at = new Date(info.builtAt)
   if (Number.isNaN(at.getTime())) return ''
-  return `${at.toISOString().slice(0, 16).replace('T', ' ')} UTC`
+  try {
+    return new Intl.DateTimeFormat(format.locale, {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      // 00-23, so midnight is `00:` in every locale rather than `24:`.
+      hourCycle: 'h23',
+      timeZoneName: 'short',
+      timeZone: format.timeZone,
+    }).format(at)
+  } catch {
+    // An engine without usable Intl data, or a zone name it does not know. The
+    // recorded instant is still exact, so say it in UTC rather than invent a
+    // local one.
+    return utcLabel(at)
+  }
 }
 
 export const BUILD_INFO: BuildInfo = (() => {

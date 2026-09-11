@@ -139,8 +139,12 @@ describe('the build identifies itself', () => {
   it('shows a build time only when it has a usable one', () => {
     expect(buildTimeLabel({ version: '1.0.0', commit: 'dev', builtAt: '', fromCommit: false })).toBe('')
     expect(buildTimeLabel({ version: '1.0.0', commit: 'dev', builtAt: 'not a date', fromCommit: false })).toBe('')
-    expect(buildTimeLabel({ version: '1.0.0', commit: 'dev', builtAt: '2026-09-11T14:02:33.000Z', fromCommit: false }))
-      .toBe('2026-09-11 14:02 UTC')
+    // Written on the reader's clock, so the zone is named rather than assumed;
+    // `build-time.test.ts` covers the conversion itself.
+    expect(buildTimeLabel(
+      { version: '1.0.0', commit: 'dev', builtAt: '2026-09-11T14:02:33.000Z', fromCommit: false },
+      { locale: 'en-GB', timeZone: 'UTC' },
+    )).toBe('11 Sept 2026, 14:02 UTC')
   })
 })
 
