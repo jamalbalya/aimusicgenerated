@@ -17,3 +17,20 @@ dist-single
 # never committed: it is large, it is not source, and it goes stale the moment
 # the model or the parameters change.
 /evaluation/
+
+# An ACE-Step installation or its weights, if anyone puts one inside this
+# repository. They belong outside it -- scripts/ace-step-env.sh keeps them in
+# ~/Applications and ~/Models -- but a stray `uv run acestep-download` in the
+# wrong directory would otherwise leave ten gigabytes staged.
+#
+# Anchored to the repository root on purpose: a bare `checkpoints` would also
+# hide a directory of that name anywhere in src/.
+/checkpoints/
+/ACE-Step-1.5/
+/ace-step/
+
+# Model weights by extension. Deliberately narrow: no *.wav or *.mp3 rule,
+# because generated audio already lives under /evaluation/ and a blanket audio
+# pattern would silently hide a fixture someone adds later.
+*.safetensors
+*.ckpt

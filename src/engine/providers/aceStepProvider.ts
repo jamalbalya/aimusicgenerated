@@ -13,7 +13,11 @@
  * off this provider rather than implemented as a lie.
  */
 
-import { AceStepClient, ACE_STATUS, parseResultItems, type AceStepResultItem } from './aceStepClient'
+import {
+  AceStepClient, ACE_STATUS, parseResultItems,
+  type AceStepHealth, type AceStepResultItem,
+} from './aceStepClient'
+import { describeAudio, type AudioCheck } from './audioCheck'
 import { buildAceStepTask, DEFAULT_MODELS, type AceStepModelChoice } from './aceStepRequest'
 import { neuralEngineConfig } from './config'
 import {
@@ -25,6 +29,8 @@ import {
 export const ACE_STEP_PROVIDER_ID = 'ace-step'
 
 const POLL_INTERVAL_MS = 1500
+/** Consecutive failed polls tolerated before a job is given up on. */
+const MAX_POLL_FAILURES = 5
 /** Long, because a full song on modest hardware genuinely takes minutes. */
 const DEFAULT_JOB_TIMEOUT_MS = 30 * 60_000
 
@@ -69,7 +75,11 @@ export class AceStepProvider implements MusicGenerationProvider {
       ...(apiKey ? { apiKey } : {}),
       ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     })
-    this.models = options.models ?? DEFAULT_MODELS
+    // A build may pin the models; otherwise the documented defaults apply.
+    this.models = options.models ?? {
+      model: config.model ?? DEFAULT_MODELS.model,
+      lmModel: config.lmModel ?? DEFAULT_MODELS.lmModel,
+    }
     this.pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS
     this.jobTimeoutMs = options.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS
     this.sleep = options.sleep ?? wait
@@ -89,7 +99,11 @@ export class AceStepProvider implements MusicGenerationProvider {
 
   /** Health detail, for the connection indicator. */
   async status(): Promise<{
-    connected: boolean; loadedModel?: string; loadedLmModel?: string; blockedReason?: string
+    connected: boolean
+    loadedModel?: string
+    loadedLmModel?: string
+    lmInitialized?: boolean
+    blockedReason?: string
   }> {
     if (this.blockedReason) return { connected: false, blockedReason: this.blockedReason }
     try {
@@ -97,11 +111,51 @@ export class AceStepProvider implements MusicGenerationProvider {
       const connected = health.status?.toLowerCase() === 'ok'
       return {
         connected,
+        lmInitialized: Boolean(health.llm_initialized),
         ...(health.loaded_model ? { loadedModel: health.loaded_model } : {}),
         ...(health.loaded_lm_model ? { loadedLmModel: health.loaded_lm_model } : {}),
       }
     } catch {
       return { connected: false }
+    }
+  }
+
+  /**
+   * Refuses a run whose models are not the ones that were asked for.
+   *
+   * ACE-Step substitutes on its own: `acestep/api/startup_llm_init.py` falls
+   * back to a GPU-tier "recommended" language model when the requested one is
+   * judged unsupported, and carries on with the LM unloaded when it fails to
+   * initialise. Both are printed to the server's console and neither reaches
+   * the client, so a run asked for on the 0.6B model can quietly come back
+   * from the 1.7B one -- or from no language model at all, which for a request
+   * with `thinking` set means the part that sings was never in the chain.
+   *
+   * The server publishes what it actually loaded, so this compares the two and
+   * stops rather than accepting a song made by something else.
+   */
+  private verifyModels(health: AceStepHealth, body: ReturnType<typeof buildAceStepTask>): void {
+    const wantedLm = body.lm_model_path
+    const loadedLm = health.loaded_lm_model
+    if (wantedLm && loadedLm && loadedLm !== wantedLm) {
+      throw new Error(
+        `ACE-Step loaded a different language model than the one requested: `
+        + `asked for ${wantedLm}, the backend is running ${loadedLm}. `
+        + `Start it with ACESTEP_LM_MODEL_PATH=${wantedLm} (./scripts/start-ace-step-macos.sh does this), `
+        + `or set ACE_STEP_LM_MODEL to the model you actually want.`)
+    }
+    const wantedDit = body.model
+    const loadedDit = health.loaded_model
+    if (wantedDit && loadedDit && loadedDit !== wantedDit) {
+      throw new Error(
+        `ACE-Step loaded a different generation model than the one requested: `
+        + `asked for ${wantedDit}, the backend is running ${loadedDit}.`)
+    }
+    if (body.thinking && health.models_initialized && !health.llm_initialized) {
+      throw new Error(
+        'ACE-Step has no language model loaded, so it cannot sing the lyrics: a request '
+        + 'made with thinking enabled would come back instrumental. Check the backend log '
+        + 'for why the LM failed to load.')
     }
   }
 
@@ -112,7 +166,12 @@ export class AceStepProvider implements MusicGenerationProvider {
     const report = (status: Parameters<NonNullable<GenerateOptions['onStatus']>>[0]) => onStatus?.(status)
 
     report({ state: 'initializing', detail: 'Reaching the neural music engine' })
-    if (!(await this.isAvailable())) {
+    let health: AceStepHealth
+    try {
+      if (this.blockedReason) throw new Error(this.blockedReason)
+      health = await this.client.health()
+      if (health.status?.toLowerCase() !== 'ok') throw new Error(`status "${health.status}"`)
+    } catch {
       throw new EngineUnavailableError(
         this.id,
         this.blockedReason
@@ -122,6 +181,9 @@ export class AceStepProvider implements MusicGenerationProvider {
     }
 
     const body = buildAceStepTask(request, this.models)
+    // Before anything is queued: the models that will run must be the ones
+    // that were asked for. A substituted model is a different result.
+    this.verifyModels(health, body)
     const created = await this.client.createTask(body, signal)
     report({
       state: 'queued',
@@ -136,16 +198,31 @@ export class AceStepProvider implements MusicGenerationProvider {
     report({ state: 'generating', detail: 'Finalizing audio' })
     const blob = await this.client.fetchAudio(file, signal)
 
-    const duration = Number(item.metas?.duration ?? request.duration ?? 0)
+    // A response body is not a song. This says whether what came back is a
+    // readable, non-empty, non-silent audio file -- and nothing whatever about
+    // whether it is any good, which only listening establishes.
+    const audio: AudioCheck = await describeAudio(blob)
+    if (!audio.valid) {
+      throw new Error(`ACE-Step returned something that is not usable audio: ${audio.problem}`)
+    }
+
+    const reported = Number(item.metas?.duration ?? 0)
+    const duration = reported > 0 ? reported : audio.durationSeconds
+    if (!(duration > 0)) {
+      throw new Error('ACE-Step returned audio with no duration.')
+    }
+
     report({ state: 'completed', detail: 'Song generated' })
     return {
       id: created.task_id,
       engine: 'ace-step',
       audioUrl: this.toObjectUrl(blob),
       duration,
+      ...(audio.sampleRate ? { sampleRate: audio.sampleRate } : {}),
       metadata: {
-        model: body.model ?? this.models.model,
-        lmModel: body.lm_model_path ?? this.models.lmModel,
+        // What the backend said it loaded, falling back to what was asked for.
+        model: health.loaded_model ?? body.model ?? this.models.model,
+        lmModel: health.loaded_lm_model ?? body.lm_model_path ?? this.models.lmModel,
         ...(body.seed !== undefined ? { seed: body.seed } : {}),
         language: body.vocal_language,
         style: request.style,
@@ -168,6 +245,7 @@ export class AceStepProvider implements MusicGenerationProvider {
   ): Promise<AceStepResultItem> {
     const deadline = Date.now() + this.jobTimeoutMs
     let announcedGenerating = false
+    let consecutiveErrors = 0
 
     for (;;) {
       if (signal?.aborted) throw new GenerationCancelledError()
@@ -175,7 +253,30 @@ export class AceStepProvider implements MusicGenerationProvider {
         throw new Error('ACE-Step did not finish within the time allowed for a job.')
       }
 
-      const query = await this.client.queryResult(taskId, signal)
+      // A song takes minutes, and a dropped poll in the middle of one is not a
+      // reason to abandon work the server is still doing. Transient failures
+      // are retried; a backend that has genuinely gone away stops being
+      // retried once it has failed several times in a row. Polling is a read,
+      // so retrying it cannot start a second generation.
+      let query
+      try {
+        query = await this.client.queryResult(taskId, signal)
+        consecutiveErrors = 0
+      } catch (error) {
+        if (signal?.aborted) throw new GenerationCancelledError()
+        consecutiveErrors++
+        if (consecutiveErrors >= MAX_POLL_FAILURES) {
+          const reason = error instanceof Error ? error.message : String(error)
+          throw new Error(
+            `Lost contact with ACE-Step while it was generating (${reason}). `
+            + `The job may still be running on the backend as task ${taskId}.`,
+            { cause: error })
+        }
+        report({ state: announcedGenerating ? 'generating' : 'queued', detail: 'Reconnecting to the backend' })
+        await this.sleep(this.pollIntervalMs)
+        continue
+      }
+
       const items = parseResultItems(query)
       const first = items[0] ?? {}
 

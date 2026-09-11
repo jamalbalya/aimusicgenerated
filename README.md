@@ -187,7 +187,7 @@ tests/
   unit/            Engine tests (Vitest, runs in Node)
   e2e/             Browser tests (Playwright, desktop and mobile)
 docs/
-  architecture/               How the neural path is put together
+  architecture/               How the neural path is put together, and every env var
   vocal-renderers.md          The seam a different singer plugs into
   quality/                    Measured assessments of what comes out
 scripts/

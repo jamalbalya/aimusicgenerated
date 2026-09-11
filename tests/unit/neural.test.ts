@@ -21,7 +21,7 @@ import {
   AceStepProvider, ProceduralMusicProvider, EngineUnavailableError, GenerationCancelledError,
   ENGINE_UNAVAILABLE_MESSAGE, resolveProvider, engineLabel,
   buildAceStepTask, verifyLyricsPreserved, structureTags, lyricLines,
-  parseResultItems, DEFAULT_MODELS, INSTRUMENTAL_MARKER,
+  parseResultItems, DEFAULT_MODELS, INSTRUMENTAL_MARKER, checkWavBuffer,
   type MusicGenerationProvider, type MusicGenerationRequest,
 } from '../../src/engine/providers'
 import { BOS_TOXIC_LYRICS, BOS_TOXIC_STYLE } from './fixtures/bos-toxic'
@@ -38,13 +38,38 @@ const BOS_TOXIC: MusicGenerationRequest = {
   instrumental: false,
 }
 
+/** A real, playable WAV: one second of 440 Hz at 44.1 kHz, 16-bit mono. */
+function wavBytes(seconds = 1, amplitude = 0.5): ArrayBuffer {
+  const rate = 44100
+  const frames = Math.floor(rate * seconds)
+  const buffer = new ArrayBuffer(44 + frames * 2)
+  const view = new DataView(buffer)
+  const ascii = (at: number, text: string) => {
+    for (let i = 0; i < text.length; i++) view.setUint8(at + i, text.charCodeAt(i))
+  }
+  ascii(0, 'RIFF'); view.setUint32(4, 36 + frames * 2, true); ascii(8, 'WAVE')
+  ascii(12, 'fmt '); view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true); view.setUint16(22, 1, true)
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true)
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true)
+  ascii(36, 'data'); view.setUint32(40, frames * 2, true)
+  for (let i = 0; i < frames; i++) {
+    view.setInt16(44 + i * 2, Math.round(Math.sin((i / rate) * 440 * Math.PI * 2) * amplitude * 32767), true)
+  }
+  return buffer
+}
+
 /* ------------------------------------------------------- the fake server --- */
 
 interface ServerScript {
   /** Statuses returned by successive `/query_result` calls. */
   poll: (keyof typeof GOLDEN)[]
-  health?: unknown
+  health?: Record<string, unknown>
   healthStatus?: number
+  /** Overrides the audio body, for the validation tests. */
+  audio?: { body: BodyInit; type?: string }
+  /** Fail this many `/query_result` calls before answering normally. */
+  pollFailures?: number
 }
 
 /** Records what the client sent, and replies with ACE-Step's own shapes. */
@@ -74,7 +99,11 @@ function fakeAceStep(script: ServerScript) {
       return wrap({ task_id: 'task-done', status: 'queued', queue_position: 2 })
     }
     if (url.endsWith('/query_result')) {
-      const key = script.poll[Math.min(pollIndex, script.poll.length - 1)]!
+      if (script.pollFailures && pollIndex < script.pollFailures) {
+        pollIndex++
+        return new Response('upstream gone', { status: 502 })
+      }
+      const key = script.poll[Math.min(pollIndex - (script.pollFailures ?? 0), script.poll.length - 1)]!
       pollIndex++
       // The golden payloads carry their own task ids; the client matches on
       // the id it asked for, so rewrite just that field.
@@ -83,7 +112,12 @@ function fakeAceStep(script: ServerScript) {
       return wrap(items)
     }
     if (url.includes('/v1/audio')) {
-      return new Response(new Uint8Array([0x52, 0x49, 0x46, 0x46]), {
+      if (script.audio) {
+        return new Response(script.audio.body, {
+          status: 200, headers: { 'Content-Type': script.audio.type ?? 'audio/wav' },
+        })
+      }
+      return new Response(wavBytes(), {
         status: 200, headers: { 'Content-Type': 'audio/wav' },
       })
     }
@@ -343,5 +377,124 @@ describe('an address the browser cannot reach is not probed', () => {
     // Everything else is fine: a local page, or a backend that is itself HTTPS.
     expect(mixedContentReason('http:', 'http://127.0.0.1:8001')).toBeUndefined()
     expect(mixedContentReason('https:', 'https://ace.example.com')).toBeUndefined()
+  })
+})
+
+describe('the models that ran must be the models that were asked for', () => {
+  // ACE-Step substitutes on its own: acestep/api/startup_llm_init.py falls back
+  // to a GPU-tier "recommended" LM when it judges the requested one
+  // unsupported, and carries on with the LM unloaded when it fails to start.
+  // Both are printed to its console and neither reaches the client.
+  const healthWith = (fields: Record<string, unknown>) => ({
+    status: 'ok', service: 'ACE-Step API', version: '1.0',
+    models_initialized: true, llm_initialized: true,
+    loaded_model: 'acestep-v15-turbo', loaded_lm_model: 'acestep-5Hz-lm-0.6B',
+    ...fields,
+  })
+
+  it('refuses when the backend swapped the language model', async () => {
+    const { instance } = provider({
+      poll: ['succeeded'],
+      health: healthWith({ loaded_lm_model: 'acestep-5Hz-lm-1.7B' }),
+    })
+    await expect(instance.generate(BOS_TOXIC)).rejects.toThrow(
+      /asked for acestep-5Hz-lm-0\.6B, the backend is running acestep-5Hz-lm-1\.7B/)
+  })
+
+  it('refuses when the backend swapped the generation model', async () => {
+    const { instance } = provider({
+      poll: ['succeeded'],
+      health: healthWith({ loaded_model: 'acestep-v15-sft' }),
+    })
+    await expect(instance.generate(BOS_TOXIC)).rejects.toThrow(/asked for acestep-v15-turbo/)
+  })
+
+  it('refuses to call an instrumental a sung song when no LM is loaded', async () => {
+    const { instance } = provider({
+      poll: ['succeeded'],
+      health: healthWith({ llm_initialized: false, loaded_lm_model: null }),
+    })
+    await expect(instance.generate(BOS_TOXIC)).rejects.toThrow(/cannot sing the lyrics/)
+  })
+
+  it('accepts a backend that has not loaded anything yet', async () => {
+    // Models are lazy-loaded on the first request, so "nothing loaded" before
+    // the job starts is normal and must not be mistaken for a substitution.
+    const { instance } = provider({
+      poll: ['succeeded'],
+      health: healthWith({
+        models_initialized: false, llm_initialized: false,
+        loaded_model: null, loaded_lm_model: null,
+      }),
+    })
+    const result = await instance.generate(BOS_TOXIC)
+    expect(result.engine).toBe('ace-step')
+    expect(result.metadata?.lmModel).toBe('acestep-5Hz-lm-0.6B')
+  })
+
+  it('reports the models the backend said it loaded', async () => {
+    const { instance } = provider({ poll: ['succeeded'] })
+    const result = await instance.generate(BOS_TOXIC)
+    expect(result.metadata?.model).toBe('acestep-v15-turbo')
+    expect(result.metadata?.lmModel).toBe('acestep-5Hz-lm-0.6B')
+  })
+})
+
+describe('what comes back has to be audio', () => {
+  it('measures a real WAV without claiming anything about the music', async () => {
+    const check = checkWavBuffer(wavBytes(2, 0.5))
+    expect(check.valid).toBe(true)
+    expect(check.sampleRate).toBe(44100)
+    expect(check.channels).toBe(1)
+    expect(check.durationSeconds).toBeCloseTo(2, 2)
+    expect(check.silent).toBe(false)
+    expect(check.peak).toBeGreaterThan(0.4)
+  })
+
+  it('rejects an empty download', async () => {
+    const { instance } = provider({ poll: ['succeeded'], audio: { body: new ArrayBuffer(0) } })
+    await expect(instance.generate(BOS_TOXIC)).rejects.toThrow(/empty/)
+  })
+
+  it('rejects a truncated file', async () => {
+    const { instance } = provider({
+      poll: ['succeeded'], audio: { body: new Uint8Array([0x52, 0x49, 0x46, 0x46]).buffer },
+    })
+    await expect(instance.generate(BOS_TOXIC)).rejects.toThrow(/is 4 bytes/)
+  })
+
+  it('rejects an error page served with a 200', async () => {
+    const { instance } = provider({
+      poll: ['succeeded'],
+      audio: { body: '<html><body>Internal error</body></html>', type: 'text/html' },
+    })
+    await expect(instance.generate(BOS_TOXIC)).rejects.toThrow(/rather than audio/)
+  })
+
+  it('rejects a well-formed but silent file', async () => {
+    const { instance } = provider({ poll: ['succeeded'], audio: { body: wavBytes(2, 0) } })
+    await expect(instance.generate(BOS_TOXIC)).rejects.toThrow(/silent/)
+  })
+
+  it('takes the duration from the file when the backend reports none', async () => {
+    const { instance } = provider({ poll: ['succeeded'], audio: { body: wavBytes(3, 0.4) } })
+    // The golden fixture reports 158.4s; the backend's number wins when it has
+    // one, so this checks the sample rate that only the file can supply.
+    const result = await instance.generate(BOS_TOXIC)
+    expect(result.sampleRate).toBe(44100)
+    expect(result.duration).toBe(158.4)
+  })
+})
+
+describe('a dropped connection does not throw away a running job', () => {
+  it('keeps polling through transient failures', async () => {
+    const { instance } = provider({ poll: ['succeeded'], pollFailures: 3 })
+    const result = await instance.generate(BOS_TOXIC)
+    expect(result.engine).toBe('ace-step')
+  })
+
+  it('gives up once the backend has really gone, and says the job may continue', async () => {
+    const { instance } = provider({ poll: ['succeeded'], pollFailures: 99 })
+    await expect(instance.generate(BOS_TOXIC)).rejects.toThrow(/may still be running on the backend/)
   })
 })

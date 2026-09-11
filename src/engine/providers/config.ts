@@ -18,8 +18,10 @@ export interface NeuralEngineConfig {
   /** Base URL of the ACE-Step API, without a trailing slash. */
   baseUrl: string
   apiKey?: string
-  /** Whether a neural engine is configured at all. */
-  configured: boolean
+  /** DiT checkpoint to ask for, when the build pins one. */
+  model?: string
+  /** 5 Hz language model to ask for, when the build pins one. */
+  lmModel?: string
   /**
    * Set when the browser will refuse to reach this backend whatever it does,
    * so the studio can say why instead of probing an address it cannot use.
@@ -48,14 +50,13 @@ export function neuralEngineConfig(): NeuralEngineConfig {
   const apiKey = fromEnv('VITE_ACE_STEP_API_KEY')
   const protocol = typeof window !== 'undefined' ? window.location.protocol : 'http:'
   const blockedReason = mixedContentReason(protocol, configured)
+  const model = fromEnv('VITE_ACE_STEP_MODEL')
+  const lmModel = fromEnv('VITE_ACE_STEP_LM_MODEL')
   return {
     baseUrl: configured,
     ...(apiKey ? { apiKey } : {}),
+    ...(model ? { model } : {}),
+    ...(lmModel ? { lmModel } : {}),
     ...(blockedReason ? { blockedReason } : {}),
-    // A public build with no address set still offers the engine, pointed at
-    // localhost: someone running the backend on their own machine gets it
-    // working with no configuration, and everyone else sees "not connected"
-    // rather than a hidden feature.
-    configured: true,
   }
 }

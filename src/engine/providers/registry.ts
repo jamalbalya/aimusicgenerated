@@ -13,20 +13,13 @@
  */
 
 import { AceStepProvider, ACE_STEP_PROVIDER_ID } from './aceStepProvider'
-import { ProceduralMusicProvider, PROCEDURAL_PROVIDER_ID, type ProceduralProviderOptions } from './proceduralProvider'
-import { EngineUnavailableError, type EngineKind, type MusicGenerationProvider } from './types'
+import { ProceduralMusicProvider, type ProceduralProviderOptions } from './proceduralProvider'
+import { EngineUnavailableError, type MusicGenerationProvider } from './types'
 
 export type EngineMode = 'neural' | 'procedural'
 
 export const ENGINE_UNAVAILABLE_MESSAGE =
   'Neural music engine is unavailable. You can start the ACE-Step backend or switch to Offline Procedural Mode.'
-
-export interface EngineDescriptor {
-  id: string
-  name: string
-  type: EngineKind
-  description: string
-}
 
 /**
  * Builds the provider for a mode.
@@ -54,34 +47,6 @@ export async function resolveProvider(
   if (mode === 'procedural') return provider
   if (await provider.isAvailable()) return provider
   throw new EngineUnavailableError(ACE_STEP_PROVIDER_ID, ENGINE_UNAVAILABLE_MESSAGE)
-}
-
-/**
- * Which mode to start in.
- *
- * Neural when the backend answers, offline when it does not — but this is only
- * consulted to pick the *initial* setting of a control the user can see and
- * change. It is not a fallback applied to a request they already made.
- */
-export async function preferredMode(
-  probe: MusicGenerationProvider = new AceStepProvider(),
-): Promise<EngineMode> {
-  return (await probe.isAvailable()) ? 'neural' : 'procedural'
-}
-
-export const ENGINES: Record<EngineMode, EngineDescriptor> = {
-  neural: {
-    id: ACE_STEP_PROVIDER_ID,
-    name: 'ACE-Step 1.5',
-    type: 'neural',
-    description: 'Neural full-song generation. Needs the ACE-Step backend running.',
-  },
-  procedural: {
-    id: PROCEDURAL_PROVIDER_ID,
-    name: 'Resonant Procedural',
-    type: 'procedural',
-    description: 'Composes and sings in this tab. No server, no account, works offline.',
-  },
 }
 
 /** The label shown against a finished song, so the engine is never in doubt. */

@@ -34,12 +34,6 @@ export interface ProceduralGenerationResult extends MusicGenerationResult {
   takes: SongTake[]
 }
 
-export function isProceduralResult(
-  result: MusicGenerationResult,
-): result is ProceduralGenerationResult {
-  return result.engine === 'procedural' && Array.isArray((result as ProceduralGenerationResult).takes)
-}
-
 export interface ProceduralProviderOptions {
   quality?: RenderQuality
   keepStems?: boolean
