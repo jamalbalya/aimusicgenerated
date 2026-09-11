@@ -30,8 +30,9 @@ import { linkProps } from '../../lib/router'
 import { useNeuralEngine } from '../useNeuralEngine'
 import { decodeWav } from '../../engine/audio/wav'
 import {
-  AceStepProvider, EngineUnavailableError, GenerationCancelledError,
-  engineLabel, type EngineMode, type GenerationStatus, type MusicGenerationResult,
+  createNeuralProvider, EngineUnavailableError, GenerationCancelledError, QuotaExceededError,
+  engineLabel, resolveEngineMode, VERIFIED_ZEROGPU_DURATION,
+  type EngineMode, type GenerationStatus, type MusicGenerationResult,
 } from '../../engine/providers'
 
 /**
@@ -68,6 +69,15 @@ const NEURAL_STATE_TEXT: Partial<Record<GenerationStatus['state'], string>> = {
 interface NeuralTake {
   result: MusicGenerationResult
   audio: { channels: Float32Array[]; sampleRate: number }
+}
+
+/** The host of an address, for display; the address itself when it is not one. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return url
+  }
 }
 
 /** Two lines of a lyric, to show the shape rather than to be sung. */
@@ -112,6 +122,12 @@ const SECTION_TONE: Record<SectionKind, string> = {
 
 type VocalChoice = 'auto' | 'sung' | 'rap' | 'none'
 
+/**
+ * The neural engine's vocal gender. Auto asks for nothing: the style's own
+ * words decide, which is what the validated Bos Toxic request relied on.
+ */
+type VocalGenderChoice = 'auto' | 'male' | 'female'
+
 export default function StudioPage() {
   const job = useJob()
   const quality = useStudio((s) => s.quality)
@@ -127,6 +143,7 @@ export default function StudioPage() {
   const [scale, setScale] = useState<ScaleName | ''>('')
   const [duration, setDuration] = useState(0)
   const [vocals, setVocals] = useState<VocalChoice>('auto')
+  const [vocalGender, setVocalGender] = useState<VocalGenderChoice>('auto')
   const [singStyle, setSingStyle] = useState('')
   const [seed, setSeed] = useState('')
   const [allGenres, setAllGenres] = useState(false)
@@ -170,11 +187,11 @@ export default function StudioPage() {
   const [neuralController, setNeuralController] = useState<AbortController | null>(null)
   const neural = useNeuralEngine()
 
-  // Start on the neural engine when the backend is actually answering. This
-  // only decides the initial position of a control the user can see; it is not
-  // a fallback applied to a request they already made.
-  const engineMode: EngineMode = engineChoice
-    ?? (neural.connection === 'connected' ? 'neural' : 'procedural')
+  // Move onto the neural engine once the backend has answered, and stay: a
+  // later failed check must not flip the control back to the offline engine
+  // under someone who saw Neural selected. This decides the position of a
+  // control the user can see; it is never a fallback applied to a request.
+  const engineMode: EngineMode = resolveEngineMode(engineChoice, neural.hasAnswered)
 
   const chooseEngine = useCallback((mode: EngineMode) => {
     setEngineChoice(mode)
@@ -283,7 +300,7 @@ export default function StudioPage() {
     setEngineError(null)
     setNeuralStatus({ state: 'initializing' })
 
-    const provider = new AceStepProvider()
+    const provider = createNeuralProvider()
     const baseSeed = Number.parseInt(overrideSeed ?? seed.trim(), 10)
     const collected: NeuralTake[] = []
 
@@ -300,6 +317,7 @@ export default function StudioPage() {
             lyrics,
             language: language === 'auto' ? (detectLanguage(lyrics) as string) : language,
             ...(duration > 0 ? { duration } : {}),
+            ...(vocalGender !== 'auto' ? { vocalGender } : {}),
             ...(vocals === 'none' ? { instrumental: true } : {}),
             ...(Number.isFinite(baseSeed) ? { seed: baseSeed + index } : {}),
           }, {
@@ -310,7 +328,16 @@ export default function StudioPage() {
             }),
           })
 
-          const buffer = await (await fetch(result.audioUrl)).arrayBuffer()
+          // The object URL is only a way to hand the file across; once it has
+          // been read, the decoded audio is what the player and every export
+          // use. Releasing it frees the whole download — about 52 MB for a
+          // 271-second song — instead of holding it until the tab closes.
+          let buffer: ArrayBuffer
+          try {
+            buffer = await (await fetch(result.audioUrl)).arrayBuffer()
+          } finally {
+            URL.revokeObjectURL(result.audioUrl)
+          }
           const decoded = decodeWav(buffer)
           collected.push({ result, audio: decoded })
           setNeuralTakes([...collected])
@@ -326,6 +353,10 @@ export default function StudioPage() {
           if (error instanceof EngineUnavailableError) throw error
           const message = error instanceof Error ? error.message : String(error)
           failures.push(`Take ${index + 1}: ${message}`)
+          // A spent allowance is spent for every take after this one too, and
+          // asking again would only be refused again. Stop, and keep what
+          // already worked.
+          if (error instanceof QuotaExceededError) break
         }
       }
 
@@ -359,7 +390,7 @@ export default function StudioPage() {
     } finally {
       setNeuralController(null)
     }
-  }, [prompt, customLyrics, language, duration, vocals, seed, takeCount,
+  }, [prompt, customLyrics, language, duration, vocalGender, vocals, seed, takeCount,
       notify, openNeuralTake])
 
   const generate = useCallback(async (overrideSeed?: string) => {
@@ -755,7 +786,11 @@ export default function StudioPage() {
                 ? 'Composes, sings and mixes on this device. Works offline and costs nothing; the singer is synthesised.'
                 : neural.blockedReason
                   ? neural.blockedReason
-                  : `ACE-Step 1.5 at ${neural.baseUrl}${neural.loadedModel ? ` — ${neural.loadedModel}` : ''}. Generates a complete song with a sung vocal.`}
+                  : neural.backend === 'zerogpu'
+                    ? `ACE-Step 1.5 on a free Hugging Face ZeroGPU Space (${hostOf(neural.baseUrl)}). `
+                      + 'Generates a complete song with a sung vocal in one request; each visitor has a daily GPU allowance.'
+                      + (neural.connection === 'disconnected' && neural.detail ? ` Not reachable: ${neural.detail}.` : '')
+                    : `ACE-Step 1.5 at ${neural.baseUrl}${neural.loadedModel ? ` — ${neural.loadedModel}` : ''}. Generates a complete song with a sung vocal.`}
             </p>
           </div>
 
@@ -859,11 +894,40 @@ export default function StudioPage() {
                 />
               </Field>
 
+              {engineMode === 'neural' && (
+                <Field label="Vocal gender">
+                  <Segmented
+                    ariaLabel="Vocal gender"
+                    value={vocalGender}
+                    onChange={setVocalGender}
+                    options={[
+                      { value: 'auto', label: 'Auto', title: 'Leave it to the style description' },
+                      { value: 'male', label: 'Male' },
+                      { value: 'female', label: 'Female' },
+                    ]}
+                  />
+                </Field>
+              )}
+
               <Field label="Tempo" value={bpm > 0 ? `${bpm} BPM` : 'Auto'}>
                 <Slider min={0} max={220} value={bpm} onChange={setBpm} ariaLabel="Tempo in beats per minute" />
               </Field>
 
-              <Field label="Length" value={duration > 0 ? formatDuration(duration) : 'Auto'}>
+              {/* On a backend that has to be told a length, say which one Auto
+                  is, rather than let it look like the engine will choose — and
+                  do not let a longer song look verified when it is not. */}
+              <Field
+                label="Length"
+                value={duration > 0 ? formatDuration(duration)
+                  : engineMode === 'neural' && neural.autoDuration !== undefined
+                    ? `Auto (${formatDuration(neural.autoDuration)})`
+                    : 'Auto'}
+                {...(engineMode === 'neural' && neural.backend === 'zerogpu'
+                  && (duration > 0 ? duration : neural.autoDuration ?? 0) > VERIFIED_ZEROGPU_DURATION
+                  ? { hint: `Longer than the ${formatDuration(VERIFIED_ZEROGPU_DURATION)} verified on the ZeroGPU backend. `
+                      + 'It may need more GPU time than one request is allowed.' }
+                  : {})}
+              >
                 <Slider min={0} max={420} step={15} value={duration} onChange={setDuration} ariaLabel="Song length in seconds" />
               </Field>
 

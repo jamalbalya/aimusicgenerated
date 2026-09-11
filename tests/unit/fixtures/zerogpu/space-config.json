@@ -1,0 +1,17 @@
+{
+  "_source": "GET https://jamalbalya-aimusicgenerated.hf.space/config on 2026-09-11, trimmed to the fields the client reads",
+  "version": "6.2.0",
+  "protocol": "sse_v3",
+  "api_prefix": "/gradio_api",
+  "root": "https://jamalbalya-aimusicgenerated.hf.space",
+  "space_id": "Jamalbalya/aimusicgenerated",
+  "dependencies": [
+    {
+      "id": 0,
+      "api_name": "generate_music",
+      "queue": true,
+      "api_visibility": "public",
+      "backend_fn": true
+    }
+  ]
+}

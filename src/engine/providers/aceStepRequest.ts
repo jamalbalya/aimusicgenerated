@@ -117,6 +117,18 @@ export const DEFAULT_MODELS: AceStepModelChoice = {
   lmModel: 'acestep-5Hz-lm-0.6B',
 }
 
+/** The language a request with none is sung in, on every ACE-Step backend. */
+export const DEFAULT_VOCAL_LANGUAGE = 'en'
+
+/**
+ * The song lengths ACE-Step 1.5 accepts in one request, in seconds.
+ *
+ * From ACE-Step's own `docs/en/API.md`: `audio_duration`, "range 10-600". What
+ * a given host can afford to generate inside that range is a separate question,
+ * answered by that host's configuration rather than here.
+ */
+export const ACE_STEP_DURATION_RANGE = { min: 10, max: 600 } as const
+
 /**
  * Builds the `/release_task` body for one take.
  *
@@ -134,7 +146,7 @@ export function buildAceStepTask(
   const body: AceStepTaskBody = {
     prompt: instrumental ? request.style : withVocalGender(request.style, request.vocalGender),
     lyrics,
-    vocal_language: request.language ?? 'en',
+    vocal_language: request.language ?? DEFAULT_VOCAL_LANGUAGE,
     audio_format: 'wav',
     thinking: !instrumental,
     use_format: false,

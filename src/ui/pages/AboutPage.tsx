@@ -134,11 +134,18 @@ export default function AboutPage() {
       <Panel title="What this is not">
         <div className="grid gap-2.5 text-[13px] leading-relaxed text-[var(--text-dim)]">
           <p>
-            This is not a large neural model. Those need a data centre with GPUs, which is exactly
-            the cost that paid services are charging you for. What you get here instead is a
-            composition and synthesis engine that is genuinely unlimited, genuinely private, and
-            genuinely free — with the trade-off that it sounds like a very good software
+            The offline engine is not a large neural model. Those need a data centre with GPUs,
+            which is exactly the cost that paid services are charging you for. What it is instead
+            is a composition and synthesis engine that is genuinely unlimited, genuinely private,
+            and genuinely free — with the trade-off that it sounds like a very good software
             instrument rather than a recording of a band.
+          </p>
+          <p>
+            The Song Studio's Neural mode is the other way round. It sends your style and lyrics to
+            the ACE-Step 1.5 model — on the public site, running on a free Hugging Face ZeroGPU
+            Space — which returns one complete song with a sung vocal. It needs a connection, the
+            free GPU comes with a daily allowance per visitor, and the Studio always says which
+            engine made a song.
           </p>
           <p>
             Separation is likewise signal processing rather than a trained model, so a vocal that

@@ -6,14 +6,140 @@ one, and about the boundary that keeps them from being confused with each other.
 | | Offline Procedural | Neural |
 |---|---|---|
 | Engine | the composer and singer in this repository | ACE-Step 1.5 |
-| Runs on | the browser tab | a backend with a GPU or Apple Silicon |
+| Runs on | the browser tab | a free Hugging Face ZeroGPU Space, or your own backend |
 | Needs a server | no | yes |
-| Cost to run | none | whatever the hardware costs |
+| Cost to run | none | none on ZeroGPU, within each visitor's daily GPU allowance |
 | Works offline | yes | no |
 | Singer | formant synthesis — audibly synthetic | a neural model |
 
 Both are real engines. Neither pretends to be the other, and the interface
 always names which one made a given song.
+
+## The current neural backend: ACE-Step 1.5 on ZeroGPU
+
+The public site's neural engine is **ACE-Step 1.5 Turbo (`acestep-v15-turbo`)
+with the 0.6B language model (`acestep-5Hz-lm-0.6B`)**, running on a free
+Hugging Face ZeroGPU Space built from `poc/zerogpu-space/`. The Mac setup further
+down stays what it was: development and testing, never the public server.
+
+**Validated.** On 2026-09-11 the project owner generated the Bos Toxic fixture on
+the live Space — 68 lyric lines, Indonesian, male vocal, sung — and got **one
+complete 271-second, 48 kHz, stereo, 16-bit WAV from one request**, in about 45
+seconds of generation, with no chunking and no out-of-memory failure. The
+Space's API contract, its Gradio version, and its CORS headers for
+`https://jamalbalya.github.io` were checked against the live Space the same day;
+see `zerogpu-full-song-test.md` for exactly what was and was not verified.
+
+**One request, one complete WAV.** The studio sends the whole style and the
+whole lyric sheet together, once, and gets the whole song back. There is no
+chunked generation anywhere in this path, and a result shorter than the length
+asked for is refused rather than shown.
+
+**Two durations, which are not the same thing:**
+
+| | What it is | Where it is set |
+|---|---|---|
+| Song length | how long the song is — 271 s in the validated run | the Length control; Auto becomes `ACE_STEP_SPACE_AUTO_DURATION` (default 271) |
+| ZeroGPU duration | how many seconds of GPU one request may occupy — 80 | `@spaces.GPU(duration=80)` in the Space's `app.py` |
+
+The 271-second song used about 45 of its 80 GPU seconds. Measured on that run,
+from the Space's own report: the 0.6B language model took 36.3 s, the DiT
+diffusion 1.9 s (8 steps at 0.23 s), and VAE decoding 3.2 s; loading the models
+beforehand took about 45 s but happens at startup, outside the GPU budget.
+
+**The validated baseline is 271 seconds (4:31). Nothing longer has been
+verified.** A longer song needs more GPU time; the studio neither caps the
+length at 271 nor presents anything up to its 7-minute slider as verified — in
+Neural mode on ZeroGPU, a length over 4:31 is labelled as unverified next to the
+Length control. `ACE_STEP_SPACE_MAX_DURATION` sets a hard ceiling if one is
+wanted. A song that does outrun the GPU budget fails with ZeroGPU's own "GPU task
+aborted", reported as an unsupported length.
+
+Settings are in `docs/architecture/environment.md`.
+
+### How the studio talks to the Space
+
+```
+StudioPage / useNeuralEngine
+  └── createNeuralProvider()        providers/registry.ts   ← the only place one is built
+        └── ZeroGpuProvider         providers/zeroGpuProvider.ts
+              │  maps the request onto the Space's six inputs, resolves Auto,
+              │  checks the answer against what was asked
+              └── GradioClient      providers/gradioClient.ts
+                    │  Gradio's queue protocol, and nothing else
+                    └── POST {space}/gradio_api/queue/join   → event_id
+                        GET  {space}/gradio_api/queue/data   → SSE: estimation, process_starts,
+                                                               log, heartbeat, process_completed
+                        GET  {space}/gradio_api/file=…       → the WAV
+```
+
+The client uses Gradio's full queue protocol rather than the shorter
+`/call/{api_name}` route, because in Gradio 6.2.0 that route drops the error
+text on failure (`event: error`, `data: null`) — and "your free GPU quota is
+used up, try again in 1:23:45" is exactly the message a person needs to see.
+
+The Space's `app.py` stays the one place a request becomes ACE-Step settings:
+it adds the vocal gender to the caption, swaps in the instrumental marker, turns
+the language model on, and refuses to run on a substituted model. The browser
+sends the six inputs the Space declares and changes none of them:
+
+| Input | Sent as |
+|---|---|
+| `style` | the style, word for word — with one exception, below |
+| `lyrics` | the lyric sheet, every line and section tag, line endings normalised to LF |
+| `language` | the chosen or detected language |
+| `vocal_gender` | `male` or `female` when chosen; **Auto is sent as `mixed`**, which adds nothing, so the style's own words decide |
+
+The exception. The Space adds "<gender> lead vocal" to the caption unless the
+caption already contains the gender — but it checks with Python's substring
+`in`, and "male" is inside "female" and "malevolent". Left alone, choosing Male
+on "soft female vocal" or "malevolent trap" would add nothing. The Space is not
+changed; instead, when the chosen gender appears in the style only inside
+another word, the studio appends the Space's own hint, in the Space's own
+format, and the Space's check then finds it. Every other style is sent exactly
+as written — the validated Bos Toxic request included — and a test replays the
+Space's rule over a matrix of styles to prove the chosen voice always ends up in
+the caption as a whole word.
+| `instrumental` | the studio's choice |
+| `duration` | a whole number of seconds; Auto becomes the configured Auto length, never `-1` |
+
+The answer is then checked against the request: the models the Space reports it
+ran must be turbo and 0.6B, the lyric line count it received must equal the one
+sent, the language, instrumental choice and length must match, and the WAV
+itself must be valid, audible and as long as asked.
+
+### When it fails
+
+Every failure is named and none of them falls back to the procedural engine:
+
+| What happened | Reported as |
+|---|---|
+| Space asleep, unreachable, wrong protocol, endpoint gone | engine unavailable |
+| Result stream silent for 60 s (Gradio heartbeats every 15 s) | engine unavailable — connection lost |
+| ZeroGPU quota spent | quota exceeded, with ZeroGPU's own "try again in" wording; **never retried**, and a multi-take run stops there |
+| GPU duration refused, or the song outran it | unsupported length |
+| The Space's code raised | generation failed, with its message |
+| Queue failed outside the handler | unexpected error |
+| HTTP error on submit or download | HTTP error, with the status and the Space's reason |
+| Outputs malformed, models swapped, lyrics short, a file that is not a readable WAV, a clip instead of a song | bad result |
+| No audio returned | missing audio |
+| Over `ACE_STEP_SPACE_TIMEOUT_SECONDS`, or ZeroGPU's own GPU-queue timeout | timeout |
+| The user pressed Cancel | cancelled |
+
+Nothing in the provider retries a submission, so no failure can quietly cost a
+second slice of anyone's GPU allowance.
+
+The length that counts is the one measured from the downloaded WAV's own
+header. The Space's metadata is checked against the request, but its word is
+never taken for the audio itself: bytes that do not parse as a WAV are refused
+even when the metadata says 271 seconds.
+
+Nor does the engine choice move behind anyone's back. Until someone picks an
+engine, the Studio moves onto Neural once the backend has answered — and stays
+there. A hosted Space missing one health check would otherwise flip the control
+back to Offline Procedural, and the next Generate or ⌘/Ctrl + Enter would
+quietly produce a procedural song. With the control held, it goes to the neural
+engine and fails out loud.
 
 ## Why ACE-Step
 
@@ -46,9 +172,12 @@ architecture, no weights, and no vendored copy of it.
 Browser
   └── Resonant Studio (React)
         └── MusicGenerationProvider          src/engine/providers/types.ts
-              ├── AceStepProvider            src/engine/providers/aceStepProvider.ts
-              │     └── ACE-Step 1.5 HTTP API  (default 127.0.0.1:8001)
-              │           └── neural generation → complete WAV
+              ├── createNeuralProvider()     src/engine/providers/registry.ts  (ACE_STEP_BACKEND)
+              │     ├── ZeroGpuProvider      src/engine/providers/zeroGpuProvider.ts   ← zerogpu
+              │     │     └── GradioClient → ACE-Step 1.5 Space on ZeroGPU → complete WAV
+              │     └── AceStepProvider      src/engine/providers/aceStepProvider.ts   ← local
+              │           └── ACE-Step 1.5 HTTP API  (default 127.0.0.1:8001)
+              │                 └── neural generation → complete WAV
               └── ProceduralMusicProvider    src/engine/providers/proceduralProvider.ts
                     └── existing composer, arranger and procedural singer
 ```
@@ -66,10 +195,12 @@ a playable URL, a duration and metadata.
 | `providers/types.ts` | the interface, the request, the result, the states |
 | `providers/aceStepRequest.ts` | the deterministic style/lyric adapter |
 | `providers/aceStepClient.ts` | typed client for ACE-Step's HTTP contract |
-| `providers/aceStepProvider.ts` | submit, poll, download, report |
+| `providers/aceStepProvider.ts` | submit, poll, download, report — the local backend |
+| `providers/zeroGpuProvider.ts` | the ZeroGPU backend: request mapping, Auto length, error mapping, result checks |
+| `providers/gradioClient.ts` | Gradio's queue protocol and SSE stream; knows nothing about ACE-Step |
 | `providers/proceduralProvider.ts` | the existing engine behind the same interface |
-| `providers/registry.ts` | mode selection, and the refusal to substitute |
-| `providers/config.ts` | where the backend lives |
+| `providers/registry.ts` | the one provider factory, mode selection, and the refusal to substitute |
+| `providers/config.ts` | which backend, and where it lives, validated strictly |
 | `ui/useNeuralEngine.ts` | the connection probe behind the status dot |
 
 ## The generation path, end to end
@@ -415,14 +546,17 @@ The header shows **Neural Engine: ● Connected** once the backend answers
 
 ## Environment variables
 
+The full, authoritative list — including the ZeroGPU settings and the repository
+variables the public deploy reads — is `docs/architecture/environment.md`. For
+the local backend described in this section:
+
 | Variable | Read by | Default |
 |---|---|---|
-| `VITE_ACE_STEP_API_URL` | the browser bundle | `http://127.0.0.1:8001` |
-| `VITE_ACE_STEP_API_KEY` | the browser bundle | unset |
-| `ACE_STEP_API_URL` | the smoke test | `http://127.0.0.1:8001` |
-| `ACE_STEP_API_KEY` | the smoke test | unset |
-| `ACE_STEP_MODEL` | the smoke test | `acestep-v15-turbo` |
-| `ACE_STEP_LM_MODEL` | the smoke test | `acestep-5Hz-lm-0.6B` |
+| `ACE_STEP_BACKEND` | the browser bundle | `local` |
+| `ACE_STEP_API_URL` | the smoke test and the browser bundle | `http://127.0.0.1:8001` |
+| `ACE_STEP_API_KEY` | the smoke test and the browser bundle | unset |
+| `ACE_STEP_MODEL` | the smoke test and the browser bundle | `acestep-v15-turbo` |
+| `ACE_STEP_LM_MODEL` | the smoke test and the browser bundle | `acestep-5Hz-lm-0.6B` |
 
 ## Verifying it end to end
 
@@ -441,12 +575,28 @@ CI, where there is no GPU and no multi-gigabyte download.
 ## Deployment
 
 **GitHub Pages cannot run ACE-Step.** Pages serves static files; it has no
-process, no GPU and no Python. The deployed site at
-`jamalbalya.github.io/aimusicgenerated` therefore runs the offline procedural
-engine, and shows the neural engine as Not Connected unless the person visiting
-has a backend of their own reachable from their browser.
+process, no GPU and no Python. So the site at
+`jamalbalya.github.io/aimusicgenerated` does not run the model — it calls the
+ZeroGPU Space, which does:
 
-For a public neural deployment:
+```
+Browser
+  └── HTTPS → Resonant Studio (GitHub Pages, static)
+        └── HTTPS → ACE-Step 1.5 Space on Hugging Face ZeroGPU   (free, public)
+              └── one request → one complete WAV
+```
+
+That path answers every point below for the hosted backend. CORS: Gradio
+echoes the page's origin, and the live Space returned
+`access-control-allow-origin: https://jamalbalya.github.io` for both the GET and
+the POST preflight. Mixed content: the Space is HTTPS. Authentication: none; the
+Space is public and no token is involved. Cost: none — each visitor spends their
+own daily ZeroGPU allowance, and running out is reported as exactly that.
+
+The deploy workflow builds with `ACE_STEP_BACKEND=zerogpu` and reads the Space's
+address from the `ACE_STEP_SPACE_URL` repository variable.
+
+For a public deployment on a backend of your own instead:
 
 ```
 Browser

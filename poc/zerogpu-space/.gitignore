@@ -5,3 +5,4 @@ checkpoints/
 zerogpu-run-*.json
 vendor/
 __pycache__/
+.env

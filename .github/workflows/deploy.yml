@@ -72,12 +72,47 @@ jobs:
         id: pages
         uses: actions/configure-pages@v5
 
+      # The public site's neural engine is the ZeroGPU Space. Its address is a
+      # repository variable rather than a value in this file, so the Space can
+      # move without a code change: Settings -> Secrets and variables -> Actions
+      # -> Variables -> ACE_STEP_SPACE_URL = https://<owner>-<space>.hf.space
+      # It is not a secret — it ends up in the public bundle either way — and no
+      # token is involved: the Space is public and the browser calls it directly.
+      - name: Check the neural backend configuration
+        env:
+          ACE_STEP_SPACE_URL: ${{ vars.ACE_STEP_SPACE_URL }}
+        run: |
+          if [ -z "$ACE_STEP_SPACE_URL" ]; then
+            {
+              echo "### ACE_STEP_SPACE_URL is not set"
+              echo
+              echo "The site will build and deploy, but its neural engine will show as not"
+              echo "configured until the repository variable is set:"
+              echo
+              echo "**Settings → Secrets and variables → Actions → Variables → ACE_STEP_SPACE_URL**"
+              echo
+              echo "Value: the Space's own host, e.g. \`https://<owner>-<space>.hf.space\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::ACE_STEP_SPACE_URL repository variable is not set; the neural engine will show as not configured."
+          else
+            echo "Neural backend: zerogpu at $ACE_STEP_SPACE_URL"
+          fi
+
       - name: Build
         # The site is served from https://<owner>.github.io/<repo>/, so every
         # asset URL has to be prefixed with the repository name.
         run: npx vite build
         env:
           VITE_BASE: ${{ steps.pages.outputs.base_path }}/
+          # ACE_STEP_BACKEND defaults to zerogpu for the public site and can be
+          # overridden with a repository variable of the same name.
+          ACE_STEP_BACKEND: ${{ vars.ACE_STEP_BACKEND || 'zerogpu' }}
+          ACE_STEP_SPACE_URL: ${{ vars.ACE_STEP_SPACE_URL }}
+          # Optional; each falls back to the default documented in
+          # docs/architecture/environment.md when its variable is unset.
+          ACE_STEP_SPACE_AUTO_DURATION: ${{ vars.ACE_STEP_SPACE_AUTO_DURATION }}
+          ACE_STEP_SPACE_MAX_DURATION: ${{ vars.ACE_STEP_SPACE_MAX_DURATION }}
+          ACE_STEP_SPACE_TIMEOUT_SECONDS: ${{ vars.ACE_STEP_SPACE_TIMEOUT_SECONDS }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

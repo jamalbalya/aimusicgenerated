@@ -10,23 +10,41 @@ const FIXTURE = writeFixture()
  * Fails the test if the page logged an error, so silent breakage cannot pass.
  *
  * One thing is filtered out: the studio probes for a neural backend on load,
- * and no ACE-Step server runs in the test environment, so the browser logs a
- * refused connection. That is the state under test rather than a fault — the
- * whole point is that the studio keeps working with no backend — and nothing
- * else in the app touches the network.
+ * and every neural backend is blocked in these tests (see `NEURAL_BACKENDS`),
+ * so the browser logs a failed connection. That is the state under test rather
+ * than a fault — the whole point is that the studio keeps working with no
+ * backend — and nothing else in the app touches the network.
  */
 function watchForErrors(page: Page): string[] {
   const errors: string[] = []
-  const expected = (text: string) =>
-    text.includes('ERR_CONNECTION_REFUSED') || text.includes('127.0.0.1:8001')
+  const expected = (text: string, url: string) =>
+    text.includes('ERR_CONNECTION_REFUSED') || text.includes('127.0.0.1:8001') || NEURAL_BACKENDS.test(url)
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`))
   page.on('console', (message) => {
-    if (message.type() === 'error' && !expected(message.text())) {
+    if (message.type() === 'error' && !expected(message.text(), message.location().url)) {
       errors.push(`console: ${message.text()}`)
     }
   })
   return errors
 }
+
+/**
+ * The neural backends, which no test may reach.
+ *
+ * These tests are written for a studio with no neural engine answering, and
+ * several of them press Generate. Whatever is running on the machine must not
+ * change that: a build made with `ACE_STEP_BACKEND=zerogpu` would otherwise
+ * submit real jobs to the live Space and spend real GPU quota, and an ACE-Step
+ * server left running on its default address — as it is on a developer's Mac
+ * after a local test — would otherwise be connected, flip the studio into
+ * Neural mode, and receive real multi-minute generations. Blocking both makes
+ * every run the no-backend case, whichever backend the build was made for.
+ */
+const NEURAL_BACKENDS = /\.hf\.space\b|\/\/127\.0\.0\.1:8001(?:\/|$)/
+
+test.beforeEach(async ({ page }) => {
+  await page.route(NEURAL_BACKENDS, (route) => route.abort())
+})
 
 test.describe('shell', () => {
   test('loads, routes between every tool, and survives a reload', async ({ page }) => {
@@ -298,6 +316,29 @@ test.describe('song studio', () => {
     await expect(engines.getByRole('button', { name: 'Offline Procedural' }))
       .toHaveAttribute('aria-pressed', 'true')
 
+    expect(errors).toEqual([])
+  })
+
+  test('offers a vocal gender only for the neural engine, and starts on Auto', async ({ page }) => {
+    const errors = watchForErrors(page)
+    await page.goto('/')
+    await page.getByRole('button', { name: /Show controls/i }).click()
+    const engines = page.getByRole('group', { name: 'Generation engine' })
+    const gender = page.getByRole('group', { name: 'Vocal gender' })
+
+    // The offline engine has its own voice controls; this one is not for it.
+    await engines.getByRole('button', { name: 'Offline Procedural' }).click()
+    await expect(gender).toHaveCount(0)
+
+    await engines.getByRole('button', { name: 'Neural', exact: true }).click()
+    await expect(gender).toBeVisible()
+    // Auto, not Male: nothing is forced onto a style that already says who sings.
+    await expect(gender.getByRole('button', { name: 'Auto' })).toHaveAttribute('aria-pressed', 'true')
+    await gender.getByRole('button', { name: 'Female' }).click()
+    await expect(gender.getByRole('button', { name: 'Female' })).toHaveAttribute('aria-pressed', 'true')
+
+    await engines.getByRole('button', { name: 'Offline Procedural' }).click()
+    await expect(gender).toHaveCount(0)
     expect(errors).toEqual([])
   })
 

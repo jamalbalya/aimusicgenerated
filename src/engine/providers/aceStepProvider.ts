@@ -22,7 +22,7 @@ import { buildAceStepTask, DEFAULT_MODELS, type AceStepModelChoice } from './ace
 import { neuralEngineConfig } from './config'
 import {
   EngineUnavailableError, GenerationCancelledError,
-  type GenerateOptions, type MusicGenerationProvider,
+  type GenerateOptions, type NeuralMusicProvider,
   type MusicGenerationRequest, type MusicGenerationResult,
 } from './types'
 
@@ -49,10 +49,11 @@ export interface AceStepProviderOptions {
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
-export class AceStepProvider implements MusicGenerationProvider {
+export class AceStepProvider implements NeuralMusicProvider {
   readonly id = ACE_STEP_PROVIDER_ID
   readonly name = 'ACE-Step 1.5'
   readonly type = 'neural' as const
+  readonly backend = 'local' as const
   readonly description = 'Neural full-song generation. Needs the ACE-Step backend running.'
 
   private readonly client: AceStepClient

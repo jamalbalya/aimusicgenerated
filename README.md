@@ -77,11 +77,19 @@ It is optional in the real sense: the studio works with nothing installed. The
 offline engine composes and sings in the tab, exactly as it always has, and the
 neural engine simply shows **● Not Connected** until a backend answers.
 
+**On the public site, the neural engine is ACE-Step 1.5 Turbo with the 0.6B
+language model, running on a free Hugging Face ZeroGPU Space** (`poc/zerogpu-space/`).
+It has been validated end to end with the full Bos Toxic song: one request, one
+complete 271-second WAV. GitHub Pages serves the studio; the browser calls the
+Space directly, with no token and no cost beyond each visitor's daily ZeroGPU
+allowance. Set `ACE_STEP_BACKEND=zerogpu` and `ACE_STEP_SPACE_URL` to build it
+that way — `docs/architecture/environment.md` has every setting.
+
 **Model weights are not stored in this repository**, and no model architecture is
 vendored into it. ACE-Step runs as its own backend, and its weights are
 downloaded from the ACE-Step project's own distribution at setup time.
 
-Running it locally:
+Running it locally, for development (`ACE_STEP_BACKEND=local`, the default):
 
 On an Apple Silicon Mac, three scripts do the whole thing — install, start,
 generate:
@@ -98,17 +106,18 @@ screen. Neither infers readiness from configuration: only a reply from the
 backend counts.
 
 On other platforms, follow ACE-Step's own installation guide, then point the
-studio at the server with `VITE_ACE_STEP_API_URL` (see `.env.example`).
+studio at the server with `ACE_STEP_API_URL` in `.env` (see `.env.example`).
 
 A neural request is never quietly served by the offline engine: if the backend
 is not reachable the request fails and offers to switch, rather than returning a
 synthesised vocal that would be mistaken for a neural one. Every result says
 which engine made it.
 
-GitHub Pages cannot run the model — it serves static files and has no GPU — so
-the deployed site runs the offline engine. `docs/architecture/neural-generation.md`
-covers the architecture, Apple Silicon setup, environment variables,
-troubleshooting, production deployment and the limitations.
+GitHub Pages cannot run the model — it serves static files and has no GPU — which
+is why the deployed site calls the ZeroGPU Space rather than running ACE-Step
+itself. `docs/architecture/neural-generation.md` covers the architecture, the
+ZeroGPU backend and its failure modes, Apple Silicon setup, troubleshooting,
+production deployment and the limitations.
 
 ### What it is not
 

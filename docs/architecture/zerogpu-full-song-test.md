@@ -2,10 +2,65 @@
 
 ## Verdict
 
-> ## BLOCKED — TECHNICAL TEST COULD NOT BE COMPLETED
+> ## PASS — full-song generation validated on the live Space, 2026-09-11
 
-Not FAIL, and certainly not PASS. The test never ran, because the environment
-this work was done in cannot reach Hugging Face at all.
+The project owner deployed this POC and ran the Bos Toxic request on it. As
+reported by them:
+
+| | Result |
+|---|---|
+| Space | `Jamalbalya/aimusicgenerated`, API host `https://jamalbalya-aimusicgenerated.hf.space` |
+| Hardware | ZeroGPU `large` — RTX PRO 6000 Blackwell Server Edition, MIG 2g.48GB |
+| Models | `acestep-v15-turbo`, `acestep-5Hz-lm-0.6B`, PyTorch/CUDA |
+| Request | the Bos Toxic style and all 68 lyric lines, `id`, male, sung, 271 s |
+| Output | **one complete 271-second WAV from one request**, 48 kHz, stereo, 16-bit |
+| Generation time | about 44.7 s, inside the Space's 80 s declared GPU duration |
+| Chunking | none |
+| Out of memory | no |
+| Quality | subjectively better than the local Mac run |
+
+Measured by the Space itself on that run (`run_test.py`'s record of it is kept
+out of git; the metadata is in `tests/unit/fixtures/zerogpu/real-run-metadata.json`,
+where a test checks the studio accepts it):
+
+| | Value |
+|---|---|
+| GPU | NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 2g.48gb, 47.38 GB, CUDA 12.8, torch 2.10.0+cu128 |
+| Loaded | `acestep-v15-turbo`; `acestep-5Hz-lm-0.6B` from `…/checkpoints/acestep-5Hz-lm-0.6B`; LM backend `pt` |
+| Startup (outside the GPU budget) | DiT and main model 19.7 s, language model 25.4 s |
+| Generation, inside the 80 s GPU call | LM 36.3 s · DiT diffusion 1.9 s (8 steps × 0.23 s) · VAE decode 3.2 s · **44.7 s total** |
+| Client wall clock, submit to finished | 47.7 s |
+| Audio | 271.0 s, 48 kHz, 2 channels, 16-bit, 52,032,044 bytes, peak 0.89 |
+| Echoed back | 68 lyric lines, `id`, not instrumental, seed 101390300 |
+| Result stream | three heartbeats, then `complete` |
+
+Checked independently the same day, read-only and at no GPU cost:
+
+| | How | Result |
+|---|---|---|
+| Endpoint contract | `GET /gradio_api/info` | `/generate_music` = style, lyrics, language, vocal_gender (`male`/`female`/`mixed`), instrumental, duration (integer) → audio file, metadata string |
+| Deployed code | the endpoint's defaults against the repository | identical to `poc/zerogpu-space` and the Bos Toxic fixture |
+| Gradio | `GET /config` | 6.2.0, protocol `sse_v3`, prefix `/gradio_api`, `generate_music` at fn_index 0, public |
+| CORS | `curl` with `Origin: https://jamalbalya.github.io`, on every route the studio's client uses | `access-control-allow-origin: https://jamalbalya.github.io` on `GET /config`, the `OPTIONS` preflight for `POST /gradio_api/queue/join` (POST and `content-type` allowed), `GET /gradio_api/queue/data`, and `GET /gradio_api/file=` — the last even on a refused (403) request, so the page can read failures as well as successes |
+
+**Still unverified**, and not to be read as covered by the PASS above:
+
+- a generation driven from a real browser on the GitHub Pages origin — CORS was
+  checked at the header level with curl, not observed in a browser, and the
+  studio's queue-protocol client has been tested against a fake built from the
+  live Space's contract, not against the Space;
+- which quota identity an anonymous browser visitor is charged under, and how
+  much one full song actually consumes (§10 and §12 below were never measured);
+- any song length other than 271 seconds, on this Space's 80-second GPU budget.
+
+The integration into the studio is described in `neural-generation.md`.
+
+---
+
+## The first attempt: BLOCKED
+
+What follows is the record from before the owner's run, kept as it was written.
+The build environment it describes could not reach Hugging Face at all.
 
 ```
 $ curl -sS -o /dev/null -w '%{http_code}\n' --max-time 15 https://huggingface.co/api/whoami-v2

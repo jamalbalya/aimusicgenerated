@@ -7,10 +7,51 @@ read by this project.
 
 | Variable | Read by | Default | What it does |
 |---|---|---|---|
+| `ACE_STEP_BACKEND` | browser bundle | `local` | Which neural backend the studio talks to: `local` or `zerogpu`. Anything else is reported as a configuration error, never read as `local` |
+| `ACE_STEP_MODEL` | scripts, smoke test, browser bundle | `acestep-v15-turbo` | DiT checkpoint. The local backend requests it; the ZeroGPU backend checks the Space ran it |
+| `ACE_STEP_LM_MODEL` | scripts, smoke test, browser bundle | `acestep-5Hz-lm-0.6B` | 5 Hz language model, requested or checked the same way |
+
+### ZeroGPU backend (`ACE_STEP_BACKEND=zerogpu`)
+
+| Variable | Default | What it does |
+|---|---|---|
+| `ACE_STEP_SPACE_URL` | unset — **required** | The Space's own host, `https://<owner>-<space>.hf.space`. Not its huggingface.co page, and no path |
+| `ACE_STEP_SPACE_AUTO_DURATION` | `271` | Seconds that "Auto" length becomes. The Space has to be told a length, and 271 is the full song validated end to end on the live Space. 10–600 |
+| `ACE_STEP_SPACE_MAX_DURATION` | unset | Requests longer than this are refused before anything is sent. Unset means no ceiling is claimed — **not** that any length fits the Space's GPU time. 10–600 |
+| `ACE_STEP_SPACE_TIMEOUT_SECONDS` | `900` | Outer bound on one generation, queue and a cold start included. A dead connection is caught much sooner, by the heartbeat. 60–3600 |
+
+No token. The Space is public, the browser calls it directly, and the frontend
+neither needs nor accepts a Hugging Face token. A token used to *push* the Space
+(`poc/zerogpu-space/deploy.sh`) may live in `.env`; it is never baked, because
+only the variables named on this page are.
+
+A value that is present but invalid — a duration that is not a whole number, a
+Space page URL instead of its host, an `http://` Space on the `https://` site —
+is not replaced by a default. It becomes the reason shown next to "Neural
+Engine: Not Connected", so the build that is wrong says so.
+
+### Local backend (`ACE_STEP_BACKEND=local`)
+
+| Variable | Read by | Default | What it does |
+|---|---|---|---|
 | `ACE_STEP_API_URL` | scripts, smoke test, **and the browser bundle** | `http://127.0.0.1:8001` | Where the ACE-Step API is |
 | `ACE_STEP_API_KEY` | scripts, smoke test, browser bundle | unset | Sent as `Authorization: Bearer`, only when the backend sets `ACESTEP_API_KEY` |
-| `ACE_STEP_MODEL` | scripts, smoke test, browser bundle | `acestep-v15-turbo` | DiT checkpoint to request |
-| `ACE_STEP_LM_MODEL` | scripts, smoke test, browser bundle | `acestep-5Hz-lm-0.6B` | 5 Hz language model to request |
+
+### The public site
+
+`.github/workflows/deploy.yml` builds with `ACE_STEP_BACKEND=zerogpu` and takes
+the rest from **repository variables** — Settings → Secrets and variables →
+Actions → Variables:
+
+| Repository variable | Required | Value |
+|---|---|---|
+| `ACE_STEP_SPACE_URL` | yes | `https://<owner>-<space>.hf.space` |
+| `ACE_STEP_BACKEND` | no | overrides `zerogpu` |
+| `ACE_STEP_SPACE_AUTO_DURATION`, `ACE_STEP_SPACE_MAX_DURATION`, `ACE_STEP_SPACE_TIMEOUT_SECONDS` | no | as above |
+
+Variables, not secrets: every one of them ends up in a public bundle. If
+`ACE_STEP_SPACE_URL` is missing the deploy still runs, puts a warning in the
+workflow summary, and the site's neural engine says it is not configured.
 
 ### Why there is no separate `VITE_` name to remember
 
@@ -19,12 +60,18 @@ make every setting exist twice — once for the scripts and once for the app,
 free to drift apart — `vite.config.ts` bakes the plain name into the bundle at
 build time. Setting `ACE_STEP_API_URL` is enough for both.
 
-`VITE_ACE_STEP_API_URL`, `VITE_ACE_STEP_API_KEY`, `VITE_ACE_STEP_MODEL` and
-`VITE_ACE_STEP_LM_MODEL` still work and take precedence, for anyone who prefers
-to be explicit. They are overrides, not a second requirement.
+It reads them with Vite's `loadEnv`, which is what makes a value in `.env`
+actually arrive. Until this was fixed, the config read `process.env`, where Vite
+never puts a `.env` file's plain keys, so only variables exported in the shell
+were baked — and a `.env` value, `VITE_` form included, was silently dropped.
+
+The `VITE_ACE_STEP_*` form of every name still works and takes precedence, for
+anyone who prefers to be explicit. A blank value counts as unset.
 
 Because these are baked in at build time, changing one means rebuilding
-(`npm run build`) or restarting `npm run dev`.
+(`npm run build`) or restarting `npm run dev`. Unit tests bake nothing, so a
+`.env` pointing at the live Space cannot change what they see, and the E2E suite
+blocks `*.hf.space` so it can never submit a real job.
 
 ## Where things live on disk
 

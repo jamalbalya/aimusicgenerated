@@ -118,6 +118,42 @@ export interface MusicGenerationProvider {
   cancel?(jobId: string): Promise<void>
 }
 
+/**
+ * Where the neural engine runs.
+ *
+ * `local` is a server on this machine or network; `zerogpu` is the same model
+ * hosted as a Hugging Face Space. It is the same engine either way, which is
+ * why a result from both is labelled the same.
+ */
+export type NeuralBackend = 'local' | 'zerogpu'
+
+/** What the connection indicator shows. Every field is something the backend said. */
+export interface NeuralProviderStatus {
+  connected: boolean
+  loadedModel?: string
+  loadedLmModel?: string
+  lmInitialized?: boolean
+  /** Why the browser cannot use this backend at all, when that is the reason. */
+  blockedReason?: string
+  /** A short factual note on why it is not connected, such as a status code. */
+  detail?: string
+}
+
+/** A neural engine: the shared contract, plus what the studio shows about the connection. */
+export interface NeuralMusicProvider extends MusicGenerationProvider {
+  readonly type: 'neural'
+  readonly backend: NeuralBackend
+  /** Where requests go. Shown in the interface, never used to decide anything. */
+  readonly baseUrl: string
+  readonly blockedReason: string | undefined
+  /**
+   * The length a request with no duration is given, for an engine that has to
+   * be told one. Absent when the engine chooses the length itself.
+   */
+  readonly autoDuration?: number
+  status(): Promise<NeuralProviderStatus>
+}
+
 /** Thrown when an engine was asked for and is not there. Never swallowed. */
 export class EngineUnavailableError extends Error {
   constructor(readonly engineId: string, message: string) {
@@ -131,5 +167,20 @@ export class GenerationCancelledError extends Error {
   constructor(message = 'Generation cancelled.') {
     super(message)
     this.name = 'GenerationCancelledError'
+  }
+}
+
+/**
+ * Thrown when the engine refused because a usage allowance is spent.
+ *
+ * Kept apart from ordinary failures because the remedy is different: nothing
+ * about the request is wrong, and asking again will be refused the same way
+ * until the allowance resets. So nothing retries it, and a run of several takes
+ * stops at the first one.
+ */
+export class QuotaExceededError extends Error {
+  constructor(readonly engineId: string, message: string) {
+    super(message)
+    this.name = 'QuotaExceededError'
   }
 }

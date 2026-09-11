@@ -26,11 +26,15 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { AceStepProvider, ProceduralMusicProvider, EngineUnavailableError } from '../../src/engine/providers'
+import {
+  AceStepProvider, ProceduralMusicProvider, EngineUnavailableError, GenerationCancelledError,
+  ZeroGpuProvider, createNeuralProvider, resolveProvider,
+} from '../../src/engine/providers'
 import { ProceduralVocalRenderer } from '../../src/engine/voice/procedural'
 import * as workerClient from '../../src/workers/client'
 import { BOS_TOXIC_LYRICS, BOS_TOXIC_STYLE } from './fixtures/bos-toxic'
-import type { MusicGenerationRequest } from '../../src/engine/providers'
+import { EVENT_ID, FILE_DATA, METADATA, TEST_CONFIG, completed, failed, sse, wav, zeroGpu, type SpaceScript } from './helpers/fakeSpace'
+import type { MusicGenerationRequest, ZeroGpuConfig, ZeroGpuProviderOptions } from '../../src/engine/providers'
 
 const REQUEST: MusicGenerationRequest = {
   style: BOS_TOXIC_STYLE,
@@ -242,6 +246,120 @@ describe('a failed neural generation never reaches the procedural engine', () =>
     walk('aceStepProvider')
     expect([...seen].sort()).toEqual(
       ['aceStepClient', 'aceStepProvider', 'aceStepRequest', 'audioCheck', 'config', 'types'])
+  })
+})
+
+describe('a failed ZeroGPU generation never reaches the procedural engine', () => {
+  /**
+   * Every distinct way the hosted Space can let a generation down. The request
+   * is the validated Bos Toxic one; the fake Space is the one the contract
+   * tests use, so these failures are the real failure shapes.
+   */
+  const failures: [string, SpaceScript, Partial<ZeroGpuConfig>, Partial<ZeroGpuProviderOptions>, Partial<MusicGenerationRequest>][] = [
+    ['the Space is asleep', { config: new Response('sleeping', { status: 503 }) }, {}, {}, {}],
+    ['the Space cannot be reached', { config: () => { throw new TypeError('Failed to fetch') } }, {}, {}, {}],
+    ['no Space is configured', {}, { spaceUrl: '' }, {}, {}],
+    ['the free GPU quota is spent',
+      { stream: sse([failed('ZeroGPU quota exceeded', 'Try again in 1:23:45.')]) }, {}, {}, {}],
+    ['the GPU duration is illegal',
+      { stream: sse([failed('ZeroGPU illegal duration', 'larger than the maximum allowed')]) }, {}, {}, {}],
+    ['the song outran the GPU budget', { stream: sse([failed('ZeroGPU worker error', 'GPU task aborted')]) }, {}, {}, {}],
+    ['generation failed on the Space',
+      { stream: sse([failed('Error', 'ACE-Step generation failed: CUDA out of memory')]) }, {}, {}, {}],
+    ['the queue failed', {
+      stream: sse([{ msg: 'unexpected_error', event_id: null, message: 'boom', session_not_found: false, success: false }]),
+    }, {}, {}, {}],
+    ['the Space refused the submission', { join: new Response('{"detail":"Queue is full."}', { status: 503 }) }, {}, {}, {}],
+    ['the result is malformed', { stream: sse([completed([FILE_DATA])]) }, {}, {}, {}],
+    ['no audio came back', { stream: sse([completed([null, JSON.stringify(METADATA)])]) }, {}, {}, {}],
+    ['the Space ran a substituted model', {
+      stream: sse([completed([FILE_DATA, JSON.stringify({ ...METADATA, loaded_lm_model: 'acestep-5Hz-lm-1.7B' })])]),
+    }, {}, {}, {}],
+    ['a clip came back where a song was asked for',
+      { file: () => new Response(wav(30), { headers: { 'Content-Type': 'audio/wav' } }) }, {}, {}, {}],
+    ['the file that came back is not a WAV',
+      { file: () => new Response(new Uint8Array(8192).fill(7), { headers: { 'Content-Type': 'audio/wav' } }) }, {}, {}, {}],
+    ['the job ran out of time', { stream: [], hang: true }, { jobTimeoutMs: 30 }, { heartbeatTimeoutMs: 10_000 }, {}],
+    ['the connection went silent', {
+      stream: sse([{ msg: 'estimation', event_id: EVENT_ID, rank: 0, queue_size: 1 }]), hang: true,
+    }, {}, { heartbeatTimeoutMs: 25 }, {}],
+    ['the requested length cannot be made', {}, {}, {}, { duration: 5 }],
+  ]
+
+  for (const [name, script, config, options, request] of failures) {
+    it(`fails loudly when ${name}`, async () => {
+      const watch = watchProceduralEngine()
+      try {
+        const { provider } = zeroGpu(script, config, options)
+        let thrown: unknown = null
+        try {
+          await provider.generate({ ...REQUEST, duration: 271, ...request })
+        } catch (error) {
+          thrown = error
+        }
+        expect(thrown, 'a ZeroGPU failure must not resolve').not.toBeNull()
+        watch.expectUntouched()
+      } finally {
+        watch.restore()
+      }
+    })
+  }
+
+  it('cancelling is not a handover either', async () => {
+    const watch = watchProceduralEngine()
+    try {
+      const controller = new AbortController()
+      const { provider } = zeroGpu({ stream: sse([{ msg: 'estimation', event_id: EVENT_ID, rank: 2, queue_size: 3 }]), hang: true })
+      await expect(provider.generate({ ...REQUEST, duration: 271 }, {
+        signal: controller.signal,
+        onStatus: (status) => { if (status.queuePosition) controller.abort() },
+      })).rejects.toBeInstanceOf(GenerationCancelledError)
+      watch.expectUntouched()
+    } finally {
+      watch.restore()
+    }
+  })
+
+  it('the registry refuses an unavailable Space rather than handing back the other engine', async () => {
+    const watch = watchProceduralEngine()
+    try {
+      const down = new ZeroGpuProvider({ config: { ...TEST_CONFIG, spaceUrl: '' } })
+      await expect(resolveProvider('neural', {}, down)).rejects.toBeInstanceOf(EngineUnavailableError)
+      // Whatever the configuration says, the factory's answer is a neural engine.
+      for (const choice of [{ backend: 'local' as const }, { backend: 'zerogpu' as const },
+        { backend: 'local' as const, problem: 'misconfigured' }]) {
+        expect(createNeuralProvider(choice).type).toBe('neural')
+      }
+      watch.expectUntouched()
+    } finally {
+      watch.restore()
+    }
+  })
+
+  it('the ZeroGPU provider cannot reach the procedural engine even in principle', async () => {
+    const { readFileSync } = await import('node:fs')
+    const seen = new Set<string>()
+    const forbidden = /from '\.\.\/\.\.\/workers|from '\.\.\/synth|from '\.\.\/voice|from '\.\.\/compose/
+    const walk = (file: string) => {
+      if (seen.has(file)) return
+      seen.add(file)
+      const source = readFileSync(new URL(`../../src/engine/providers/${file}.ts`, import.meta.url), 'utf8')
+      expect(source, `${file}.ts reaches outside the provider boundary`).not.toMatch(forbidden)
+      for (const match of source.matchAll(/from '\.\/([a-zA-Z]+)'/g)) walk(match[1]!)
+    }
+    walk('zeroGpuProvider')
+    expect([...seen].sort()).toEqual(
+      ['aceStepRequest', 'audioCheck', 'config', 'gradioClient', 'types', 'zeroGpuProvider'])
+  })
+
+  it('the Gradio transport knows nothing about ACE-Step', async () => {
+    // The layering, asserted: protocol code stays generic, so it can neither
+    // pick a model nor decide what a song is.
+    const { readFileSync } = await import('node:fs')
+    const source = readFileSync(new URL('../../src/engine/providers/gradioClient.ts', import.meta.url), 'utf8')
+    const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')
+    expect(code).not.toMatch(/ace-?step|acestep|lyric|zerogpu|\bsong\b/i)
+    expect(source).not.toMatch(/^import /m)
   })
 })
 

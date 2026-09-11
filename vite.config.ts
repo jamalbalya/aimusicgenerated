@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { loadEnv } from 'vite'
 import { defineConfig, type Plugin } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -87,6 +88,17 @@ function inlineEverything(directory: string): Plugin {
 }
 
 /**
+ * The neural settings a build may carry into the browser, and nothing else.
+ *
+ * An allowlist on purpose: `.env` is also where a deploy token can live, and
+ * the only way a value reaches the bundle is by being named here.
+ */
+export const NEURAL_SETTINGS = [
+  'API_URL', 'API_KEY', 'MODEL', 'LM_MODEL',
+  'BACKEND', 'SPACE_URL', 'SPACE_AUTO_DURATION', 'SPACE_MAX_DURATION', 'SPACE_TIMEOUT_SECONDS',
+] as const
+
+/**
  * One name per setting.
  *
  * Vite only exposes variables prefixed VITE_ to the browser bundle, which would
@@ -95,24 +107,35 @@ function inlineEverything(directory: string): Plugin {
  * app — and the two drifting apart is a matter of time. So the plain name is
  * the authoritative one and is baked in here; the VITE_ form stays as an
  * override for anyone who prefers it.
+ *
+ * `env` comes from `loadEnv`, not `process.env`. Vite never copies a `.env`
+ * file's plain keys into `process.env` — it expands them into a copy — so
+ * reading `process.env` here saw only variables exported in the shell, and a
+ * setting written in `.env`, as `.env.example` says to, never arrived.
  */
-function neuralSetting(name: string, fallback = ''): string {
-  return process.env[`VITE_ACE_STEP_${name}`]
-    ?? process.env[`ACE_STEP_${name}`]
-    ?? fallback
+export function neuralDefines(env: Record<string, string>): Record<string, string> {
+  // Blank counts as unset: a CI variable that was never defined arrives as an
+  // empty string, and must not shadow the other spelling of the same setting.
+  const set = (value: string | undefined) => (value && value.trim() ? value.trim() : undefined)
+  const defines: Record<string, string> = {}
+  for (const name of NEURAL_SETTINGS) {
+    const value = set(env[`VITE_ACE_STEP_${name}`]) ?? set(env[`ACE_STEP_${name}`]) ?? ''
+    defines[`import.meta.env.VITE_ACE_STEP_${name}`] = JSON.stringify(value)
+  }
+  return defines
 }
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   base: singleFile ? './' : base,
   plugins: [react(), tailwindcss(), ...(singleFile ? [inlineEverything(outDir)] : [spaFallback()])],
   define: {
     // A compile-time constant, so the branch it guards is removed entirely
     // from whichever build does not need it.
     'import.meta.env.VITE_INLINE_WORKER': JSON.stringify(singleFile),
-    'import.meta.env.VITE_ACE_STEP_API_URL': JSON.stringify(neuralSetting('API_URL')),
-    'import.meta.env.VITE_ACE_STEP_API_KEY': JSON.stringify(neuralSetting('API_KEY')),
-    'import.meta.env.VITE_ACE_STEP_MODEL': JSON.stringify(neuralSetting('MODEL')),
-    'import.meta.env.VITE_ACE_STEP_LM_MODEL': JSON.stringify(neuralSetting('LM_MODEL')),
+    // The shell wins over `.env`, as everywhere else in Vite. Unit tests get
+    // nothing baked in at all, so a developer's `.env` — which may well point
+    // at the live Space — cannot change what they see.
+    ...neuralDefines(process.env.VITEST ? {} : loadEnv(mode, projectRoot, '')),
   },
   build: {
     outDir,
@@ -134,4 +157,4 @@ export default defineConfig({
     include: ['tests/unit/**/*.test.ts'],
     testTimeout: 30_000,
   },
-})
+}))

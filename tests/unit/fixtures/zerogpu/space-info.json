@@ -1,0 +1,80 @@
+{
+  "_source": "GET https://jamalbalya-aimusicgenerated.hf.space/gradio_api/info on 2026-09-11; defaults dropped (they are the Bos Toxic fixture)",
+  "named_endpoints": {
+    "/generate_music": {
+      "parameters": [
+        {
+          "parameter_name": "style",
+          "component": "Textbox",
+          "type": {
+            "type": "string"
+          }
+        },
+        {
+          "parameter_name": "lyrics",
+          "component": "Textbox",
+          "type": {
+            "type": "string"
+          }
+        },
+        {
+          "parameter_name": "language",
+          "component": "Textbox",
+          "type": {
+            "type": "string"
+          }
+        },
+        {
+          "parameter_name": "vocal_gender",
+          "component": "Dropdown",
+          "type": {
+            "type": "string",
+            "enum": [
+              "male",
+              "female",
+              "mixed"
+            ]
+          }
+        },
+        {
+          "parameter_name": "instrumental",
+          "component": "Checkbox",
+          "type": {
+            "type": "boolean"
+          }
+        },
+        {
+          "parameter_name": "duration",
+          "component": "Number",
+          "type": {
+            "type": "integer"
+          }
+        }
+      ],
+      "returns": [
+        {
+          "label": "generated audio",
+          "component": "Audio",
+          "properties": [
+            "is_stream",
+            "meta",
+            "mime_type",
+            "orig_name",
+            "path",
+            "size",
+            "url"
+          ],
+          "required": [
+            "path"
+          ]
+        },
+        {
+          "label": "metadata",
+          "component": "Code",
+          "properties": null,
+          "required": null
+        }
+      ]
+    }
+  }
+}
