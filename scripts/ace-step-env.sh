@@ -96,6 +96,28 @@ info() { printf '  %s\n' "$*"; }
 
 die() { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# Nothing here needs root, and running it as root actively breaks things: uv's
+# cache, the virtualenv and the downloaded weights all end up owned by root,
+# and every later command run normally then fails on them. Refusing is kinder
+# than letting it half-work.
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+  printf '\n\033[31m✗ Do not run this with sudo.\033[0m\n' >&2
+  cat >&2 <<'SUDO'
+
+Everything lives under your own home directory, so root is never needed, and
+using it leaves ~/.cache/uv, the ACE-Step virtualenv and the model weights
+owned by root -- after which the normal commands fail with "Permission denied".
+
+Run it again without sudo. If you have already used sudo once, hand the files
+back first:
+
+  sudo chown -R "$(id -un):$(id -gn)" \
+    ~/.cache/uv ~/.local/bin ~/Applications/ACE-Step-1.5 ~/Models/ACE-Step-1.5
+
+SUDO
+  exit 1
+fi
+
 # True when a model directory holds at least one real weights file.
 ace_step_has_weights() {
   local dir="$1" file
