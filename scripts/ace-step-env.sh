@@ -61,7 +61,6 @@ ACE_STEP_API_URL="${ACE_STEP_API_URL:-http://${ACE_STEP_HOST}:${ACE_STEP_PORT}}"
 ACE_STEP_MODEL="${ACE_STEP_MODEL:-acestep-v15-turbo}"
 ACE_STEP_LM_MODEL="${ACE_STEP_LM_MODEL:-acestep-5Hz-lm-0.6B}"
 ACE_STEP_REPO_URL="${ACE_STEP_REPO_URL:-https://github.com/ACE-Step/ACE-Step-1.5.git}"
-ACE_STEP_DOWNLOAD_SOURCE="${ACE_STEP_DOWNLOAD_SOURCE:-auto}"
 
 # ACE-Step reads this to find its weights, which is what keeps them out of the
 # clone. Exported for every child process the scripts start.
