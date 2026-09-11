@@ -1,6 +1,6 @@
 # Production readiness audit
 
-Audited at `3dc7525` on branch `claude/free-music-generation-tools-fy4esb`.
+Audited at `3dc7525` on branch `free-music-generation-tools-fy4esb`.
 Working tree clean; **no code was changed for this audit.**
 
 Classifications used exactly as briefed: `PASS`, `PARTIAL`, `FAIL`,

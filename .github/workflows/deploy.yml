@@ -6,7 +6,7 @@ on:
       - main
       # The github-pages environment only accepts a deploy from the
       # repository's default branch. Drop this line once main is the default.
-      - claude/free-music-generation-tools-fy4esb
+      - free-music-generation-tools-fy4esb
   workflow_dispatch:
 
 permissions:
