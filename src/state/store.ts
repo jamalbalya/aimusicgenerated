@@ -4,6 +4,7 @@ import { create } from 'zustand'
 import type { RenderQuality } from '../workers/protocol'
 import type { Score } from '../engine/compose/types'
 import type { AudioData } from '../engine/audio/wav'
+import type { GenerationStatus, MusicGenerationResult } from '../engine/providers'
 import * as player from '../lib/player'
 
 export type Theme = 'dark' | 'light'
@@ -20,6 +21,40 @@ export interface LoadedTrack {
   source: 'song' | 'speech' | 'stem' | 'edit'
 }
 
+/** One neural take: what the engine returned, plus the audio decoded for the player. */
+export interface NeuralTake {
+  result: MusicGenerationResult
+  audio: AudioData
+}
+
+/**
+ * A neural generation, which outlives the page that started it.
+ *
+ * It lives here rather than in `StudioPage` because leaving the Studio must not
+ * stop a song being made: the request keeps running whatever React does with
+ * the component, so the studio has to be able to find it again on the way back.
+ * Held in component state it could not — a remount showed an idle studio above
+ * a job still running on the GPU, offered no way to cancel it, and let one
+ * click start a second one.
+ *
+ * `controller` is deliberately not serialisable, and nothing here is persisted:
+ * a reload destroys the page's JavaScript, and no amount of stored state would
+ * reconnect it to a running job.
+ */
+export interface NeuralJob {
+  /** Non-null exactly while a generation is running. What Cancel needs. */
+  controller: AbortController | null
+  status: GenerationStatus | null
+  takes: NeuralTake[]
+  /** Which take is on screen and in the player. */
+  index: number
+}
+
+/** What a running generation may change about itself. */
+type NeuralPatch = Partial<Pick<NeuralJob, 'status' | 'takes' | 'index' | 'controller'>>
+
+const IDLE_NEURAL: NeuralJob = { controller: null, status: null, takes: [], index: 0 }
+
 interface StudioState {
   theme: Theme
   quality: RenderQuality
@@ -34,12 +69,22 @@ interface StudioState {
   playbackError: string | null
   /** Non-null while a background job is running. */
   job: { label: string; progress: number; stage: string } | null
+  /** The neural generation, running or last finished. */
+  neural: NeuralJob
   toast: { message: string; tone: 'info' | 'error' | 'success' } | null
 
   setTheme: (theme: Theme) => void
   setQuality: (quality: RenderQuality) => void
   setCurrent: (track: LoadedTrack | null) => void
   setJob: (job: { label: string; progress: number; stage: string } | null) => void
+  /** Begins a generation, replacing whatever the last one left behind. */
+  startNeural: (controller: AbortController) => void
+  /** Applies a change from a generation — and only while it is still the one running. */
+  updateNeural: (controller: AbortController, patch: NeuralPatch) => void
+  /** Puts a finished take on screen. */
+  selectNeuralTake: (index: number) => void
+  /** Forgets the last result, without touching a generation still in flight. */
+  clearNeural: () => void
   notify: (message: string, tone?: 'info' | 'error' | 'success') => void
   dismissToast: () => void
 }
@@ -77,6 +122,7 @@ export const useStudio = create<StudioState>((set) => ({
   current: null,
   playbackError: null,
   job: null,
+  neural: IDLE_NEURAL,
   toast: null,
 
   setTheme: (theme) => {
@@ -120,6 +166,30 @@ export const useStudio = create<StudioState>((set) => ({
   },
 
   setJob: (job) => set({ job }),
+
+  startNeural: (controller) => set({ neural: { ...IDLE_NEURAL, controller } }),
+
+  updateNeural: (controller, patch) => set((state) => (
+    // The controller is the generation's identity, so no job id has to be
+    // invented for this. A write from a generation that is no longer the
+    // running one is dropped: its `finally` must not clear a newer job's
+    // controller, and its late result must not overwrite a newer job's takes.
+    state.neural.controller === controller
+      ? { neural: { ...state.neural, ...patch } }
+      : {}
+  )),
+
+  selectNeuralTake: (index) => set((state) => (
+    index >= 0 && index < state.neural.takes.length
+      ? { neural: { ...state.neural, index } }
+      : {}
+  )),
+
+  // Leaves `controller` alone on purpose: clearing the last result must never
+  // orphan a generation that is still running.
+  clearNeural: () => set((state) => ({
+    neural: { ...state.neural, status: null, takes: [], index: 0 },
+  })),
 
   notify: (message, tone = 'info') => set({ toast: { message, tone } }),
 

@@ -6,7 +6,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { Icon } from '../components/Icon'
 import { Empty, Field, Panel, Progress, Segmented, Slider, Stat, Toggle } from '../components/controls'
 import { useJob, isCancellation } from '../useJob'
-import { useStudio } from '../../state/store'
+import { useStudio, type NeuralTake } from '../../state/store'
 import { GENRES } from '../../engine/compose/genres'
 import { MOODS, type Mood } from '../../engine/compose/prompt'
 import { NOTE_NAMES, SCALE_NAMES, type ScaleName } from '../../engine/theory/pitch'
@@ -32,7 +32,7 @@ import { decodeWav } from '../../engine/audio/wav'
 import {
   createNeuralProvider, EngineUnavailableError, GenerationCancelledError, QuotaExceededError,
   engineLabel, resolveEngineMode, VERIFIED_ZEROGPU_DURATION,
-  type EngineMode, type GenerationStatus, type MusicGenerationResult,
+  type EngineMode, type GenerationStatus,
 } from '../../engine/providers'
 
 /**
@@ -63,12 +63,6 @@ const NEURAL_STATE_TEXT: Partial<Record<GenerationStatus['state'], string>> = {
   generating: 'Generating song…',
   failed: 'Generation failed.',
   cancelled: 'Stopped waiting.',
-}
-
-/** One neural take: what the engine returned, plus the audio decoded for the player. */
-interface NeuralTake {
-  result: MusicGenerationResult
-  audio: { channels: Float32Array[]; sampleRate: number }
 }
 
 /** The host of an address, for display; the address itself when it is not one. */
@@ -180,11 +174,16 @@ export default function StudioPage() {
   // whatever the backend probe says, so there is no second copy of that fact
   // to fall out of step with the first.
   const [engineChoice, setEngineChoice] = useState<EngineMode | null>(null)
-  const [neuralTakes, setNeuralTakes] = useState<NeuralTake[]>([])
-  const [neuralIndex, setNeuralIndex] = useState(0)
-  const [neuralStatus, setNeuralStatus] = useState<GenerationStatus | null>(null)
+  // The neural generation lives in the store, not here: it keeps running when
+  // this page unmounts, and a remount has to find it again rather than show an
+  // idle studio above a job still on the GPU.
+  const neuralJob = useStudio((s) => s.neural)
+  const startNeural = useStudio((s) => s.startNeural)
+  const updateNeural = useStudio((s) => s.updateNeural)
+  const selectNeuralTake = useStudio((s) => s.selectNeuralTake)
+  const clearNeural = useStudio((s) => s.clearNeural)
+  const { takes: neuralTakes, index: neuralIndex, status: neuralStatus, controller: neuralController } = neuralJob
   const [engineError, setEngineError] = useState<string | null>(null)
-  const [neuralController, setNeuralController] = useState<AbortController | null>(null)
   const neural = useNeuralEngine()
 
   // Move onto the neural engine once the backend has answered, and stay: a
@@ -264,9 +263,9 @@ export default function StudioPage() {
   const chooseNeuralTake = useCallback((index: number) => {
     const take = neuralTakes[index]
     if (!take) return
-    setNeuralIndex(index)
+    selectNeuralTake(index)
     openNeuralTake(take)
-  }, [neuralTakes, openNeuralTake])
+  }, [neuralTakes, selectNeuralTake, openNeuralTake])
 
   const chooseTake = useCallback((index: number) => {
     const take = takes[index]
@@ -296,9 +295,12 @@ export default function StudioPage() {
     }
 
     const controller = new AbortController()
-    setNeuralController(controller)
+    // The controller is this generation's identity from here on: every write
+    // below is addressed to it, so a write that arrives after it has been
+    // superseded is dropped rather than applied to whatever is running now.
+    startNeural(controller)
     setEngineError(null)
-    setNeuralStatus({ state: 'initializing' })
+    updateNeural(controller, { status: { state: 'initializing' } })
 
     const provider = createNeuralProvider()
     const baseSeed = Number.parseInt(overrideSeed ?? seed.trim(), 10)
@@ -322,9 +324,8 @@ export default function StudioPage() {
             ...(Number.isFinite(baseSeed) ? { seed: baseSeed + index } : {}),
           }, {
             signal: controller.signal,
-            onStatus: (status) => setNeuralStatus({
-              ...status,
-              ...(status.detail ? { detail: `${status.detail}${label}` } : {}),
+            onStatus: (status) => updateNeural(controller, {
+              status: { ...status, ...(status.detail ? { detail: `${status.detail}${label}` } : {}) },
             }),
           })
 
@@ -340,9 +341,9 @@ export default function StudioPage() {
           }
           const decoded = decodeWav(buffer)
           collected.push({ result, audio: decoded })
-          setNeuralTakes([...collected])
+          updateNeural(controller, { takes: [...collected] })
           if (collected.length === 1) {
-            setNeuralIndex(0)
+            updateNeural(controller, { index: 0 })
             openNeuralTake(collected[0]!)
           }
         } catch (error) {
@@ -361,11 +362,11 @@ export default function StudioPage() {
       }
 
       if (collected.length === 0) {
-        setNeuralStatus({ state: 'failed' })
+        updateNeural(controller, { status: { state: 'failed' } })
         notify(failures[0] ?? 'ACE-Step produced nothing.', 'error')
         return
       }
-      setNeuralStatus({ state: 'completed' })
+      updateNeural(controller, { status: { state: 'completed' } })
       if (failures.length > 0) {
         notify(
           `${collected.length} of ${takeCount} takes generated. ${failures.join(' · ')}`,
@@ -376,22 +377,23 @@ export default function StudioPage() {
       }
     } catch (error) {
       if (error instanceof GenerationCancelledError) {
-        setNeuralStatus({ state: 'cancelled' })
+        updateNeural(controller, { status: { state: 'cancelled' } })
         // ACE-Step has no cancellation endpoint, so this is the honest wording.
         notify(collected.length > 0
           ? `Stopped after ${collected.length} take(s). The backend may still be finishing the next one.`
           : 'Stopped waiting. The backend may still be finishing this song.', 'info')
         return
       }
-      setNeuralStatus({ state: 'failed' })
+      updateNeural(controller, { status: { state: 'failed' } })
       const message = error instanceof Error ? error.message : String(error)
       if (error instanceof EngineUnavailableError) setEngineError(message)
       notify(message, 'error')
     } finally {
-      setNeuralController(null)
+      // Only ends the job if it is still this one.
+      updateNeural(controller, { controller: null })
     }
   }, [prompt, customLyrics, language, duration, vocalGender, vocals, seed, takeCount,
-      notify, openNeuralTake])
+      notify, openNeuralTake, startNeural, updateNeural])
 
   const generate = useCallback(async (overrideSeed?: string) => {
     const text = prompt.trim()
@@ -465,13 +467,12 @@ export default function StudioPage() {
         await generateNeural(overrideSeed)
         return
       }
-      setNeuralTakes([])
-      setNeuralStatus(null)
+      clearNeural()
       await generate(overrideSeed)
     } finally {
       inFlight.current = false
     }
-  }, [busy, engineMode, generate, generateNeural])
+  }, [busy, engineMode, generate, generateNeural, clearNeural])
 
   const cancelGeneration = useCallback(() => {
     if (neuralController) {
