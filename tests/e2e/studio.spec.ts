@@ -279,6 +279,20 @@ test.describe('song studio', () => {
     // Nothing was generated: no result panel appeared.
     await expect(page.getByRole('heading', { level: 2 })).toHaveCount(0)
 
+    // The keyboard shortcut must go through the same engine choice as the
+    // button. Routing it to the offline path would hand someone in Neural Mode
+    // a procedural song with nothing to tell them it had happened.
+    //
+    // The wait is the point: a procedural draft render of this lyric finishes
+    // in a few seconds, so a shortcut wired to the wrong engine would have
+    // produced a result by now. Nothing appearing after twenty seconds is what
+    // makes this assertion mean something.
+    await page.getByLabel('Lyrics').click()
+    await page.keyboard.press('ControlOrMeta+Enter')
+    await page.waitForTimeout(20_000)
+    await expect(page.getByRole('heading', { level: 2 }), 'a song was generated in Neural Mode')
+      .toHaveCount(0)
+
     // The offer works, and puts the visible control where it says.
     await alert.getByRole('button', { name: 'Use Offline Procedural Mode' }).click()
     await expect(engines.getByRole('button', { name: 'Offline Procedural' }))
