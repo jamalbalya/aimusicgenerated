@@ -75,6 +75,10 @@ interface HeldSpace {
 
 /** A Space that accepts a job and holds its result stream until released. */
 async function heldSpace(page: Page): Promise<HeldSpace> {
+  // The Space reports back the length it was handed, so the fake does too:
+  // Auto sends ACE-Step's own "you choose" value instead of a number, and the
+  // provider checks that echo against what it sent.
+  let asked: unknown = SONG_SECONDS
   let joins = 0
   let release = (): void => { /* replaced below */ }
   const held = new Promise<void>((resolve) => { release = resolve })
@@ -96,6 +100,7 @@ async function heldSpace(page: Page): Promise<HeldSpace> {
     }
 
     if (path === `${API}/queue/join`) {
+      asked = (route.request().postDataJSON() as { data?: unknown[] } | null)?.data?.[5]
       joins += 1
       return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ event_id: `event-${joins}` }) })
     }
@@ -120,7 +125,7 @@ async function heldSpace(page: Page): Promise<HeldSpace> {
                   orig_name: 'bos-toxic.wav',
                   meta: { _type: 'gradio.FileData' },
                 },
-                JSON.stringify(METADATA),
+                JSON.stringify({ ...METADATA, requested_audio_duration_s: asked }),
               ],
             },
           })

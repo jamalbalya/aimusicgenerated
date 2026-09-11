@@ -30,7 +30,8 @@ export const SPACE = SPACE_CONFIG.root
 export const EVENT_ID = 'event-1'
 export const SESSION = 'session-1'
 
-export const TEST_CONFIG: ZeroGpuConfig = { spaceUrl: SPACE, autoDuration: 271, jobTimeoutMs: 60_000 }
+/** No pinned Auto length, which is the production default: ACE-Step chooses. */
+export const TEST_CONFIG: ZeroGpuConfig = { spaceUrl: SPACE, jobTimeoutMs: 60_000 }
 
 /**
  * A real, playable, non-silent 16-bit mono WAV.
@@ -154,6 +155,8 @@ const reply = (value: Reply | undefined, fallback: () => Response) =>
 /** A `fetch` that is the Space. Records every request, so tests can count them. */
 export function fakeSpace(script: SpaceScript = {}) {
   const calls: RecordedCall[] = []
+  /** What the last join asked for; echoed back the way the real Space does. */
+  let requestedDuration: number = METADATA.requested_audio_duration_s
   const api = `${SPACE}${SPACE_CONFIG.api_prefix}`
 
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -163,10 +166,20 @@ export function fakeSpace(script: SpaceScript = {}) {
     calls.push({ method, url, ...(body !== undefined ? { body } : {}) })
 
     if (url === `${SPACE}/config`) return reply(script.config, () => json(SPACE_CONFIG))
-    if (url === `${api}/queue/join`) return reply(script.join, () => json({ event_id: EVENT_ID }))
+    if (url === `${api}/queue/join`) {
+      // The Space reports back the duration it was handed, so the fake does
+      // too — otherwise an Auto request could never be checked end to end.
+      const sent = (body as { data?: unknown[] } | undefined)?.data?.[5]
+      if (typeof sent === 'number') requestedDuration = sent
+      return reply(script.join, () => json({ event_id: EVENT_ID }))
+    }
     if (url.startsWith(`${api}/queue/data?session_hash=`)) {
       const encoder = new TextEncoder()
-      const chunks = script.stream ?? sse(SUCCESS_STREAM)
+      const chunks = script.stream ?? sse([
+        ...SUCCESS_STREAM.slice(0, -2),
+        completed([FILE_DATA, JSON.stringify({ ...METADATA, requested_audio_duration_s: requestedDuration })]),
+        { msg: 'close_stream', event_id: null },
+      ])
       const signal = init?.signal
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {

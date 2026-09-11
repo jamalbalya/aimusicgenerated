@@ -114,15 +114,15 @@ export function neuralBackendChoice(): NeuralBackendChoice {
  */
 export const VERIFIED_ZEROGPU_DURATION = 271
 
-/**
- * The length a request with no duration is given on the ZeroGPU backend.
+/*
+ * There is deliberately no default Auto length here — see `ACE_STEP_AUTO_DURATION`.
  *
- * Not a guess and not a musical choice: the Space has to be told a length —
- * asking it to choose one is untested — so Auto has to become a number, and the
- * verified length is the number with evidence behind it. Change it with
- * `ACE_STEP_SPACE_AUTO_DURATION` once another has been verified.
+ * A fixed one was measured cutting a song off mid-phrase: the length was a
+ * constant left over from one unrelated test run, and ACE-Step treats a stated
+ * length as a hard budget rather than a target. Auto now sends no length and
+ * the model picks one from the lyric sheet. A deployer who still wants a fixed
+ * length can pin one with `ACE_STEP_SPACE_AUTO_DURATION`.
  */
-export const DEFAULT_ZEROGPU_AUTO_DURATION = VERIFIED_ZEROGPU_DURATION
 
 /**
  * How long one generation may take from submission to a finished file.
@@ -137,8 +137,11 @@ export const DEFAULT_ZEROGPU_TIMEOUT_SECONDS = 900
 export interface ZeroGpuConfig {
   /** The Space's own host, e.g. `https://<owner>-<space>.hf.space`. Empty when unset. */
   spaceUrl: string
-  /** Seconds a request with no duration is given. */
-  autoDuration: number
+  /**
+   * Seconds a request with no duration is given. Undefined — the default —
+   * means ACE-Step chooses the length from the lyrics, which is what Auto is.
+   */
+  autoDuration?: number
   /**
    * Requests longer than this are refused before anything is sent. Undefined
    * when no ceiling has been configured — which is not a claim that any length
@@ -211,8 +214,11 @@ export function parseZeroGpuConfig(read: EnvReader, protocol: string): ZeroGpuCo
   if (urlProblem) problems.push(urlProblem)
   const spaceUrl = !urlProblem && rawUrl ? new URL(rawUrl).origin : (rawUrl ?? '').replace(/\/+$/, '')
 
-  const auto = seconds(read, 'VITE_ACE_STEP_SPACE_AUTO_DURATION', DEFAULT_ZEROGPU_AUTO_DURATION, ACE_STEP_DURATION_RANGE)
-  if (auto.problem) problems.push(auto.problem)
+  // Only when a deployer pins one. Absent is Auto, and Auto is ACE-Step's job.
+  const auto = read('VITE_ACE_STEP_SPACE_AUTO_DURATION') !== undefined
+    ? seconds(read, 'VITE_ACE_STEP_SPACE_AUTO_DURATION', ACE_STEP_DURATION_RANGE.max, ACE_STEP_DURATION_RANGE)
+    : undefined
+  if (auto?.problem) problems.push(auto.problem)
 
   let maxDuration: number | undefined
   if (read('VITE_ACE_STEP_SPACE_MAX_DURATION') !== undefined) {
@@ -220,7 +226,7 @@ export function parseZeroGpuConfig(read: EnvReader, protocol: string): ZeroGpuCo
     if (max.problem) problems.push(max.problem)
     else maxDuration = max.value
   }
-  if (maxDuration !== undefined && !auto.problem && auto.value > maxDuration) {
+  if (maxDuration !== undefined && auto && !auto.problem && auto.value > maxDuration) {
     problems.push(
       `ACE_STEP_SPACE_AUTO_DURATION (${auto.value}) is longer than ACE_STEP_SPACE_MAX_DURATION `
       + `(${maxDuration}), so every Auto-length request would be refused.`)
@@ -234,7 +240,7 @@ export function parseZeroGpuConfig(read: EnvReader, protocol: string): ZeroGpuCo
   const lmModel = read('VITE_ACE_STEP_LM_MODEL')
   return {
     spaceUrl,
-    autoDuration: auto.value,
+    ...(auto && !auto.problem ? { autoDuration: auto.value } : {}),
     ...(maxDuration !== undefined ? { maxDuration } : {}),
     jobTimeoutMs: timeout.value * 1000,
     ...(model ? { model } : {}),

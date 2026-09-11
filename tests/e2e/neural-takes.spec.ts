@@ -74,6 +74,10 @@ interface FakeSpace {
 }
 
 async function fakeSpace(page: Page): Promise<FakeSpace> {
+  // The Space reports back the length it was handed, so the fake does too:
+  // Auto sends ACE-Step's own "you choose" value instead of a number, and the
+  // provider checks that echo against what it sent.
+  let asked: unknown = SONG_SECONDS
   let joins = 0
   let files = 0
   await page.route(`${SPACE}/**`, async (route: Route) => {
@@ -93,6 +97,7 @@ async function fakeSpace(page: Page): Promise<FakeSpace> {
     }
 
     if (path === `${API}/queue/join`) {
+      asked = (route.request().postDataJSON() as { data?: unknown[] } | null)?.data?.[5]
       joins += 1
       return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ event_id: `event-${joins}` }) })
     }
@@ -116,7 +121,7 @@ async function fakeSpace(page: Page): Promise<FakeSpace> {
                   orig_name: `take-${mine}.wav`,
                   meta: { _type: 'gradio.FileData' },
                 },
-                JSON.stringify({ ...METADATA, seed: 101390300 + mine }),
+                JSON.stringify({ ...METADATA, seed: 101390300 + mine, requested_audio_duration_s: asked }),
               ],
             },
           })

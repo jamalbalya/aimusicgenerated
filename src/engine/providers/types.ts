@@ -46,6 +46,12 @@ export interface MusicGenerationResult {
   audioUrl: string
   duration: number
   sampleRate?: number
+  /**
+   * The audio stops dead instead of ending — see `AudioCheck.endsAbruptly`.
+   * A note for the listener, not a verdict: it catches one technical failure
+   * and cannot tell whether the words were finished.
+   */
+  endsAbruptly?: boolean
   metadata?: {
     model?: string
     lmModel?: string

@@ -963,14 +963,19 @@ export default function StudioPage() {
                 <Slider min={0} max={220} value={bpm} onChange={setBpm} ariaLabel="Tempo in beats per minute" />
               </Field>
 
-              {/* On a backend that has to be told a length, say which one Auto
-                  is, rather than let it look like the engine will choose — and
-                  do not let a longer song look verified when it is not. */}
+              {/* Auto on the neural engine is ACE-Step reading the lyric sheet
+                  and choosing, so the length is not knowable until the song
+                  exists — saying a number here would be inventing one. Where a
+                  deployment has pinned a fixed Auto length, that number is
+                  real and is shown. A longer song must not look verified when
+                  it is not. */}
               <Field
                 label="Length"
                 value={duration > 0 ? formatDuration(duration)
-                  : engineMode === 'neural' && neural.autoDuration !== undefined
-                    ? `Auto (${formatDuration(neural.autoDuration)})`
+                  : engineMode === 'neural'
+                    ? neural.autoDuration !== undefined
+                      ? `Auto (${formatDuration(neural.autoDuration)})`
+                      : 'Auto — ACE-Step chooses'
                     : 'Auto'}
                 {...(engineMode === 'neural' && neural.backend === 'zerogpu'
                   && (duration > 0 ? duration : neural.autoDuration ?? 0) > VERIFIED_ZEROGPU_DURATION
@@ -1127,6 +1132,16 @@ export default function StudioPage() {
               />
               <Stat label="Key" value={neuralTakes[neuralIndex]!.result.metadata?.keyScale ?? '—'} />
             </div>
+
+            {/* Measured from the file, and deliberately careful about what it
+                claims: the audio stopping dead is a thing worth knowing, and
+                it is not the same as knowing the words ran out. */}
+            {neuralTakes[neuralIndex]!.result.endsAbruptly && (
+              <p className="text-[12.5px] text-[var(--warn,var(--text-dim))]">
+                This song stops abruptly rather than ending. Generating again usually
+                gives a different, complete take.
+              </p>
+            )}
 
             <dl className="grid gap-1 text-[12.5px] text-[var(--text-dim)]">
               <div className="flex gap-2">

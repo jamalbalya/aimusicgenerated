@@ -16,7 +16,7 @@ import {
   AceStepProvider, EngineUnavailableError, GenerationCancelledError, GradioClient, GradioProtocolError,
   MisconfiguredNeuralProvider, ProceduralMusicProvider, QuotaExceededError, SseParser,
   ZeroGpuError, ZeroGpuProvider, ENGINE_UNAVAILABLE_MESSAGE, ZEROGPU_UNAVAILABLE_MESSAGE,
-  DEFAULT_ZEROGPU_AUTO_DURATION, DEFAULT_ZEROGPU_TIMEOUT_SECONDS,
+  ACE_STEP_AUTO_DURATION, DEFAULT_ZEROGPU_TIMEOUT_SECONDS,
   createNeuralProvider, createProvider, lyricLines, normalizeLyrics, parseNeuralBackend,
   parseZeroGpuConfig, planZeroGpuRequest, resolveEngineMode, resolveProvider, resolveZeroGpuDuration,
   spaceUrlProblem, structureTags, verifyLyricsPreserved, zeroGpuStyle, zeroGpuVocalGender,
@@ -268,26 +268,40 @@ describe('the voice chosen is the voice the caption asks for', () => {
   })
 })
 
-describe('Auto length becomes a concrete, validated number before anything is sent', () => {
-  it('uses the configured Auto length, 271 seconds by default', async () => {
-    expect(DEFAULT_ZEROGPU_AUTO_DURATION).toBe(271)
+describe('Auto asks ACE-Step for the length, and a stated length is validated', () => {
+  it('sends ACE-Step\'s own "you choose" value when nothing was asked for', async () => {
+    // A fixed Auto length was measured cutting a song off mid-phrase: ACE-Step
+    // treats a stated length as a hard token budget, not a target. -1 is its
+    // documented default and hands the choice back to the model.
+    expect(ACE_STEP_AUTO_DURATION).toBe(-1)
     const { duration: _dropped, ...auto } = BOS_TOXIC
     const { server, provider } = zeroGpu()
     await provider.generate(auto)
-    expect(server.joinBody()!.data[5]).toBe(271)
+    expect(server.joinBody()!.data[5]).toBe(-1)
   })
 
-  it('treats the studio\'s 0 as Auto too, and never sends -1', () => {
-    expect(resolveZeroGpuDuration(0, TEST_CONFIG)).toBe(271)
-    expect(resolveZeroGpuDuration(undefined, TEST_CONFIG)).toBe(271)
+  it('treats the studio\'s 0 as Auto too', () => {
+    expect(resolveZeroGpuDuration(0, TEST_CONFIG)).toBe(-1)
+    expect(resolveZeroGpuDuration(undefined, TEST_CONFIG)).toBe(-1)
     for (const requested of [undefined, 0]) {
-      expect(planZeroGpuRequest({ ...BOS_TOXIC, duration: requested }, TEST_CONFIG).data[5]).toBeGreaterThan(0)
+      expect(planZeroGpuRequest({ ...BOS_TOXIC, duration: requested }, TEST_CONFIG).data[5]).toBe(-1)
     }
   })
 
-  it('follows the configuration, so 271 is a default and not a rule', () => {
+  it('sends an explicit length unchanged, exactly as before', async () => {
+    // The point of the change is Auto. Asking for a number still asks for it.
+    expect(resolveZeroGpuDuration(271, TEST_CONFIG)).toBe(271)
+    expect(resolveZeroGpuDuration(238, TEST_CONFIG)).toBe(238)
+    expect(resolveZeroGpuDuration(90.4, TEST_CONFIG)).toBe(90)
+    const { server, provider } = zeroGpu()
+    await provider.generate({ ...BOS_TOXIC, duration: 271 })
+    expect(server.joinBody()!.data[5]).toBe(271)
+  })
+
+  it('lets a deployment pin a fixed Auto length, and checks it like any other', () => {
     expect(resolveZeroGpuDuration(undefined, { autoDuration: 180 })).toBe(180)
     expect(resolveZeroGpuDuration(240, { autoDuration: 180 })).toBe(240)
+    expect(() => resolveZeroGpuDuration(undefined, { autoDuration: 900 })).toThrow(/10 to 600/)
   })
 
   it('refuses a length ACE-Step cannot make, without contacting the Space', async () => {
@@ -318,8 +332,10 @@ describe('the ZeroGPU settings are read strictly', () => {
   it('fills in the validated defaults and nothing else', () => {
     const config = parseZeroGpuConfig(read({ VITE_ACE_STEP_SPACE_URL: `${SPACE}/` }), 'https:')
     expect(config).toEqual({
-      spaceUrl: SPACE, autoDuration: 271, jobTimeoutMs: DEFAULT_ZEROGPU_TIMEOUT_SECONDS * 1000,
+      spaceUrl: SPACE, jobTimeoutMs: DEFAULT_ZEROGPU_TIMEOUT_SECONDS * 1000,
     })
+    // No number: unset means ACE-Step chooses, not a default length.
+    expect(config.autoDuration).toBeUndefined()
   })
 
   it('takes every setting from configuration', () => {
@@ -650,6 +666,54 @@ describe('results that are not a song', () => {
     const error = await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
     expect(error.message).toMatch(/Asked for a 4:31 song and received 0:58/)
   })
+
+  describe('and when the length was ACE-Step\'s to choose', () => {
+    /** The same request the studio sends for Auto: no length at all. */
+    const { duration: _dropped, ...AUTO } = BOS_TOXIC
+    const served = (seconds: number) => ({
+      file: () => new Response(wav(seconds), { headers: { 'Content-Type': 'audio/wav' } }),
+    })
+
+    it('takes the length the model picked, whatever it is', async () => {
+      // Nothing was asked for, so there is no shortfall to measure. The live
+      // Space chose 238 seconds for the sheet that a fixed 271 had cut off.
+      const { provider } = zeroGpu(served(238))
+      const result = await provider.generate(AUTO)
+      expect(result.duration).toBeCloseTo(238, 3)
+    })
+
+    it('accepts a length anywhere in the range ACE-Step generates within', async () => {
+      for (const seconds of [10, 180, 271, 600]) {
+        const { provider } = zeroGpu(served(seconds))
+        expect((await provider.generate(AUTO)).duration).toBeCloseTo(seconds, 3)
+      }
+    })
+
+    it('refuses a length outside that range, which is not a song it made', async () => {
+      for (const seconds of [9, 601]) {
+        const { provider } = zeroGpu(served(seconds))
+        const error = await expectCode(provider.generate(AUTO), 'bad-result')
+        expect(error.message).toMatch(/outside the 10 to 600 seconds/)
+      }
+    })
+
+    it('still refuses a file with no readable length', async () => {
+      // The old check leaned on the requested length; with none asked for, a
+      // file that measures nothing must not slip through as "as long as asked".
+      const { provider } = zeroGpu({
+        file: () => new Response(new Uint8Array(4096), { headers: { 'Content-Type': 'audio/wav' } }),
+      })
+      await expectCode(provider.generate(AUTO), 'bad-result')
+    })
+
+    it('still refuses silence, however long it is', async () => {
+      const { provider } = zeroGpu({
+        file: () => new Response(wav(238, { amplitude: 0 }), { headers: { 'Content-Type': 'audio/wav' } }),
+      })
+      const error = await expectCode(provider.generate(AUTO), 'bad-result')
+      expect(error.message).toMatch(/silent/)
+    })
+  })
 })
 
 describe('what the Space says it did must be what was asked', () => {
@@ -770,7 +834,7 @@ describe('the provider factory', () => {
     const provider = createNeuralProvider({ backend: 'zerogpu' })
     expect(provider).toBeInstanceOf(ZeroGpuProvider)
     expect(provider.backend).toBe('zerogpu')
-    expect(provider.autoDuration).toBe(271)
+    expect(provider.autoDuration).toBeUndefined()
   })
 
   it('reports a backend it does not know, and never treats it as local', async () => {

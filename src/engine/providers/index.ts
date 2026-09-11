@@ -19,7 +19,8 @@ export {
 } from './proceduralProvider'
 export {
   buildAceStepTask, normalizeLyrics, structureTags, lyricLines,
-  verifyLyricsPreserved, DEFAULT_MODELS, INSTRUMENTAL_MARKER, DEFAULT_VOCAL_LANGUAGE, ACE_STEP_DURATION_RANGE,
+  verifyLyricsPreserved, DEFAULT_MODELS, INSTRUMENTAL_MARKER, DEFAULT_VOCAL_LANGUAGE,
+  ACE_STEP_DURATION_RANGE, ACE_STEP_AUTO_DURATION,
   type AceStepTaskBody, type AceStepModelChoice, type LyricPreservation,
 } from './aceStepRequest'
 export { AceStepClient, parseResultItems, ACE_STATUS, AceStepApiError } from './aceStepClient'
@@ -27,6 +28,6 @@ export {
   neuralEngineConfig, DEFAULT_ACE_STEP_URL, mixedContentReason, type NeuralEngineConfig,
   neuralBackendChoice, parseNeuralBackend, type NeuralBackendChoice,
   zeroGpuConfig, parseZeroGpuConfig, spaceUrlProblem, type ZeroGpuConfig, type EnvReader,
-  DEFAULT_ZEROGPU_AUTO_DURATION, DEFAULT_ZEROGPU_TIMEOUT_SECONDS, VERIFIED_ZEROGPU_DURATION,
+  DEFAULT_ZEROGPU_TIMEOUT_SECONDS, VERIFIED_ZEROGPU_DURATION,
 } from './config'
 export { checkWavBuffer, describeAudio, type AudioCheck } from './audioCheck'

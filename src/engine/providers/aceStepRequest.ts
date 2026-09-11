@@ -130,6 +130,22 @@ export const DEFAULT_VOCAL_LANGUAGE = 'en'
 export const ACE_STEP_DURATION_RANGE = { min: 10, max: 600 } as const
 
 /**
+ * Ask ACE-Step to choose the length itself.
+ *
+ * Not a sentinel of ours: it is ACE-Step's own default and its own protocol.
+ * `GenerationParams.duration` is declared `-1.0`, documented as "Target audio
+ * length in seconds. If <0 or None, model chooses automatically", and the
+ * language model then predicts a length from the caption and the lyric sheet.
+ *
+ * Sending a concrete length instead does more than suggest one. It installs a
+ * hard token budget — `target_codes = duration * 5` — and the decoder is barred
+ * from ending before it and forced to end at it, so a sheet that needs longer
+ * than the number sent is cut off mid-phrase rather than sung short. Auto
+ * exists so the length can follow the words.
+ */
+export const ACE_STEP_AUTO_DURATION = -1
+
+/**
  * Builds the `/release_task` body for one take.
  *
  * `thinking` is on because it is what puts the 5 Hz language model in the

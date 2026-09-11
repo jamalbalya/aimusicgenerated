@@ -32,7 +32,8 @@ import {
 } from './gradioClient'
 import { describeAudio } from './audioCheck'
 import {
-  ACE_STEP_DURATION_RANGE, DEFAULT_MODELS, DEFAULT_VOCAL_LANGUAGE, lyricLines, normalizeLyrics,
+  ACE_STEP_AUTO_DURATION, ACE_STEP_DURATION_RANGE, DEFAULT_MODELS, DEFAULT_VOCAL_LANGUAGE,
+  lyricLines, normalizeLyrics,
 } from './aceStepRequest'
 import { spaceUrlProblem, zeroGpuConfig, type ZeroGpuConfig } from './config'
 import {
@@ -99,12 +100,16 @@ export interface ZeroGpuRequestPlan {
 const minutes = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 
 /**
- * The song length to ask the Space for, in whole seconds.
+ * The song length to ask the Space for: whole seconds, or Auto.
  *
- * Auto — no duration, or the studio's 0 — becomes the configured Auto length
- * rather than a request for the Space to choose: that path has never been run
- * on the Space, and a hosted GPU is no place to find out what it does. Every
- * other value is checked before anything is sent, so a request that cannot be
+ * Auto — no duration, or the studio's 0 — sends `ACE_STEP_AUTO_DURATION`, which
+ * is ACE-Step asking itself. It was verified on the live Space on 2026-09-11:
+ * the same lyric sheet that had been cut off at a fixed length came back at a
+ * length the model picked, ending on its own instead of mid-phrase.
+ *
+ * A deployer can still pin a fixed Auto length with `ACE_STEP_SPACE_AUTO_DURATION`,
+ * and a pinned length is checked exactly like one the studio asked for. Every
+ * stated length is checked before anything is sent, so a request that cannot be
  * served costs no quota.
  */
 export function resolveZeroGpuDuration(
@@ -114,7 +119,11 @@ export function resolveZeroGpuDuration(
   if (requested !== undefined && (!Number.isFinite(requested) || requested < 0)) {
     throw new ZeroGpuError('illegal-duration', `A song length of ${requested} seconds is not a length.`)
   }
-  const wanted = requested && requested > 0 ? Math.round(requested) : config.autoDuration
+  const asked = requested && requested > 0 ? Math.round(requested) : undefined
+  // Nothing asked for and nothing pinned: the model decides, and there is no
+  // range to check because no length is being claimed.
+  if (asked === undefined && config.autoDuration === undefined) return ACE_STEP_AUTO_DURATION
+  const wanted = asked ?? config.autoDuration!
   const { min, max } = ACE_STEP_DURATION_RANGE
   if (wanted < min || wanted > max) {
     throw new ZeroGpuError('illegal-duration',
@@ -227,7 +236,8 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
 
   readonly baseUrl: string
   readonly blockedReason: string | undefined
-  readonly autoDuration: number
+  /** Absent — the default — when ACE-Step picks the length from the lyrics. */
+  readonly autoDuration: number | undefined
 
   private readonly config: ZeroGpuConfig
   /** Absent exactly when `blockedReason` is set: a Space that cannot be called gets no client. */
@@ -347,7 +357,17 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
           'The Space returned a file that is not a readable WAV, so it cannot be shown as the song.')
       }
       const duration = audio.durationSeconds
-      if (duration < plan.duration - durationTolerance(plan.duration)) {
+      if (plan.duration === ACE_STEP_AUTO_DURATION) {
+        // No length was asked for, so there is no shortfall to measure. What
+        // still has to hold is that the model returned a song at all: a length
+        // inside the range ACE-Step itself generates within.
+        const { min, max } = ACE_STEP_DURATION_RANGE
+        if (duration < min || duration > max) {
+          throw new ZeroGpuError('bad-result',
+            `The Space chose a length of ${minutes(Math.round(duration))}, which is outside the `
+            + `${min} to ${max} seconds ACE-Step makes songs in. That is not a song it generated.`)
+        }
+      } else if (duration < plan.duration - durationTolerance(plan.duration)) {
         throw new ZeroGpuError('bad-result',
           `Asked for a ${minutes(plan.duration)} song and received ${minutes(Math.round(duration))}. `
           + 'A shortened song is not the song that was asked for.')
@@ -363,6 +383,9 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
         audioUrl: this.toObjectUrl(blob),
         duration,
         ...(audio.sampleRate ? { sampleRate: audio.sampleRate } : {}),
+        // Measured on the way past, from bytes already in hand. A signal for
+        // the interface, never grounds for throwing a song away.
+        ...(audio.endsAbruptly ? { endsAbruptly: true } : {}),
         metadata: {
           model: plan.model,
           lmModel: plan.lmModel,

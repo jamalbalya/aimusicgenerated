@@ -87,6 +87,10 @@ function productionSong(): Buffer {
 
 /** Serves Gradio's queue protocol for one successful generation. */
 async function fakeSpace(page: Page): Promise<void> {
+  // The Space reports back the length it was handed, so the fake does too:
+  // Auto sends ACE-Step's own "you choose" value instead of a number, and the
+  // provider checks that echo against what it sent.
+  let asked: unknown = SONG_SECONDS
   await page.route(`${SPACE}/**`, async (route: Route) => {
     const path = new URL(route.request().url()).pathname
 
@@ -104,6 +108,7 @@ async function fakeSpace(page: Page): Promise<void> {
     }
 
     if (path === `${API}/queue/join`) {
+      asked = (route.request().postDataJSON() as { data?: unknown[] } | null)?.data?.[5]
       return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ event_id: EVENT_ID }) })
     }
 
@@ -127,7 +132,7 @@ async function fakeSpace(page: Page): Promise<void> {
                   orig_name: 'bos-toxic.wav',
                   meta: { _type: 'gradio.FileData' },
                 },
-                JSON.stringify(METADATA),
+                JSON.stringify({ ...METADATA, requested_audio_duration_s: asked }),
               ],
             },
           })
