@@ -17,11 +17,13 @@ export default function AboutPage() {
     <div className="grid gap-4">
       <header className="grid gap-2">
         <p className="t-label">How this works</p>
-        <h1 className="t-display max-w-2xl">Everything runs here. That is why it is free.</h1>
+        <h1 className="t-display max-w-2xl">Nearly all of it runs here. All of it is free.</h1>
         <p className="max-w-2xl text-[13.5px] leading-relaxed text-[var(--text-dim)]">
-          There is no server doing the work, so there is no bill to pass on to you, no queue,
-          no daily quota and no account. Close the tab and nothing about your session survives
-          except what you saved to this device.
+          Every tool does its work on your own device: no account, no subscription, and nothing
+          uploaded. Close the tab and nothing about your session survives except what you saved
+          here. The one exception is the Song Studio&rsquo;s Neural mode, which sends your style
+          and lyrics to a free hosted ACE-Step service to have the song sung — so that mode needs
+          a connection, waits its turn in a queue, and has a daily limit per visitor.
         </p>
       </header>
 
@@ -29,13 +31,13 @@ export default function AboutPage() {
         <Panel title="What you get">
           <ul className="grid gap-2.5 text-[13px] leading-relaxed">
             {[
-              'Unlimited generations, every day',
+              'Unlimited generations on the offline engine',
               'No watermark on anything',
               'Full-quality WAV and MP3 export',
               'Every instrument as a separate stem',
               'Commercial use — it is your audio',
-              'Works offline once loaded',
-              'Nothing uploaded, ever',
+              'Offline once loaded — Neural mode needs a connection',
+              'Nothing uploaded by the offline engine',
               'Covers: swap the voice on a finished song',
               'Ships as one file you can keep',
             ].map((item) => (
@@ -145,8 +147,14 @@ export default function AboutPage() {
             The Song Studio's Neural mode is the other way round. It sends your style and lyrics to
             the ACE-Step 1.5 model — on the public site, running on a free Hugging Face ZeroGPU
             Space — which returns one complete song with a sung vocal. It needs a connection, the
-            free GPU comes with a daily allowance per visitor, and the Studio always says which
-            engine made a song.
+            request waits in that Space's queue, the free GPU comes with a daily allowance per
+            visitor, and the Studio always says which engine made a song.
+          </p>
+          <p>
+            Six things leave your device when you generate that way, and they are the ones the
+            model needs: the style, your lyrics exactly as you wrote them, the language, the vocal
+            gender, whether you asked for an instrumental, and the length. Nothing else — no
+            account, no identifier, and nothing from any of the other tools.
           </p>
           <p>
             Separation is likewise signal processing rather than a trained model, so a vocal that

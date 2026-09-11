@@ -2,7 +2,7 @@
  * The Song Studio: a prompt in, a finished track out.
  */
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { Icon } from '../components/Icon'
 import { Empty, Field, Panel, Progress, Segmented, Slider, Stat, Toggle } from '../components/controls'
 import { useJob, isCancellation } from '../useJob'
@@ -437,19 +437,41 @@ export default function StudioPage() {
   }, [prompt, genreId, mood, bpm, tonic, scale, duration, vocals, customLyrics, language,
       singStyle, seed, quality, keepStems, takeCount, job, notify, reportResult, openTake])
 
+  const busy = job.running || Boolean(neuralController)
+
+  /**
+   * Held from the moment a generation is asked for until it has finished.
+   *
+   * `busy` is derived from React state, and state has not necessarily flushed
+   * between two keystrokes a tenth of a second apart — a held ⌘/Ctrl + Enter
+   * repeats faster than that. This is set synchronously, so the second press is
+   * refused by a value that has already changed.
+   */
+  const inFlight = useRef(false)
+
   /** One button, two engines. Which one is on screen, and never a substitute. */
   const generateSong = useCallback(async (overrideSeed?: string) => {
-    if (engineMode === 'neural') {
-      setTakes([])
-      await generateNeural(overrideSeed)
-      return
+    // Every way in arrives here — both buttons and both ⌘/Ctrl + Enter
+    // handlers — so the refusal belongs here rather than at each call site.
+    // A second generation started while one is running would submit a second
+    // job to the Space and spend a second slice of an allowance measured in
+    // minutes a day, and it would leave the first one uncancellable: the
+    // controller the Cancel button holds would have been overwritten by it.
+    if (busy || inFlight.current) return
+    inFlight.current = true
+    try {
+      if (engineMode === 'neural') {
+        setTakes([])
+        await generateNeural(overrideSeed)
+        return
+      }
+      setNeuralTakes([])
+      setNeuralStatus(null)
+      await generate(overrideSeed)
+    } finally {
+      inFlight.current = false
     }
-    setNeuralTakes([])
-    setNeuralStatus(null)
-    await generate(overrideSeed)
-  }, [engineMode, generate, generateNeural])
-
-  const busy = job.running || Boolean(neuralController)
+  }, [busy, engineMode, generate, generateNeural])
 
   const cancelGeneration = useCallback(() => {
     if (neuralController) {

@@ -59,7 +59,7 @@ test.describe('shell', () => {
       ['/shifter', /Change the voice/i],
       ['/toolkit', /Edit, treat and measure/i],
       ['/library', /Saved on this device/i],
-      ['/about', /Everything runs here/i],
+      ['/about', /Nearly all of it runs here/i],
     ]
 
     for (const [path, heading] of routes) {

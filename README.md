@@ -1,13 +1,15 @@
 # Resonant Studio
 
-A complete AI music, voice and audio studio that runs entirely in the browser.
-Write a song from a description, get lyrics that scan and rhyme, sing them,
-split a track into stems, change a voice, synthesise speech, and edit audio —
-all of it unlimited, unwatermarked and free, with nothing uploaded anywhere.
+A complete AI music, voice and audio studio that runs in the browser. Write a
+song from a description, get lyrics that scan and rhyme, sing them, split a
+track into stems, change a voice, synthesise speech, and edit audio — all of it
+unwatermarked and free.
 
-There is no server doing the work, so there is nothing to charge for: no
-account, no subscription, no daily quota, no queue. Close the tab and nothing
-survives except what you chose to save on your own device.
+Every tool does its work on your own device: no account, no subscription, and
+nothing uploaded. Close the tab and nothing survives except what you chose to
+save. The one exception is the Song Studio's Neural mode, which sends your style
+and lyrics to a free hosted ACE-Step service to have the song sung — so that
+mode needs a connection, waits in a queue, and has a daily limit per visitor.
 
 ## Tools
 
