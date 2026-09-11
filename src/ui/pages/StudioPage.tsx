@@ -32,7 +32,7 @@ import { decodeWav } from '../../engine/audio/wav'
 import {
   createNeuralProvider, EngineUnavailableError, GenerationCancelledError, QuotaExceededError,
   engineLabel, resolveEngineMode, VERIFIED_ZEROGPU_DURATION,
-  type EngineMode, type GenerationStatus,
+  type EngineMode, type GenerationStatus, type NeuralBackend,
 } from '../../engine/providers'
 
 /**
@@ -63,6 +63,24 @@ const NEURAL_STATE_TEXT: Partial<Record<GenerationStatus['state'], string>> = {
   generating: 'Generating song…',
   failed: 'Generation failed.',
   cancelled: 'Stopped waiting.',
+}
+
+/**
+ * How many takes a run may actually write.
+ *
+ * Every neural take is its own generation. On the free ZeroGPU Space that means
+ * its own slice of an allowance that covers about one song a day, so a run of
+ * four would spend the day to return one song and three refusals — and hold
+ * four decoded songs in memory while it tried.
+ *
+ * The cap is by backend, not by engine: a paid Space or an ACE-Step server on
+ * your own machine has neither limit and keeps the takes it was asked for. The
+ * offline engine is untouched, because its takes cost nothing but time.
+ */
+export function effectiveTakeCount(
+  takeCount: number, engineMode: EngineMode, backend: NeuralBackend,
+): number {
+  return engineMode === 'neural' && backend === 'zerogpu' ? 1 : takeCount
 }
 
 /** The host of an address, for display; the address itself when it is not one. */
@@ -198,6 +216,13 @@ export default function StudioPage() {
   }, [])
 
   const [takeCount, setTakeCount] = useState(1)
+  // What the run will actually do, which on the free GPU is one take whatever
+  // the control says. Computed here so the action and the control cannot
+  // disagree — the action is the one that matters.
+  const effectiveTakes = effectiveTakeCount(takeCount, engineMode, neural.backend)
+  // Whether this backend caps takes at all — asked of the same rule rather
+  // than restated here, so the control and the action can never disagree.
+  const takesCapped = effectiveTakeCount(MAX_TAKES, engineMode, neural.backend) < MAX_TAKES
   // A run can write more than one song from the same brief. They are all kept
   // so the two can be compared without generating twice; `takeIndex` is the
   // one on screen and in the player.
@@ -311,8 +336,10 @@ export default function StudioPage() {
     // person needs to be told *which* one it was.
     const failures: string[] = []
     try {
-      for (let index = 0; index < takeCount; index++) {
-        const label = takeCount > 1 ? ` (take ${index + 1} of ${takeCount})` : ''
+      // The capped count, never the control's: a stale or tampered value must
+      // not be able to put four jobs on a free GPU from one press.
+      for (let index = 0; index < effectiveTakes; index++) {
+        const label = effectiveTakes > 1 ? ` (take ${index + 1} of ${effectiveTakes})` : ''
         try {
           const result = await provider.generate({
             style,
@@ -369,7 +396,7 @@ export default function StudioPage() {
       updateNeural(controller, { status: { state: 'completed' } })
       if (failures.length > 0) {
         notify(
-          `${collected.length} of ${takeCount} takes generated. ${failures.join(' · ')}`,
+          `${collected.length} of ${effectiveTakes} takes generated. ${failures.join(' · ')}`,
           'error',
         )
       } else {
@@ -392,7 +419,7 @@ export default function StudioPage() {
       // Only ends the job if it is still this one.
       updateNeural(controller, { controller: null })
     }
-  }, [prompt, customLyrics, language, duration, vocalGender, vocals, seed, takeCount,
+  }, [prompt, customLyrics, language, duration, vocalGender, vocals, seed, effectiveTakes,
       notify, openNeuralTake, startNeural, updateNeural])
 
   const generate = useCallback(async (overrideSeed?: string) => {
@@ -999,15 +1026,24 @@ export default function StudioPage() {
                 />
               </Field>
 
+              {/* Shown rather than hidden when it is capped: a control that
+                  quietly disappears teaches nothing, and the limit belongs to
+                  this backend rather than to the studio. */}
               <Field
                 label="Takes"
-                hint={takeCount > 1
-                  ? 'Each take is a different song from the same brief. Stems are rendered for whichever one you keep.'
-                  : 'Write more than one song at once and pick the one you like.'}
+                hint={takesCapped
+                  ? 'One song per run on the free GPU — each take is a separate generation, '
+                    + 'and a visitor\u2019s daily allowance covers about one.'
+                  : engineMode === 'neural'
+                    ? 'Each take is a different song from the same brief.'
+                    : takeCount > 1
+                      ? 'Each take is a different song from the same brief. Stems are rendered for whichever one you keep.'
+                      : 'Write more than one song at once and pick the one you like.'}
               >
                 <Segmented
                   ariaLabel="Takes per run"
-                  value={String(takeCount)}
+                  value={String(effectiveTakes)}
+                  disabled={takesCapped}
                   onChange={(value) => setTakeCount(Number(value))}
                   options={Array.from({ length: MAX_TAKES }, (_, index) => ({
                     value: String(index + 1),

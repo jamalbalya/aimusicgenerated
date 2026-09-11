@@ -130,9 +130,13 @@ interface SegmentedProps<T extends string> {
   value: T
   onChange: (value: T) => void
   ariaLabel: string
+  /** Shows the current choice but refuses a new one. The field's hint says why. */
+  disabled?: boolean
 }
 
-export function Segmented<T extends string>({ options, value, onChange, ariaLabel }: SegmentedProps<T>) {
+export function Segmented<T extends string>({
+  options, value, onChange, ariaLabel, disabled,
+}: SegmentedProps<T>) {
   return (
     <div className="segmented" role="group" aria-label={ariaLabel}>
       {options.map((option) => (
@@ -141,6 +145,7 @@ export function Segmented<T extends string>({ options, value, onChange, ariaLabe
           type="button"
           aria-pressed={value === option.value}
           title={option.title}
+          disabled={disabled}
           onClick={() => onChange(option.value)}
         >
           {option.label}
