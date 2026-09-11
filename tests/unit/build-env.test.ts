@@ -7,8 +7,10 @@
  * door is an allowlist, and these tests hold it shut for everything else.
  */
 
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { NEURAL_SETTINGS, neuralDefines } from '../../vite.config'
+import { BUILD_SETTINGS, NEURAL_SETTINGS, buildDefines, neuralDefines, packageVersion } from '../../vite.config'
+import { BUILD_INFO, buildLabel, buildTimeLabel } from '../../src/lib/buildInfo'
 
 const baked = (env: Record<string, string>, name: string) =>
   JSON.parse(neuralDefines(env)[`import.meta.env.VITE_ACE_STEP_${name}`] ?? 'null') as string | null
@@ -53,5 +55,105 @@ describe('the browser bundle carries the neural settings and nothing else', () =
   it('bakes an empty value for anything unset, which the app reads as unset', () => {
     expect(baked({}, 'SPACE_URL')).toBe('')
     expect(baked({}, 'BACKEND')).toBe('')
+  })
+})
+
+/* ------------------------------------------------ version and build ------ */
+
+const bakedBuild = (env: Record<string, string | undefined>, name: string, version = '1.2.3') =>
+  JSON.parse(buildDefines(env, version)[`import.meta.env.VITE_${name}`] ?? 'null') as string | null
+
+describe('the build identifies itself', () => {
+  it('takes the version from package.json, the one place it is set', () => {
+    const declared = (JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as
+      { version: string }).version
+    expect(packageVersion()).toBe(declared)
+    expect(declared).toMatch(/^\d+\.\d+\.\d+/)
+    // And the app reports that same version rather than one of its own.
+    expect(BUILD_INFO.version).toBe(declared)
+  })
+
+  it('takes the commit from the environment CI already provides, shortened', () => {
+    const sha = '18c76921c0ffee1234567890abcdef1234567890'
+    expect(bakedBuild({ GITHUB_SHA: sha }, 'BUILD_SHA')).toBe('18c7692')
+    // BUILD_SHA is the explicit override, for a build made outside Actions.
+    expect(bakedBuild({ GITHUB_SHA: sha, BUILD_SHA: 'deadbee' }, 'BUILD_SHA')).toBe('deadbee')
+    // The full hash never reaches the bundle.
+    expect(JSON.stringify(buildDefines({ GITHUB_SHA: sha }, '1.2.3'))).not.toContain(sha)
+  })
+
+  it('falls back to dev, so a local build never looks like a deployed one', () => {
+    expect(bakedBuild({}, 'BUILD_SHA')).toBe('dev')
+    expect(bakedBuild({ GITHUB_SHA: '' }, 'BUILD_SHA')).toBe('dev')
+    expect(bakedBuild({ GITHUB_SHA: '   ' }, 'BUILD_SHA')).toBe('dev')
+    // Anything that is not a commit hash is not treated as one.
+    expect(bakedBuild({ GITHUB_SHA: 'refs/heads/main' }, 'BUILD_SHA')).toBe('dev')
+    expect(bakedBuild({ GITHUB_SHA: 'hf_a_token_shaped_thing' }, 'BUILD_SHA')).toBe('dev')
+  })
+
+  it('records when it was built, as a timestamp and nothing more', () => {
+    const at = new Date('2026-09-11T14:02:33.000Z')
+    const defines = buildDefines({}, '1.2.3', at)
+    expect(JSON.parse(defines['import.meta.env.VITE_BUILD_TIME']!)).toBe('2026-09-11T14:02:33.000Z')
+  })
+
+  it('bakes exactly three names, none of them a secret', () => {
+    expect([...BUILD_SETTINGS].sort()).toEqual(['APP_VERSION', 'BUILD_SHA', 'BUILD_TIME'])
+    expect(BUILD_SETTINGS.filter((name) => /TOKEN|SECRET|PASSWORD|PRIVATE|KEY/.test(name))).toEqual([])
+  })
+
+  it('lets nothing else out, however the environment is dressed up', () => {
+    // A whole GitHub Actions environment, secrets and all, offered at once.
+    const env = {
+      GITHUB_SHA: '18c76921c0ffee1234567890abcdef1234567890',
+      GITHUB_TOKEN: 'ghp_should_never_ship',
+      HF_TOKEN: 'hf_should_never_ship',
+      ACTIONS_RUNTIME_TOKEN: 'should_never_ship',
+      AWS_SECRET_ACCESS_KEY: 'should_never_ship',
+      NPM_TOKEN: 'should_never_ship',
+      GITHUB_ACTOR: 'somebody',
+      GITHUB_REPOSITORY: 'owner/repo',
+      HOME: '/home/runner',
+    }
+    const defines = buildDefines(env, '1.2.3')
+    expect(Object.keys(defines).sort())
+      .toEqual(BUILD_SETTINGS.map((name) => `import.meta.env.VITE_${name}`).sort())
+    const baked = JSON.stringify(defines)
+    for (const secret of ['should_never_ship', 'ghp_', 'hf_', 'somebody', 'owner/repo', '/home/runner']) {
+      expect(baked, `${secret} must not reach the bundle`).not.toContain(secret)
+    }
+  })
+
+  it('gives the page one line to show, and a real one', () => {
+    expect(buildLabel({ version: '1.0.0', commit: '18c7692', builtAt: '', fromCommit: true }))
+      .toBe('v1.0.0 · build 18c7692')
+    expect(buildLabel({ version: '1.0.0', commit: 'dev', builtAt: '', fromCommit: false }))
+      .toBe('v1.0.0 · build dev')
+
+    // The live values, as the About page will render them.
+    expect(buildLabel()).toBe(`v${BUILD_INFO.version} · build ${BUILD_INFO.commit}`)
+    expect(BUILD_INFO.commit).toMatch(/^([0-9a-f]{7}|dev)$/)
+    expect(BUILD_INFO.fromCommit).toBe(BUILD_INFO.commit !== 'dev')
+  })
+
+  it('shows a build time only when it has a usable one', () => {
+    expect(buildTimeLabel({ version: '1.0.0', commit: 'dev', builtAt: '', fromCommit: false })).toBe('')
+    expect(buildTimeLabel({ version: '1.0.0', commit: 'dev', builtAt: 'not a date', fromCommit: false })).toBe('')
+    expect(buildTimeLabel({ version: '1.0.0', commit: 'dev', builtAt: '2026-09-11T14:02:33.000Z', fromCommit: false }))
+      .toBe('2026-09-11 14:02 UTC')
+  })
+})
+
+describe('the Pages workflow hands the build its commit', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/deploy.yml', import.meta.url), 'utf8')
+
+  it('passes the deployed commit to the build step', () => {
+    // Without this the deployed About page would say `dev`, and a stale
+    // deployment would be indistinguishable from a current one.
+    expect(workflow).toMatch(/BUILD_SHA:\s*\$\{\{\s*github\.sha\s*\}\}/)
+  })
+
+  it('hands the build no secrets', () => {
+    expect(workflow).not.toMatch(/secrets\.[A-Z_]+/)
   })
 })

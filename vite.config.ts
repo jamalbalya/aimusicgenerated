@@ -99,6 +99,62 @@ export const NEURAL_SETTINGS = [
 ] as const
 
 /**
+ * The build metadata a build may carry into the browser, and nothing else.
+ *
+ * A second allowlist rather than an addition to the first, because these come
+ * from a different place: `NEURAL_SETTINGS` are read from `.env`, where a deploy
+ * token also lives, while these are read only from the process environment that
+ * CI sets. Neither list can reach the other's source.
+ */
+export const BUILD_SETTINGS = ['APP_VERSION', 'BUILD_SHA', 'BUILD_TIME'] as const
+
+/** Seven characters, which is what `git log --oneline` and GitHub both show. */
+const SHORT_SHA = 7
+
+/**
+ * Version, commit and build time for the browser.
+ *
+ * The commit comes from the environment CI already provides — `GITHUB_SHA` is a
+ * default variable in every Actions step — with `BUILD_SHA` as an explicit
+ * override for a build made anywhere else. It is shortened here so the full
+ * hash never reaches the bundle, and a build made without either says `dev`,
+ * which is the useful answer: a screenshot showing `dev` was not built by CI,
+ * so it cannot be a stale deployment of anything.
+ *
+ * `env` is `process.env`, never `loadEnv`. A `.env` file cannot reach this.
+ */
+export function buildDefines(
+  env: Record<string, string | undefined>,
+  version: string,
+  now: Date = new Date(),
+): Record<string, string> {
+  const sha = (env.BUILD_SHA ?? env.GITHUB_SHA ?? '').trim()
+  const values: Record<(typeof BUILD_SETTINGS)[number], string> = {
+    APP_VERSION: version,
+    BUILD_SHA: /^[0-9a-f]{7,40}$/i.test(sha) ? sha.slice(0, SHORT_SHA).toLowerCase() : 'dev',
+    BUILD_TIME: now.toISOString(),
+  }
+  const defines: Record<string, string> = {}
+  for (const name of BUILD_SETTINGS) defines[`import.meta.env.VITE_${name}`] = JSON.stringify(values[name])
+  return defines
+}
+
+/**
+ * The application version, from `package.json` — the one place it is set.
+ *
+ * Read here rather than imported by the app, so the bundle carries the version
+ * string and not the whole manifest.
+ */
+export function packageVersion(root: string = projectRoot): string {
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as { version?: unknown }
+    return typeof pkg.version === 'string' && pkg.version ? pkg.version : '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+}
+
+/**
  * One name per setting.
  *
  * Vite only exposes variables prefixed VITE_ to the browser bundle, which would
@@ -136,6 +192,7 @@ export default defineConfig(({ mode }) => ({
     // nothing baked in at all, so a developer's `.env` — which may well point
     // at the live Space — cannot change what they see.
     ...neuralDefines(process.env.VITEST ? {} : loadEnv(mode, projectRoot, '')),
+    ...buildDefines(process.env, packageVersion()),
   },
   build: {
     outDir,

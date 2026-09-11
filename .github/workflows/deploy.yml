@@ -104,6 +104,11 @@ jobs:
         run: npx vite build
         env:
           VITE_BASE: ${{ steps.pages.outputs.base_path }}/
+          # The commit the About page reports. GITHUB_SHA is already in every
+          # step's environment and would be picked up on its own; naming it here
+          # makes the wiring visible, and is what tests/unit/build-env.test.ts
+          # checks, so a future edit that drops it fails before it deploys.
+          BUILD_SHA: ${{ github.sha }}
           # ACE_STEP_BACKEND defaults to zerogpu for the public site and can be
           # overridden with a repository variable of the same name.
           ACE_STEP_BACKEND: ${{ vars.ACE_STEP_BACKEND || 'zerogpu' }}

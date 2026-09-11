@@ -10,6 +10,7 @@ import { GENRES } from '../../engine/compose/genres'
 import { SPEECH_VOICES } from '../../engine/voice/speech'
 import { SING_PRESET_NAMES } from '../../engine/voice/singer'
 import { PROGRESSIONS } from '../../engine/theory/progressions'
+import { BUILD_INFO, buildLabel, buildTimeLabel } from '../../lib/buildInfo'
 
 export default function AboutPage() {
   return (
@@ -177,10 +178,28 @@ export default function AboutPage() {
         </div>
       </Panel>
 
-      <p className="text-[11.5px] leading-relaxed text-[var(--text-faint)]">
-        Resonant Studio is open source and MIT licensed. Audio you generate is yours, with no
-        conditions attached.
-      </p>
+      <div className="grid gap-1.5 border-t border-[var(--line)] pt-3">
+        <p className="text-[11.5px] leading-relaxed text-[var(--text-faint)]">
+          Resonant Studio is open source and MIT licensed. Audio you generate is yours, with no
+          conditions attached.
+        </p>
+        {/* The line a bug report should carry. Quiet, but selectable and always
+            in the same place, so a screenshot of this page says exactly which
+            build it is — and a stale deployment stops looking like a current
+            one. `dev` means the build was not made by CI. */}
+        <p className="t-num text-[11.5px] text-[var(--text-faint)]" data-testid="build-info">
+          <span>{buildLabel()}</span>
+          {!BUILD_INFO.fromCommit && (
+            <span className="opacity-80"> (local build, not from CI)</span>
+          )}
+          {buildTimeLabel() && (
+            <>
+              <span aria-hidden="true"> · </span>
+              <span>built {buildTimeLabel()}</span>
+            </>
+          )}
+        </p>
+      </div>
     </div>
   )
 }
