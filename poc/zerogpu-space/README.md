@@ -46,6 +46,49 @@ with SDK *Gradio* and hardware *ZeroGPU* first, then run the script. It copies
 at a pinned commit under `vendor/`, records that commit in `vendor/COMMIT.txt`,
 and pushes. It never pushes weights or audio.
 
+### What the vendored ACE-Step tree excludes, and why
+
+Hugging Face rejected the first push over binary assets in the upstream tree, so
+`deploy.sh` now prunes it before `git add` and refuses to push if anything binary
+survives.
+
+Removed wholesale — verified by grep that no `.py` file under `acestep/` or
+`openrouter/` references either path:
+
+| removed | why |
+| --- | --- |
+| `assets/` | 9 PNG, 1 GIF, 1 SVG of README artwork. `star.gif` alone is 2.9 MB |
+| `docs/` | the VitePress documentation site: 81 markdown files and 12 JPG screenshots under `docs/pics/` |
+| `.git/` | replaced by `vendor/COMMIT.txt`, which records the exact upstream SHA |
+| `.github/`, `.githooks/`, `.claude/` | upstream CI, hooks and agent config. Never imported |
+
+Then a tree-wide sweep by extension — images, video, design sources, documents,
+archives and fonts — which is what catches
+`acestep/third_parts/nano-vllm/assets/logo.png`, the one binary that lives inside
+the Python package rather than in a documentation directory. It is by extension
+rather than by path deliberately: an upstream release that adds a screenshot
+somewhere new is handled without anyone editing this script.
+
+Finally `verify_vendor` walks every remaining file and **aborts the deploy** if
+any is binary (non-empty and not text) or larger than 10 MiB. The extension
+sweep knows about media we have seen; this catches what it has not, and stops
+rather than discovering the problem in a rejected push. `ALLOW_BINARY_VENDOR=1`
+overrides it for a file that genuinely belongs, and `MAX_VENDOR_FILE_BYTES`
+moves the size threshold.
+
+**Nothing runtime is touched.** Measured against the real upstream tree: all 613
+`.py` files survive byte-identically, as do `acestep/genres_vocab.txt` (4.8 MB,
+the largest file in the repo and plain text) and the two JavaScript files
+ACE-Step force-includes in its wheel. The tree goes from 31 MB to 14 MB, and the
+24 images — about 6.2 MB — are the entire difference in binary content.
+
+One caveat worth stating: the largest binary upstream is 2.9 MB and **no file
+exceeds 10 MiB**, so a plain "files over 10 MB need Git LFS" rule is not what
+rejected that push. The likeliest mechanism is the Space's default
+`.gitattributes` marking these extensions for Git LFS on a machine where
+`git lfs install` has not been run. Removing the files fixes it either way, but
+if a push still fails, the verbatim remote error is the thing to look at.
+
 ## Running the test
 
 ```bash
