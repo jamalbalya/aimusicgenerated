@@ -1,0 +1,7 @@
+checkpoints/
+*.wav
+*.flac
+*.mp3
+zerogpu-run-*.json
+vendor/
+__pycache__/

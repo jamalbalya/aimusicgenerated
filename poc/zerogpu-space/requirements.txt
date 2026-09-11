@@ -1,0 +1,66 @@
+# Dependencies for the ACE-Step 1.5 ZeroGPU proof of concept.
+#
+# This is NOT a copy of ACE-Step's requirements.txt. ACE-Step is vendored as
+# source and put on sys.path by app.py, so pip never reads its dependency list
+# and never tries to build the packages that cannot build here. Every version
+# below is either ACE-Step's own stated constraint or a version that satisfies
+# both ACE-Step and ZeroGPU; nothing is guessed. See README.md for the full
+# rationale of every deviation.
+#
+# Removed from ACE-Step's list, and why:
+#   flash-attn    bare sdist, and the ZeroGPU build phase has no nvcc, so it
+#                 cannot compile. Not needed: initialize_service() takes
+#                 use_flash_attention and defaults it to False, and app.py
+#                 passes False explicitly.
+#   nano-vllm     installed from a local path, and only used by the vLLM LM
+#                 backend. We run backend="pt", ACE-Step's own universal
+#                 fallback and its README's recommendation for the 0.6B LM.
+#   triton        a nano-vllm dependency; goes with it.
+#   mlx, mlx-lm   Apple Silicon only.
+#   triton-windows, the Windows flash-attn wheel
+#                 Windows only.
+#   peft, lycoris-lora, lightning, tensorboard
+#                 LoRA training. This POC only generates. peft is kept because
+#                 ACE-Step's LoraManagerMixin is part of the handler class.
+#   spaces        HF pins its own version; a pin here breaks the build.
+#
+# Changed from ACE-Step's list, and why:
+#   torch         ACE-Step pins 2.10.0+cu128 from download.pytorch.org. 2.10.0
+#                 from PyPI is the same release and is on ZeroGPU's supported
+#                 list; taking it from PyPI avoids an extra index in a build we
+#                 cannot debug interactively.
+
+torch==2.10.0
+torchaudio==2.10.0
+torchvision==0.25.0
+torchcodec>=0.9.1
+# Pinned exactly as ACE-Step pins it: unpinned this resolves to 0.18.x, which
+# imports a torch symbol that the pinned torch does not have.
+torchao>=0.16.0,<0.17.0
+
+transformers>=4.51.0,<4.58.0
+diffusers>=0.37.0
+accelerate>=1.12.0
+safetensors==0.7.0
+
+gradio==6.2.0
+
+soundfile>=0.13.1
+scipy>=1.10.1
+numba>=0.63.1
+einops>=0.8.1
+vector-quantize-pytorch>=1.27.15
+pytorch-wavelets>=1.3.0
+pywavelets>=1.9.0
+matplotlib>=3.7.5
+loguru>=0.7.3
+toml
+xxhash
+setuptools<72
+
+# Handler imports; kept even though this POC never trains.
+peft>=0.18.0
+
+# Used by ACE-Step's downloader to fetch checkpoints.
+huggingface_hub
+modelscope

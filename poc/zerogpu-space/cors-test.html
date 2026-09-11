@@ -1,0 +1,164 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZeroGPU CORS Probe</title>
+<!--
+  Browser-side CORS probe for the ACE-Step ZeroGPU Space.
+
+  Must be served from the real production origin (https://jamalbalya.github.io)
+  for the answer to mean anything. Opening it from file:// sends Origin: null and
+  tests nothing. curl does not test it either: curl is not a browser and does not
+  enforce the same-origin policy.
+
+  To serve it from the right origin, copy this file into the site's public/
+  directory, build and deploy, visit it, then remove it again. It is deliberately
+  not part of the application.
+-->
+<style>
+  :root{--bg:#fbfaf8;--fg:#1a1a1f;--dim:#6a6a76;--line:#e2e0db;--ok:#1a7f4b;--bad:#b3261e;--wait:#8a6d1f;--card:#fff}
+  :root:not([data-theme=light]){color-scheme:light}
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#141416;--fg:#ece9e4;--dim:#9b978f;--line:#2e2e33;--ok:#5fd39b;--bad:#ff8a80;--wait:#e3c56b;--card:#1c1c1f}}
+  :root[data-theme=dark]{--bg:#141416;--fg:#ece9e4;--dim:#9b978f;--line:#2e2e33;--ok:#5fd39b;--bad:#ff8a80;--wait:#e3c56b;--card:#1c1c1f}
+  body{background:var(--bg);color:var(--fg);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;padding:24px 16px;max-width:820px;margin:0 auto}
+  h1{font-size:1.35rem;margin:0 0 .2em;text-wrap:balance}
+  p.sub{color:var(--dim);margin:0 0 1.4em}
+  label{display:block;font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin-bottom:.35em}
+  input{width:100%;padding:.6em .7em;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg);font:inherit}
+  button{margin-top:1em;padding:.6em 1.2em;border:0;border-radius:6px;background:var(--fg);color:var(--bg);font:inherit;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  ol{list-style:none;padding:0;margin:1.6em 0 0}
+  li{display:grid;grid-template-columns:auto 1fr;gap:.7em;padding:.7em 0;border-top:1px solid var(--line);align-items:start}
+  .mark{font-weight:700;font-variant-numeric:tabular-nums}
+  .ok{color:var(--ok)}.bad{color:var(--bad)}.wait{color:var(--wait)}
+  .name{font-weight:600}
+  .detail{color:var(--dim);font-size:.85rem;white-space:pre-wrap;word-break:break-word;margin-top:.2em;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .origin{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85rem}
+  #summary{margin-top:1.5em;padding:.9em 1em;border:1px solid var(--line);border-radius:8px;background:var(--card);display:none}
+</style>
+
+<h1>ZeroGPU CORS Probe</h1>
+<p class="sub">Running from origin <span class="origin" id="origin"></span></p>
+
+<label for="space">Space base URL</label>
+<input id="space" placeholder="https://user-space.hf.space" autocomplete="off">
+<button id="run">Run probe</button>
+
+<ol id="steps"></ol>
+<div id="summary"></div>
+
+<script>
+const STEPS = [
+  ['preflight', 'OPTIONS preflight on /gradio_api/call/generate_music'],
+  ['post',      'POST /gradio_api/call/generate_music → event_id'],
+  ['sse',       'GET  /gradio_api/call/generate_music/{event_id} → SSE'],
+  ['audio',     'GET  the returned audio URL'],
+];
+const els = {};
+const list = document.getElementById('steps');
+for (const [id, label] of STEPS) {
+  const li = document.createElement('li');
+  li.innerHTML = `<span class="mark wait" id="m-${id}">…</span><div><div class="name">${label}</div><div class="detail" id="d-${id}">not run</div></div>`;
+  list.appendChild(li);
+  els[id] = li;
+}
+document.getElementById('origin').textContent = location.origin;
+
+function mark(id, state, detail) {
+  const m = document.getElementById('m-' + id);
+  m.className = 'mark ' + state;
+  m.textContent = state === 'ok' ? '✓' : state === 'bad' ? '✕' : '…';
+  document.getElementById('d-' + id).textContent = detail;
+}
+
+// The fixture, byte-for-byte, is not embedded here: this probe tests the
+// transport, not the model. A one-second instrumental keeps the GPU cost of a
+// CORS check near zero — which matters when the whole daily quota is two minutes.
+const PROBE = { data: ['probe', '[inst]', 'id', 'mixed', true, 10] };
+
+document.getElementById('run').addEventListener('click', async () => {
+  const base = document.getElementById('space').value.trim().replace(/\/+$/, '');
+  if (!base) return;
+  const btn = document.getElementById('run');
+  btn.disabled = true;
+  const url = base + '/gradio_api/call/generate_music';
+  const results = {};
+
+  // A JSON content-type POST is itself a preflighted request, so this OPTIONS
+  // is the same one the browser will send on its own — sent explicitly here so
+  // its outcome is visible rather than buried in a failed POST.
+  try {
+    const r = await fetch(url, { method: 'OPTIONS', headers: { 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' } });
+    results.preflight = r.ok;
+    mark('preflight', r.ok ? 'ok' : 'bad', `HTTP ${r.status}. allow-origin: ${r.headers.get('access-control-allow-origin') ?? '(absent — opaque to script)'}`);
+  } catch (e) {
+    results.preflight = false;
+    mark('preflight', 'bad', `blocked before any response reached the page: ${e}`);
+  }
+
+  let eventId = null;
+  try {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(PROBE) });
+    const body = await r.json();
+    eventId = body.event_id ?? null;
+    results.post = Boolean(eventId);
+    mark('post', eventId ? 'ok' : 'bad', `HTTP ${r.status}. ${eventId ? 'event_id ' + eventId : JSON.stringify(body).slice(0, 300)}`);
+  } catch (e) {
+    results.post = false;
+    mark('post', 'bad', `${e}\nA CORS failure looks exactly like this: TypeError, no status.`);
+  }
+
+  let audioUrl = null;
+  if (eventId) {
+    try {
+      const r = await fetch(`${url}/${eventId}`, { headers: { Accept: 'text/event-stream' } });
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '', seen = [], done = false, guard = 0;
+      while (!done && guard++ < 20000) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buf += dec.decode(chunk.value, { stream: true });
+        for (const line of buf.split('\n')) {
+          if (line.startsWith('event:')) seen.push(line.slice(6).trim());
+          if (line.startsWith('data:') && seen.includes('complete')) {
+            try {
+              const payload = JSON.parse(line.slice(5).trim());
+              const first = payload[0];
+              audioUrl = (first && first.url) || (typeof first === 'string' ? first : null);
+              done = true;
+            } catch { /* partial frame; keep reading */ }
+          }
+        }
+        if (seen.includes('error')) { done = true; }
+      }
+      results.sse = seen.includes('complete');
+      mark('sse', results.sse ? 'ok' : 'bad', `HTTP ${r.status}. events: ${seen.join(', ') || '(none)'}`);
+    } catch (e) {
+      results.sse = false;
+      mark('sse', 'bad', `${e}`);
+    }
+  }
+
+  if (audioUrl) {
+    try {
+      const r = await fetch(audioUrl);
+      const blob = await r.blob();
+      results.audio = r.ok && blob.size > 0;
+      mark('audio', results.audio ? 'ok' : 'bad', `HTTP ${r.status}, ${blob.size} bytes, type ${blob.type || '(none)'}`);
+    } catch (e) {
+      results.audio = false;
+      mark('audio', 'bad', `${e}`);
+    }
+  } else {
+    mark('audio', 'bad', 'no audio URL to fetch — earlier step did not complete');
+  }
+
+  const all = STEPS.every(([id]) => results[id]);
+  const s = document.getElementById('summary');
+  s.style.display = 'block';
+  s.innerHTML = `<strong class="${all ? 'ok' : 'bad'}">${all ? 'CORS PASS' : 'CORS FAIL'}</strong> — from ${location.origin}<br>` +
+    `<span class="detail">${JSON.stringify(results)}</span><br>` +
+    `<span class="detail">Copy this whole block into docs/architecture/zerogpu-full-song-test.md §11.</span>`;
+  btn.disabled = false;
+});
+</script>
