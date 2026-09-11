@@ -83,18 +83,31 @@ info "(ACESTEP_CHECKPOINTS_DIR, so the weights sit outside both repositories)"
 mkdir -p "$ACE_STEP_MODELS"
 
 # The main bundle carries the turbo DiT, the VAE, the text encoder and the
-# 1.7B LM. The 0.6B LM is a separate sub-model and has to be asked for.
-info "downloading the main model bundle (~10 GB on first run)"
-( cd "$ACE_STEP_HOME" && uv run acestep-download --download-source "$ACE_STEP_DOWNLOAD_SOURCE" ) \
-  || die "Model download failed. Try --download-source modelscope if HuggingFace is slow where you are:
-  cd $ACE_STEP_HOME && ACESTEP_CHECKPOINTS_DIR=$ACE_STEP_MODELS uv run acestep-download --download-source modelscope"
-
-if [[ "$ACE_STEP_LM_MODEL" != "acestep-5Hz-lm-1.7B" ]]; then
-  info "downloading $ACE_STEP_LM_MODEL (not part of the main bundle)"
-  ( cd "$ACE_STEP_HOME" && uv run acestep-download --model "$ACE_STEP_LM_MODEL" \
-      --download-source "$ACE_STEP_DOWNLOAD_SOURCE" ) \
-    || die "Could not download $ACE_STEP_LM_MODEL."
+# 1.7B LM. The 0.6B LM is a separate sub-model -- but asking for a sub-model
+# downloads the main bundle first when it is missing, so one command covers
+# both.
+#
+# The flags here are the ones `acestep-download` actually accepts at commit
+# ca1e85f: --model, --all, --list, --dir, --force, --token, --skip-main. In
+# particular there is no --download-source: ACE-Step's INSTALL.md documents
+# one, but its CLI never passes prefer_source through, so the downloader
+# always auto-detects between HuggingFace and ModelScope.
+if [[ "$ACE_STEP_LM_MODEL" == "acestep-5Hz-lm-1.7B" ]]; then
+  info "downloading the main model bundle (~10 GB on first run)"
+  download_args=(--dir "$ACE_STEP_MODELS")
+else
+  info "downloading the main bundle and $ACE_STEP_LM_MODEL (~10 GB on first run)"
+  download_args=(--dir "$ACE_STEP_MODELS" --model "$ACE_STEP_LM_MODEL")
 fi
+( cd "$ACE_STEP_HOME" && uv run acestep-download "${download_args[@]}" ) \
+  || die "Model download failed. The output above says why.
+
+To retry by hand:
+  cd $ACE_STEP_HOME
+  uv run acestep-download --dir $ACE_STEP_MODELS --model $ACE_STEP_LM_MODEL
+
+To see what is available:
+  cd $ACE_STEP_HOME && uv run acestep-download --list"
 echo
 
 # --------------------------------------------------------- 10-11. verify it ---

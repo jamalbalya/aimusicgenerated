@@ -241,10 +241,11 @@ about 10 GB.
 Step 1 does this for you. By hand, from inside the ACE-Step checkout:
 
 ```bash
-export ACESTEP_CHECKPOINTS_DIR=~/Models/ACE-Step-1.5
-uv run acestep-download                              # main bundle
-uv run acestep-download --model acestep-5Hz-lm-0.6B  # the small LM
+uv run acestep-download --dir ~/Models/ACE-Step-1.5 --model acestep-5Hz-lm-0.6B
 ```
+
+Asking for a sub-model downloads the main bundle first when it is missing, so
+that single command covers both.
 
 The main bundle carries `acestep-v15-turbo`, `vae`, `Qwen3-Embedding-0.6B` and
 `acestep-5Hz-lm-1.7B`. The **0.6B LM is separate** and must be named.
@@ -326,7 +327,7 @@ Pick **Neural**, write a style and lyrics, and generate.
 | Symptom | Cause and fix |
 |---|---|
 | `uv: command not found` after setup | The installer added it to `~/.local/bin`; open a new terminal. |
-| Setup fails downloading weights | Try `ACE_STEP_DOWNLOAD_SOURCE=modelscope ./scripts/setup-ace-step-macos.sh`. |
+| Setup fails downloading weights | Re-run it; the download resumes. `acestep-download` has no source flag and auto-detects HuggingFace vs ModelScope. |
 | Diagnose says models missing | A partial download leaves directories with no weights file, which reads as missing. Re-run the setup script. |
 | `Something is already listening on port 8001` | An older server is still up. Stop it, or set `ACE_STEP_PORT`. |
 | MLX will not import | Run `uv pip install -U mlx mlx-lm` inside the ACE-Step checkout. The macOS launcher also attempts this. |
@@ -364,10 +365,9 @@ Model weights are **not** stored in this repository and never will be. They come
 from the ACE-Step project's own distribution, using its own downloader:
 
 ```bash
-uv run acestep-download                                # the main model bundle
-uv run acestep-download --model acestep-5Hz-lm-0.6B    # the smaller LM
-uv run acestep-download --list                         # everything available
-uv run acestep-download --download-source modelscope   # if HuggingFace is slow
+uv run acestep-download --dir ~/Models/ACE-Step-1.5                              # main bundle
+uv run acestep-download --dir ~/Models/ACE-Step-1.5 --model acestep-5Hz-lm-0.6B  # + the small LM
+uv run acestep-download --list                                                   # what exists
 ```
 
 The **main bundle** contains `acestep-v15-turbo`, `vae`, `Qwen3-Embedding-0.6B`

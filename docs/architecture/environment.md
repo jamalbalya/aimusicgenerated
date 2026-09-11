@@ -34,10 +34,15 @@ Because these are baked in at build time, changing one means rebuilding
 | `ACE_STEP_MODELS` | scripts, status | `~/Models/ACE-Step-1.5` | The model weights |
 | `ACE_STEP_HOST` | scripts | `127.0.0.1` | Host the backend binds |
 | `ACE_STEP_PORT` | scripts | `8001` | Port the backend binds |
-| `ACE_STEP_DOWNLOAD_SOURCE` | setup | `auto` | `auto`, `huggingface` or `modelscope` |
 
 `ACE_STEP_API_URL` is derived from `ACE_STEP_HOST` and `ACE_STEP_PORT` when it
 is not set explicitly.
+
+There is deliberately no download-source setting. ACE-Step's `acestep-download`
+accepts only `--model`, `--all`, `--list`, `--dir`, `--force`, `--token` and
+`--skip-main`; its `main()` never passes `prefer_source` through, so the
+downloader always auto-detects between HuggingFace and ModelScope whatever you
+ask for. A variable that silently did nothing would be worse than none.
 
 A leading `~` is expanded by the scripts themselves: a value read out of a
 `.env` file is not expanded by anything else, and would otherwise be taken as a
