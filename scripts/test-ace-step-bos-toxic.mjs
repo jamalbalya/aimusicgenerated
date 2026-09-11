@@ -16,7 +16,7 @@
  */
 
 import { mkdir, writeFile } from 'node:fs/promises'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,7 +24,7 @@ import { homedir } from 'node:os'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
-const OUT_DIR = join(ROOT, 'evaluation', 'bos-toxic')
+const OUT_ROOT = join(ROOT, 'evaluation', 'bos-toxic')
 const ACE_STEP_HOME = process.env.ACE_STEP_HOME
   || join(homedir(), 'Applications', 'ACE-Step-1.5')
 
@@ -69,7 +69,25 @@ const headers = (json) => ({
   ...(API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {}),
 })
 
+/**
+ * Everything printed is also kept, so the run can be read back later without
+ * relying on a terminal scrollback that will be gone by then.
+ */
+const transcript = []
+function say(line = '') {
+  transcript.push(line)
+  process.stdout.write(`${line}\n`)
+}
+
+let logPath = null
+function flushLog() {
+  if (!logPath) return
+  try { writeFileSync(logPath, `${transcript.join('\n')}\n`) } catch { /* best effort */ }
+}
+
 function fail(message) {
+  transcript.push(`FAILED: ${message}`)
+  flushLog()
   console.error(`\n✗ ${message}`)
   process.exit(1)
 }
@@ -83,6 +101,63 @@ async function unwrap(response, what) {
 }
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
+
+/**
+ * Reads a WAV header and measures the samples.
+ *
+ * This establishes that a valid, non-empty, non-silent audio file exists. It
+ * establishes nothing about the music: not whether anyone is singing, not what
+ * language they are singing in, and certainly not whether it is any good.
+ */
+function probeWav(bytes) {
+  const out = { sampleRate: null, channels: null, durationSeconds: null, peak: null, problem: null }
+  if (bytes.length < 1024) { out.problem = `the file is only ${bytes.length} bytes`; return out }
+  if (bytes.toString('ascii', 0, 4) !== 'RIFF' || bytes.toString('ascii', 8, 12) !== 'WAVE') {
+    out.problem = 'not a RIFF/WAVE file'
+    return out
+  }
+  let offset = 12, channels = 0, sampleRate = 0, bitDepth = 0, format = 1, dataAt = -1, dataSize = 0
+  while (offset + 8 <= bytes.length) {
+    const id = bytes.toString('ascii', offset, offset + 4)
+    const size = bytes.readUInt32LE(offset + 4)
+    const body = offset + 8
+    if (id === 'fmt ' && body + 16 <= bytes.length) {
+      format = bytes.readUInt16LE(body)
+      channels = bytes.readUInt16LE(body + 2)
+      sampleRate = bytes.readUInt32LE(body + 4)
+      bitDepth = bytes.readUInt16LE(body + 14)
+      if (format === 0xfffe && size >= 40) format = bytes.readUInt16LE(body + 24)
+    } else if (id === 'data') { dataAt = body; dataSize = Math.min(size, bytes.length - body); break }
+    if (size === 0) break
+    offset = body + size + (size % 2)
+  }
+  if (dataAt < 0 || !sampleRate || !channels || !bitDepth) {
+    out.problem = 'the WAV header is unusable'
+    return out
+  }
+  const bytesPerSample = bitDepth / 8
+  const frames = Math.floor(dataSize / (bytesPerSample * channels))
+  out.sampleRate = sampleRate
+  out.channels = channels
+  out.durationSeconds = Number((frames / sampleRate).toFixed(2))
+  const step = Math.max(1, Math.floor(frames / 4000))
+  let peak = 0
+  for (let frame = 0; frame < frames; frame += step) {
+    const at = dataAt + frame * bytesPerSample * channels
+    if (at + bytesPerSample > bytes.length) break
+    let value = 0
+    if (format === 3 && bitDepth === 32) value = bytes.readFloatLE(at)
+    else if (bitDepth === 16) value = bytes.readInt16LE(at) / 32768
+    else if (bitDepth === 32) value = bytes.readInt32LE(at) / 2147483648
+    else if (bitDepth === 24) value = (bytes.readIntLE(at, 3)) / 8388608
+    else if (bitDepth === 8) value = (bytes.readUInt8(at) - 128) / 128
+    peak = Math.max(peak, Math.abs(value))
+  }
+  out.peak = Number(peak.toFixed(4))
+  if (!(out.durationSeconds > 0)) out.problem = 'the file contains no samples'
+  else if (peak < 0.001) out.problem = 'the audio is silent'
+  return out
+}
 
 /**
  * What ACE-Step this is, read off the checkout rather than guessed.
@@ -124,8 +199,8 @@ function describeBackend(baseUrl) {
 }
 
 async function main() {
-  console.log('ACE-Step 1.5 — Bos Toxic smoke test')
-  console.log(`  backend        ${BASE_URL}`)
+  say('ACE-Step 1.5 — Bos Toxic smoke test')
+  say(`  backend        ${BASE_URL}`)
 
   /* 1. Is it actually running? --------------------------------------- */
   let health
@@ -137,25 +212,45 @@ async function main() {
       '  ./scripts/diagnose-ace-step-macos.sh or node scripts/ace-step-status.mjs.')
   }
   if (String(health.status).toLowerCase() !== 'ok') fail(`Backend reported status "${health.status}".`)
-  console.log(`  service        ${health.service} ${health.version}`)
-  console.log(`  models loaded  ${health.models_initialized} (LM: ${health.llm_initialized})`)
+  say(`  service        ${health.service} ${health.version}`)
+  say(`  models loaded  ${health.models_initialized} (LM: ${health.llm_initialized})`)
+  say(`  DiT loaded     ${health.loaded_model ?? 'none yet (loads on first request)'}`)
+  say(`  LM loaded      ${health.loaded_lm_model ?? 'none yet (loads on first request)'}`)
+
+  // ACE-Step substitutes the language model by itself when it judges the
+  // requested one unsupported for the detected tier, and carries on with no LM
+  // at all when one fails to load. Both go to its own console, not to us, so a
+  // run asked for on the 0.6B model can quietly come back from the 1.7B one.
+  if (health.loaded_lm_model && health.loaded_lm_model !== LM_MODEL) {
+    fail(`The backend loaded ${health.loaded_lm_model}, not the requested ${LM_MODEL}.\n`
+      + `  Restart it with ACE_STEP_LM_MODEL=${LM_MODEL} ./scripts/start-ace-step-macos.sh`)
+  }
+  if (health.loaded_model && health.loaded_model !== MODEL) {
+    fail(`The backend loaded ${health.loaded_model}, not the requested ${MODEL}.`)
+  }
+  if (health.models_initialized && !health.llm_initialized) {
+    fail('The backend has no language model loaded, so it cannot sing the lyrics.\n'
+      + '  A request made with thinking enabled would come back instrumental.\n'
+      + '  Check the backend terminal for why the LM failed to load.')
+  }
 
   /* 2. Submit ---------------------------------------------------------- */
   const body = bosToxicTaskBody()
   const lyricLines = body.lyrics.split('\n').filter((l) => l.trim() && !/^\[[^\]]+\]$/.test(l.trim()))
-  console.log(`  style          ${body.prompt.slice(0, 68)}…`)
-  console.log(`  lyrics         ${lyricLines.length} sung lines, language ${body.vocal_language}`)
-  console.log(`  model          ${body.model}`)
-  console.log(`  lm model       ${body.lm_model_path}`)
-  console.log('\nsubmitting…')
+  say(`  style          ${body.prompt.slice(0, 68)}…`)
+  say(`  lyrics         ${lyricLines.length} sung lines, language ${body.vocal_language}`)
+  say(`  model          ${body.model}`)
+  say(`  lm model       ${body.lm_model_path}`)
+  say('\nsubmitting…')
 
-  const started = Date.now()
+  const startedAt = new Date()
+  const started = startedAt.getTime()
   const created = await unwrap(await fetch(`${BASE_URL}/release_task`, {
     method: 'POST', headers: headers(true), body: JSON.stringify(body),
   }), 'POST /release_task')
   const taskId = created.task_id
   if (!taskId) fail('The backend accepted the request but returned no task id.')
-  console.log(`  task           ${taskId}${created.queue_position ? ` (queue position ${created.queue_position})` : ''}`)
+  say(`  task           ${taskId}${created.queue_position ? ` (queue position ${created.queue_position})` : ''}`)
 
   /* 3. Poll ------------------------------------------------------------ */
   let item = null
@@ -175,10 +270,11 @@ async function main() {
 
     const line = `  ${first.stage || row?.progress_text || 'queued'}` +
       (typeof first.progress === 'number' && first.progress > 0 ? ` ${Math.round(first.progress * 100)}%` : '')
-    if (line !== lastLine) { console.log(line); lastLine = line }
+    if (line !== lastLine) { say(line); lastLine = line }
     await sleep(POLL_MS)
   }
-  const generationSeconds = (Date.now() - started) / 1000
+  const finishedAt = new Date()
+  const generationSeconds = (finishedAt.getTime() - started) / 1000
 
   /* 4-5. Download and save --------------------------------------------- */
   if (!item.file) fail('The task succeeded but returned no audio file.')
@@ -189,55 +285,82 @@ async function main() {
   if (bytes.length < 1024) fail(`The generated audio is only ${bytes.length} bytes — that is not a song.`)
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  await mkdir(OUT_DIR, { recursive: true })
-  const audioPath = join(OUT_DIR, `bos-toxic-${body.model}-${stamp}.wav`)
+  const runDir = join(OUT_ROOT, `${stamp}-${body.model}`)
+  await mkdir(runDir, { recursive: true })
+  const audioPath = join(runDir, 'audio.wav')
+  logPath = join(runDir, 'generation.log')
   await writeFile(audioPath, bytes)
 
   const acestep = aceStepVersion()
   const backend = describeBackend(BASE_URL)
+  const wav = probeWav(bytes)
+  if (wav.problem) {
+    fail(`ACE-Step returned a file that is not usable audio: ${wav.problem}\n` +
+      `  Saved anyway at ${audioPath} so it can be inspected.`)
+  }
+
+  // Only values that came from the real run. Nothing here is a placeholder.
   const metadata = {
+    engine: 'ace-step',
+    model: health.loaded_model ?? body.model,
+    lm_model: health.loaded_lm_model ?? body.lm_model_path,
+    backend: `${health.service} ${health.version}`,
+    device: backend,
+    language: body.vocal_language,
+    vocal_gender: 'male',
+    instrumental: false,
+    generation_time_seconds: Number(generationSeconds.toFixed(1)),
+    duration_seconds: item.metas?.duration ?? wav.durationSeconds,
+    timestamp: finishedAt.toISOString(),
+
+    // Everything else the run established, kept for later analysis.
     task_id: taskId,
     backend_url: BASE_URL,
-    service: `${health.service} ${health.version}`,
     acestep_version: acestep.version,
     acestep_commit: acestep.commit,
     acestep_home: acestep.home,
-    device_backend: backend,
-    loaded_model: health.loaded_model ?? null,
-    loaded_lm_model: health.loaded_lm_model ?? null,
-    model: body.model,
-    lm_model: body.lm_model_path,
-    vocal_language: body.vocal_language,
-    instrumental: false,
+    requested_model: body.model,
+    requested_lm_model: body.lm_model_path,
     thinking: body.thinking,
-    generation_seconds: Number(generationSeconds.toFixed(1)),
-    output_seconds: item.metas?.duration ?? null,
+    generation_started: startedAt.toISOString(),
+    generation_finished: finishedAt.toISOString(),
+    reported_duration_seconds: item.metas?.duration ?? null,
+    measured_duration_seconds: wav.durationSeconds,
+    sample_rate: wav.sampleRate,
+    channels: wav.channels,
+    peak: wav.peak,
     bpm: item.metas?.bpm ?? null,
     keyscale: item.metas?.keyscale ?? null,
     bytes: bytes.length,
     audio_file: audioPath,
     lyric_lines_sent: lyricLines.length,
-    generated_at: new Date().toISOString(),
   }
-  await writeFile(audioPath.replace(/\.wav$/, '.json'), JSON.stringify(metadata, null, 2))
+  await writeFile(join(runDir, 'metadata.json'), JSON.stringify(metadata, null, 2))
 
   /* 6-9. Report -------------------------------------------------------- */
-  console.log('\n✓ ACE-Step generated a song')
-  console.log(`  ACE-Step       ${acestep.version} (${acestep.commit})`)
-  console.log(`  service        ${metadata.service}`)
-  console.log(`  DiT model      ${metadata.loaded_model ?? metadata.model}`)
-  console.log(`  LM model       ${metadata.loaded_lm_model ?? metadata.lm_model}`)
-  console.log(`  device/backend ${backend}`)
-  console.log(`  task id        ${taskId}`)
-  console.log(`  generation     ${metadata.generation_seconds}s`)
-  console.log(`  output length  ${metadata.output_seconds ?? 'unreported'}s`)
-  console.log(`  bpm / key      ${metadata.bpm ?? '—'} / ${metadata.keyscale ?? '—'}`)
-  console.log(`  size           ${(bytes.length / 1e6).toFixed(2)} MB`)
-  console.log(`  audio          ${audioPath}`)
-  console.log(`  metadata       ${audioPath.replace(/\.wav$/, '.json')}`)
-  console.log('')
-  console.log('  Nothing above says anything about how it sounds.')
-  console.log('  Listen to it before drawing any conclusion about quality.')
+  say('\n✓ ACE-Step generated a song')
+  say(`  ACE-Step       ${acestep.version} (${acestep.commit})`)
+  say(`  service        ${metadata.backend}`)
+  say(`  DiT model      ${metadata.loaded_model ?? metadata.model}`)
+  say(`  LM model       ${metadata.loaded_lm_model ?? metadata.lm_model}`)
+  say(`  device/backend ${backend}`)
+  say(`  task id        ${taskId}`)
+  say(`  started        ${metadata.generation_started}`)
+  say(`  finished       ${metadata.generation_finished}`)
+  say(`  generation     ${metadata.generation_time_seconds}s`)
+  say(`  output length  ${metadata.duration_seconds}s`
+    + (metadata.reported_duration_seconds === null ? ' (measured from the file)' : ''))
+  say(`  bpm / key      ${metadata.bpm ?? '—'} / ${metadata.keyscale ?? '—'}`)
+  say(`  size           ${(bytes.length / 1e6).toFixed(2)} MB`)
+  say(`  sample rate    ${wav.sampleRate ? `${wav.sampleRate} Hz` : 'unreadable'}`)
+  say(`  channels       ${wav.channels ?? 'unreadable'}`)
+  say(`  peak           ${wav.peak !== null ? wav.peak.toFixed(3) : 'unreadable'}`)
+  say(`  audio          ${audioPath}`)
+  say(`  metadata       ${join(runDir, 'metadata.json')}`)
+  say(`  log            ${logPath}`)
+  say('')
+  say('  Nothing above says anything about how it sounds.')
+  say('  Listen to it before drawing any conclusion about quality.')
 }
 
 // Only run when invoked directly; the unit test imports the body builder.

@@ -113,15 +113,47 @@ fi
 HEALTH="$(curl -fsS --max-time 5 "$ACE_STEP_API_URL/health" 2>/dev/null)"
 if [[ -n "$HEALTH" ]]; then
   ok "/health       responded"
-  # Read the fields without needing jq.
-  read_field() { printf '%s' "$HEALTH" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^,\"}]*\)\"\{0,1\}.*/\1/p" | head -1; }
-  info "service       $(read_field service) $(read_field version)"
-  info "models loaded $(read_field models_initialized)"
-  info "LM loaded     $(read_field llm_initialized)"
-  LOADED_MODEL="$(read_field loaded_model)"
-  LOADED_LM="$(read_field loaded_lm_model)"
-  info "DiT in use    ${LOADED_MODEL:-none yet (loaded on first request)}"
-  info "LM in use     ${LOADED_LM:-none yet (loaded on first request)}"
+  # Parsed with node rather than sed: this is JSON, BSD and GNU sed disagree
+  # about the escapes a pattern like this needs, and the repository already
+  # requires node for everything else.
+  read_field() {
+    if command -v node >/dev/null 2>&1; then
+      printf '%s' "$HEALTH" | node -e '
+        let raw = ""
+        process.stdin.on("data", (chunk) => { raw += chunk })
+        process.stdin.on("end", () => {
+          try {
+            const envelope = JSON.parse(raw)
+            const health = envelope && envelope.data ? envelope.data : envelope
+            const value = health[process.argv[1]]
+            process.stdout.write(value === null || value === undefined ? "" : String(value))
+          } catch { process.stdout.write("") }
+        })' "$1"
+    else
+      printf ''
+    fi
+  }
+  if command -v node >/dev/null 2>&1; then
+    info "service       $(read_field service) $(read_field version)"
+    info "models loaded $(read_field models_initialized)"
+    info "LM loaded     $(read_field llm_initialized)"
+    LOADED_MODEL="$(read_field loaded_model)"
+    LOADED_LM="$(read_field loaded_lm_model)"
+    info "DiT in use    ${LOADED_MODEL:-none yet (loaded on first request)}"
+    info "LM in use     ${LOADED_LM:-none yet (loaded on first request)}"
+    # A loaded model that is not the requested one is the substitution ACE-Step
+    # performs by itself; see acestep/api/startup_llm_init.py.
+    if [[ -n "$LOADED_LM" && "$LOADED_LM" != "$ACE_STEP_LM_MODEL" ]]; then
+      bad "LM mismatch   requested $ACE_STEP_LM_MODEL, backend loaded $LOADED_LM"
+      note "the backend substituted the language model"
+    fi
+    if [[ -n "$LOADED_MODEL" && "$LOADED_MODEL" != "$ACE_STEP_MODEL" ]]; then
+      bad "DiT mismatch  requested $ACE_STEP_MODEL, backend loaded $LOADED_MODEL"
+      note "the backend substituted the generation model"
+    fi
+  else
+    warn "node not found, so the /health body was not parsed"
+  fi
 else
   bad "/health       no response"
   note "/health did not answer at $ACE_STEP_API_URL"

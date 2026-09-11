@@ -86,6 +86,22 @@ function inlineEverything(directory: string): Plugin {
   }
 }
 
+/**
+ * One name per setting.
+ *
+ * Vite only exposes variables prefixed VITE_ to the browser bundle, which would
+ * otherwise mean every neural setting needs writing twice — once as
+ * ACE_STEP_API_URL for the scripts and once as VITE_ACE_STEP_API_URL for the
+ * app — and the two drifting apart is a matter of time. So the plain name is
+ * the authoritative one and is baked in here; the VITE_ form stays as an
+ * override for anyone who prefers it.
+ */
+function neuralSetting(name: string, fallback = ''): string {
+  return process.env[`VITE_ACE_STEP_${name}`]
+    ?? process.env[`ACE_STEP_${name}`]
+    ?? fallback
+}
+
 export default defineConfig({
   base: singleFile ? './' : base,
   plugins: [react(), tailwindcss(), ...(singleFile ? [inlineEverything(outDir)] : [spaFallback()])],
@@ -93,6 +109,10 @@ export default defineConfig({
     // A compile-time constant, so the branch it guards is removed entirely
     // from whichever build does not need it.
     'import.meta.env.VITE_INLINE_WORKER': JSON.stringify(singleFile),
+    'import.meta.env.VITE_ACE_STEP_API_URL': JSON.stringify(neuralSetting('API_URL')),
+    'import.meta.env.VITE_ACE_STEP_API_KEY': JSON.stringify(neuralSetting('API_KEY')),
+    'import.meta.env.VITE_ACE_STEP_MODEL': JSON.stringify(neuralSetting('MODEL')),
+    'import.meta.env.VITE_ACE_STEP_LM_MODEL': JSON.stringify(neuralSetting('LM_MODEL')),
   },
   build: {
     outDir,

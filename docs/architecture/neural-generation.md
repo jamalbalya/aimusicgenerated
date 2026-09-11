@@ -72,6 +72,49 @@ a playable URL, a duration and metadata.
 | `providers/config.ts` | where the backend lives |
 | `ui/useNeuralEngine.ts` | the connection probe behind the status dot |
 
+## The generation path, end to end
+
+Every transition, with the file and function that makes it.
+
+| Step | Where |
+|---|---|
+| The Generate button | `ui/pages/StudioPage.tsx` → `generateSong()` |
+| Branch on the chosen engine | `generateSong()` — neural calls `generateNeural()`, offline calls `generate()` |
+| Build the request | `generateNeural()` assembles a `MusicGenerationRequest` |
+| Pick the provider | `new AceStepProvider()` (`providers/aceStepProvider.ts`) |
+| Is the backend there | `AceStepProvider.generate()` → `client.health()` |
+| Are the models the right ones | `AceStepProvider.verifyModels()` |
+| Style and lyrics → ACE-Step body | `providers/aceStepRequest.ts` → `buildAceStepTask()` |
+| Create the task | `AceStepClient.createTask()` → `POST /release_task` |
+| Poll | `AceStepProvider.poll()` → `AceStepClient.queryResult()` → `POST /query_result` |
+| Unpack the doubly-encoded result | `parseResultItems()` |
+| Download the audio | `AceStepClient.fetchAudio()` → `GET /v1/audio?path=…` |
+| Is it really audio | `providers/audioCheck.ts` → `describeAudio()` |
+| Blob → object URL | `AceStepProvider.generate()` → `toObjectUrl()` |
+| Object URL → samples | `generateNeural()` → `fetch()` → `decodeWav()` |
+| Into the player | `openNeuralTake()` → `useStudio.setCurrent()` |
+| Metadata on screen | the neural Result panel in `StudioPage.tsx` |
+
+The offline engine takes the same shape through `providers/proceduralProvider.ts`,
+which wraps the existing worker (`workers/client.ts` → `workers/handler.ts`).
+
+## Things that will not silently pass
+
+| Failure | What happens |
+|---|---|
+| Backend not running | `EngineUnavailableError`, with the offer to switch. No song. |
+| HTTPS page, `http://` backend | Reported as mixed content before any request is made |
+| Backend loaded a different LM | Refused, naming both models |
+| Backend loaded a different DiT | Refused, naming both models |
+| `thinking` requested, no LM loaded | Refused — that song would come back instrumental |
+| Download empty, truncated, or an HTML error page | Refused |
+| A valid WAV containing silence | Refused |
+| No duration reported and none measurable | Refused |
+| A poll fails once | Retried; the job keeps running |
+| Polls fail five times running | Given up, saying the job may still be running on the backend |
+| One take of several fails | The others are kept, and the failed one is named |
+| Cancelled | Polling stops; the message says the backend may still be working |
+
 ## The rule this design exists to enforce
 
 **A neural request is never quietly served by the procedural engine.**
@@ -301,7 +344,8 @@ Pick **Neural**, write a style and lyrics, and generate.
 | Generated audio | `evaluation/bos-toxic/` | — |
 
 All of them are read from `scripts/ace-step-env.sh`, which reads `.env` first.
-No personal path is hardcoded anywhere.
+No personal path is hardcoded anywhere. The full variable reference is
+`docs/architecture/environment.md`.
 
 ## Local setup
 
