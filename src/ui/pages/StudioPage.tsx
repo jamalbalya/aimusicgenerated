@@ -602,7 +602,10 @@ export default function StudioPage() {
                   rows={5}
                   onChange={(event) => setPrompt(event.target.value)}
                   onKeyDown={(event) => {
-                    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void generate()
+                    // generateSong, not generate: the second is the offline
+                    // engine, and reaching it from here would hand someone in
+                    // Neural Mode a procedural song without ever saying so.
+                    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void generateSong()
                   }}
                 />
               </Field>
@@ -680,7 +683,10 @@ export default function StudioPage() {
                   value={customLyrics}
                   onChange={(event) => setCustomLyrics(event.target.value)}
                   onKeyDown={(event) => {
-                    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void generate()
+                    // generateSong, not generate: the second is the offline
+                    // engine, and reaching it from here would hand someone in
+                    // Neural Mode a procedural song without ever saying so.
+                    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void generateSong()
                   }}
                 />
               </Field>
