@@ -17,6 +17,7 @@ import {
 
 export function Transport() {
   const current = useStudio((s) => s.current)
+  const playbackError = useStudio((s) => s.playbackError)
   const notify = useStudio((s) => s.notify)
   const [state, setState] = useState(() => ({ playing: false, position: 0, duration: 0, volume: 0.85, levels: [0, 0] as [number, number] }))
   const [format, setFormat] = useState<ExportFormat>('mp3-320')
@@ -50,6 +51,10 @@ export function Transport() {
 
   const progress = state.duration > 0 ? state.position / state.duration : 0
   const disabled = !current
+  // A track this browser would not hand to the audio graph is still loaded and
+  // still exportable; only the parts that need playback are off, and the reason
+  // takes the place of the subtitle rather than being left to be guessed at.
+  const cannotPlay = disabled || playbackError !== null
 
   const handleExport = async (): Promise<void> => {
     if (!current) return
@@ -73,7 +78,7 @@ export function Transport() {
           <button
             type="button"
             className="btn btn-primary h-9 w-9 shrink-0 !px-0"
-            disabled={disabled}
+            disabled={cannotPlay}
             aria-label={state.playing ? 'Pause' : 'Play'}
             onClick={() => player.toggle()}
           >
@@ -82,7 +87,7 @@ export function Transport() {
           <button
             type="button"
             className="btn btn-ghost hidden h-9 w-9 shrink-0 !px-0 sm:inline-flex"
-            disabled={disabled}
+            disabled={cannotPlay}
             aria-label="Stop"
             onClick={() => player.stop()}
           >
@@ -98,8 +103,10 @@ export function Transport() {
                 {formatDuration(state.position)} / {formatDuration(state.duration)}
               </span>
             </div>
-            <p className="truncate text-[11.5px] text-[var(--text-faint)]">
-              {current ? current.subtitle : 'Generate a song, or open a tool to get started'}
+            <p className={`truncate text-[11.5px] ${playbackError ? 'text-[var(--danger)]' : 'text-[var(--text-faint)]'}`}>
+              {playbackError
+                ? `This browser would not open the song for playback (${playbackError}). You can still export it.`
+                : current ? current.subtitle : 'Generate a song, or open a tool to get started'}
             </p>
           </div>
 
@@ -184,7 +191,7 @@ export function Transport() {
             progress={progress}
             height={46}
             markers={markers}
-            onSeek={disabled ? undefined : (fraction) => player.seek(fraction * state.duration)}
+            onSeek={cannotPlay ? undefined : (fraction) => player.seek(fraction * state.duration)}
           />
         </div>
       </div>

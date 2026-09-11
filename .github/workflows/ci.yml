@@ -34,7 +34,17 @@ jobs:
         run: npm test
 
       - name: Build
+        # The end-to-end suite runs against this build, so it is made with the
+        # ZeroGPU backend pointed at a host that does not exist. Every test
+        # serves that host itself, which is what lets the neural path be
+        # exercised without reaching Hugging Face or spending GPU quota; the
+        # rest of the suite already blocks *.hf.space, so it still sees the
+        # no-backend case. The deployed build is made separately, in deploy.yml,
+        # from the real Space address.
         run: npx vite build
+        env:
+          ACE_STEP_BACKEND: zerogpu
+          ACE_STEP_SPACE_URL: https://fake-space.hf.space
 
       - name: Build the standalone single-file bundle
         run: npm run build:single

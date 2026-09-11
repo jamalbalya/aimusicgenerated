@@ -24,6 +24,14 @@ interface StudioState {
   theme: Theme
   quality: RenderQuality
   current: LoadedTrack | null
+  /**
+   * Why the loaded track cannot be played, when it cannot.
+   *
+   * A song that generated correctly but that this browser would not hand to the
+   * Web Audio graph is still a song: it stays loaded and exportable, and this
+   * says what stopped it playing rather than leaving a dead Play button.
+   */
+  playbackError: string | null
   /** Non-null while a background job is running. */
   job: { label: string; progress: number; stage: string } | null
   toast: { message: string; tone: 'info' | 'error' | 'success' } | null
@@ -67,6 +75,7 @@ export const useStudio = create<StudioState>((set) => ({
   theme: readStored(THEME_KEY, ['dark', 'light'] as const, 'dark'),
   quality: readStored(QUALITY_KEY, ['draft', 'balanced', 'studio'] as const, 'balanced'),
   current: null,
+  playbackError: null,
   job: null,
   toast: null,
 
@@ -82,9 +91,32 @@ export const useStudio = create<StudioState>((set) => ({
   },
 
   setCurrent: (track) => {
-    if (track) player.load(track.audio.channels, track.audio.sampleRate)
-    else player.stop()
-    set({ current: track })
+    // The track is committed first, and priming the player is a consequence of
+    // that rather than a condition on it.
+    //
+    // It used to be the other way round, and a throw from `player.load` — a
+    // browser declining to allocate the Web Audio buffer for a four-minute
+    // stereo song, say — took the whole track with it: the audio was decoded
+    // and in hand, but `current` stayed null, so the transport said "Nothing
+    // loaded" and Play stayed disabled underneath a finished result panel
+    // telling the reader to play it from there. Losing a generated song
+    // because the audio graph refused it is never the right trade.
+    set({ current: track, playbackError: null })
+    if (!track) {
+      player.stop()
+      return
+    }
+    try {
+      player.load(track.audio.channels, track.audio.sampleRate)
+    } catch (error) {
+      // Keep the track — it can still be exported and downloaded — and record
+      // why it will not play, in the browser's own words. This is state rather
+      // than a toast because a toast is transient, and the generation that
+      // follows raises its own; the reason has to still be there when someone
+      // presses Play and nothing happens.
+      const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+      set({ playbackError: detail })
+    }
   },
 
   setJob: (job) => set({ job }),
