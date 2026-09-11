@@ -28,6 +28,8 @@ import { scoreToLrc, scoreToSrt } from '../../engine/export/subtitles'
 import { newProjectId, saveProject } from '../../lib/library'
 import { linkProps } from '../../lib/router'
 import { useNeuralEngine } from '../useNeuralEngine'
+import { useAuth } from '../useAuth'
+import { authorizationHeader } from '../../auth/hfOAuth'
 import { decodeWav } from '../../engine/audio/wav'
 import {
   createNeuralProvider, EngineUnavailableError, GenerationCancelledError, QuotaExceededError,
@@ -203,6 +205,7 @@ export default function StudioPage() {
   const { takes: neuralTakes, index: neuralIndex, status: neuralStatus, controller: neuralController } = neuralJob
   const [engineError, setEngineError] = useState<string | null>(null)
   const neural = useNeuralEngine()
+  const auth = useAuth()
 
   // Move onto the neural engine once the backend has answered, and stay: a
   // later failed check must not flip the control back to the offline engine
@@ -327,7 +330,9 @@ export default function StudioPage() {
     setEngineError(null)
     updateNeural(controller, { status: { state: 'initializing' } })
 
-    const provider = createNeuralProvider()
+    // The bearer is borrowed at send time, so a token that arrives or is
+    // dropped between presses is honoured without rebuilding anything.
+    const provider = createNeuralProvider(undefined, { authorization: authorizationHeader })
     const baseSeed = Number.parseInt(overrideSeed ?? seed.trim(), 10)
     const collected: NeuralTake[] = []
 
@@ -490,6 +495,13 @@ export default function StudioPage() {
     inFlight.current = true
     try {
       if (engineMode === 'neural') {
+        // A courtesy, not a control: the Space verifies the bearer itself and
+        // refuses anyone it does not recognise. Stopping here only saves a
+        // signed-out visitor a round trip and a confusing error.
+        if (auth.status !== 'signed-in') {
+          notify('Sign in with Hugging Face to use the neural engine.', 'error')
+          return
+        }
         setTakes([])
         await generateNeural(overrideSeed)
         return
@@ -499,7 +511,7 @@ export default function StudioPage() {
     } finally {
       inFlight.current = false
     }
-  }, [busy, engineMode, generate, generateNeural, clearNeural])
+  }, [busy, engineMode, generate, generateNeural, clearNeural, auth.status, notify])
 
   const cancelGeneration = useCallback(() => {
     if (neuralController) {
@@ -830,6 +842,43 @@ export default function StudioPage() {
                   Re-check
                 </button>
               </p>
+              {/* Signing in is only for the neural engine: the offline one runs
+                  here and answers to nobody. The Space decides whether an
+                  account may generate — this is how you hand it one to ask
+                  about, and what it says here is never the reason it agrees. */}
+              {engineMode === 'neural' && (
+                <p className="flex flex-wrap items-center gap-2 text-[12px] text-[var(--text-dim)]"
+                   data-testid="hf-auth">
+                  {auth.status === 'signed-in' ? (
+                    <>
+                      <span>Signed in to Hugging Face as <strong>{auth.identity?.username}</strong>.</span>
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={auth.signOut}>
+                        Sign out
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span>
+                        {auth.configured
+                          ? 'The neural engine needs a Hugging Face account that has been approved for this studio.'
+                          : 'Signing in is not configured in this build, so the neural engine cannot be used.'}
+                      </span>
+                      {auth.configured && (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={auth.signIn}
+                          disabled={auth.status === 'signing-in'}
+                        >
+                          {auth.status === 'signing-in' ? 'Signing in…' : 'Sign in with Hugging Face'}
+                        </button>
+                      )}
+                    </>
+                  )}
+                  {auth.problem && <span className="text-[var(--bad,#f87171)]">{auth.problem}</span>}
+                  <span className="opacity-70">Signing out here does not stop a song already being made.</span>
+                </p>
+              )}
             </div>
             <p className="text-[12px] leading-relaxed text-[var(--text-dim)]">
               {engineMode !== 'neural'

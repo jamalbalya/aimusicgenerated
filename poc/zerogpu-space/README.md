@@ -18,6 +18,29 @@ Indonesian, male vocal, vocal and instrumental together — in a single request?
 
 Not an application. One function, one API name, defaults fixed to the fixture.
 
+## Access
+
+This Space refuses anonymous callers. Every path that costs GPU time or hands
+back a result — `/queue/join`, `/queue/data`, `/call/*`, `/run/*`, `/api/*` and
+`/file=*` — requires an `Authorization: Bearer <hugging face token>` header. The
+token is verified against Hugging Face on this side of the wire, and the
+verified username is then checked against an allowlist. Nothing in the request
+body is ever read as identity.
+
+Set these as **Space secrets**, not as repository variables:
+
+| secret | meaning |
+| --- | --- |
+| `ALLOWED_HF_USERS` | Who may generate. Comma or space separated. **Unset means nobody** — the Space fails closed. |
+| `OPENID_PROVIDER_URL` | Optional. Where identity is checked; defaults to `https://huggingface.co`. |
+| `AUTH_CACHE_SECONDS` | Optional, default 60. How long a verified token is trusted before Hugging Face is asked again — also how long a revoked one keeps working. |
+| `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | Optional abuse brake per user, default 6 per hour. In process memory: it resets whenever the Space restarts, and it is not the ZeroGPU quota. |
+
+Because the gate applies to the queue as well, **the Space's own web UI will not
+generate** — there is no browser session to carry a bearer. That is intended:
+this Space is an API for the studio, and it was always a measuring harness
+rather than something to use directly.
+
 ## Why the front-matter says what it says
 
 | key | value | why this value and no other |

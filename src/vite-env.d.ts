@@ -9,6 +9,9 @@ interface ImportMetaEnv {
   readonly VITE_BUILD_SHA: string
   /** ISO timestamp of the build. */
   readonly VITE_BUILD_TIME: string
+  /** OAuth public client id. Public by design; a public client has no secret. */
+  readonly VITE_HF_CLIENT_ID: string
+  readonly VITE_HF_PROVIDER_URL: string
 }
 
 interface ImportMeta {

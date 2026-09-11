@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { expect, test, type Page } from '@playwright/test'
+
+import { signIn } from './helpers/hfSignIn'
 import { writeFixture } from './make-fixture'
 
 const FIXTURE = writeFixture()
@@ -287,6 +289,10 @@ test.describe('song studio', () => {
     // Choosing Neural and generating must fail with the message that names
     // both ways out, and must NOT return a procedural song.
     await engines.getByRole('button', { name: 'Neural', exact: true }).click()
+    // Signed in, so the refusal that follows is the engine being unreachable
+    // rather than the sign-in prompt. What this test is about is that an
+    // unreachable neural engine never quietly becomes a procedural song.
+    await signIn(page)
     await page.getByLabel('Style').fill('Indonesian dangdut koplo, male vocal')
     await page.getByLabel('Lyrics').fill('[Verse]\nPagi datang hati berdebar')
     await page.getByRole('button', { name: 'Generate song' }).click()

@@ -8,6 +8,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { authorizationHeader } from '../auth/hfOAuth'
 import { createNeuralProvider, type NeuralBackend } from '../engine/providers'
 
 export type NeuralConnection = 'checking' | 'connected' | 'disconnected'
@@ -40,7 +41,9 @@ const RECHECK_MS = 20_000
 export function useNeuralEngine(): NeuralEngineStatus {
   // One provider for the life of the hook, from the one factory that builds
   // them; created lazily so the constructor does not run on every render.
-  const [provider] = useState(() => createNeuralProvider())
+  // The provider borrows the bearer per request; signing out therefore stops
+  // the next generation without the provider needing to be rebuilt.
+  const [provider] = useState(() => createNeuralProvider(undefined, { authorization: authorizationHeader }))
 
   const [connection, setConnection] = useState<NeuralConnection>('checking')
   const [hasAnswered, setHasAnswered] = useState(false)

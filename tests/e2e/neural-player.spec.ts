@@ -14,6 +14,8 @@
 
 import { test, expect, type Page, type Route } from '@playwright/test'
 
+import { signIn } from './helpers/hfSignIn'
+
 /**
  * The Space the build under test points at. Matches ACE_STEP_SPACE_URL in the
  * CI build step; a build without it skips these tests rather than failing them.
@@ -152,6 +154,9 @@ async function fakeSpace(page: Page): Promise<void> {
 async function selectNeural(page: Page): Promise<void> {
   const engines = page.getByRole('group', { name: 'Generation engine' })
   await engines.getByRole('button', { name: 'Neural', exact: true }).click()
+  // The neural engine needs a signed-in account now; this spec is about
+  // what happens afterwards.
+  await signIn(page)
 }
 
 /** Fills the brief and presses Generate. */

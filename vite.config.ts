@@ -50,6 +50,16 @@ function inlineEverything(directory: string): Plugin {
 
       let html = readFileSync(indexPath, 'utf8')
 
+      // The hosted page's CSP forbids inline script, which is the one thing
+      // this build is made of. It is dropped here rather than loosened there:
+      // a single file is opened from disk, with no origin to protect and no
+      // network for a policy to constrain, while the deployed site keeps the
+      // strict policy that actually does something.
+      html = html.replace(
+        /\n?\s*<!--[^]*?GitHub Pages serves no custom response headers[^]*?-->/,
+        '',
+      ).replace(/\n?\s*<meta\s+http-equiv="Content-Security-Policy"[^]*?\/>/, '')
+
       /** Built assets can sit at the dist root or under assets/. */
       const findAsset = (reference: string): string | null => {
         const name = reference.split('/').pop() ?? ''
@@ -169,6 +179,26 @@ export function packageVersion(root: string = projectRoot): string {
  * reading `process.env` here saw only variables exported in the shell, and a
  * setting written in `.env`, as `.env.example` says to, never arrived.
  */
+/**
+ * The sign-in settings a build may carry into the browser, and nothing else.
+ *
+ * A third allowlist, because these are neither ACE-Step settings nor build
+ * metadata. Both are public by design: an OAuth *public client* has no secret,
+ * and the client id is sent to the browser by every OAuth flow there is. The
+ * allowlist is here so that the next thing added beside them in `.env` — which
+ * may well be a secret — cannot follow them into the bundle.
+ */
+export const AUTH_SETTINGS = ['HF_CLIENT_ID', 'HF_PROVIDER_URL'] as const
+
+export function authDefines(env: Record<string, string>): Record<string, string> {
+  const set = (value: string | undefined) => (value && value.trim() ? value.trim() : undefined)
+  const defines: Record<string, string> = {}
+  for (const name of AUTH_SETTINGS) {
+    defines[`import.meta.env.VITE_${name}`] = JSON.stringify(set(env[`VITE_${name}`]) ?? '')
+  }
+  return defines
+}
+
 export function neuralDefines(env: Record<string, string>): Record<string, string> {
   // Blank counts as unset: a CI variable that was never defined arrives as an
   // empty string, and must not shadow the other spelling of the same setting.
@@ -192,6 +222,7 @@ export default defineConfig(({ mode }) => ({
     // nothing baked in at all, so a developer's `.env` — which may well point
     // at the live Space — cannot change what they see.
     ...neuralDefines(process.env.VITEST ? {} : loadEnv(mode, projectRoot, '')),
+    ...authDefines(process.env.VITEST ? {} : loadEnv(mode, projectRoot, '')),
     ...buildDefines(process.env, packageVersion()),
   },
   build: {

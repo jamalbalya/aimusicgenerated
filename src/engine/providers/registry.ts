@@ -67,9 +67,14 @@ export class MisconfiguredNeuralProvider implements NeuralMusicProvider {
  * models — are per-request in tests and per-build in the app, and a
  * module-level singleton would freeze whichever came first.
  */
-export function createNeuralProvider(choice: NeuralBackendChoice = neuralBackendChoice()): NeuralMusicProvider {
+export function createNeuralProvider(
+  choice: NeuralBackendChoice = neuralBackendChoice(),
+  options: { authorization?: () => string | undefined } = {},
+): NeuralMusicProvider {
   if (choice.problem) return new MisconfiguredNeuralProvider(choice.problem, choice.backend)
-  return choice.backend === 'zerogpu' ? new ZeroGpuProvider() : new AceStepProvider()
+  // Passed in rather than reached for, so the engine layer stays unaware of how
+  // anyone signs in and the dependency points one way only.
+  return choice.backend === 'zerogpu' ? new ZeroGpuProvider(options) : new AceStepProvider()
 }
 
 /** Builds the provider for a mode. */

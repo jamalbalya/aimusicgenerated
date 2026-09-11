@@ -13,6 +13,8 @@
 
 import { test, expect, type Page, type Route } from '@playwright/test'
 
+import { signIn } from './helpers/hfSignIn'
+
 /** Must match ACE_STEP_SPACE_URL in the build these tests run against. */
 const SPACE = 'https://fake-space.hf.space'
 const API = '/gradio_api'
@@ -147,6 +149,9 @@ async function openNeuralControls(page: Page): Promise<void> {
   await page.goto('/')
   await page.getByRole('group', { name: 'Generation engine' })
     .getByRole('button', { name: 'Neural', exact: true }).click()
+  // The neural engine needs a signed-in account now; this spec is about
+  // what happens afterwards.
+  await signIn(page)
   await requireFakeSpace(page)
   await page.getByRole('button', { name: /Show controls|Hide controls/ }).click()
 }

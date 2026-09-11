@@ -121,7 +121,9 @@ echo "==> cloning Space $SPACE_ID"
 git clone "https://huggingface.co/spaces/$SPACE_ID" "$WORK/space"
 
 echo "==> copying POC files"
-cp "$HERE/app.py" "$HERE/requirements.txt" "$HERE/README.md" "$WORK/space/"
+# guard.py is the security boundary: app.py imports it, so a deploy that
+# left it behind would not start at all.
+cp "$HERE/app.py" "$HERE/guard.py" "$HERE/requirements.txt" "$HERE/README.md" "$WORK/space/"
 mkdir -p "$WORK/space/fixtures"
 cp "$HERE/fixtures/bos-toxic-style.txt" "$HERE/fixtures/bos-toxic-lyrics.txt" "$WORK/space/fixtures/"
 

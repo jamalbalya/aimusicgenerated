@@ -223,6 +223,8 @@ export interface ZeroGpuProviderOptions {
   heartbeatTimeoutMs?: number
   /** Injectable so tests can see which session a stream belongs to. */
   sessionHash?: () => string
+  /** Supplies the signed-in visitor's bearer, when there is one. */
+  authorization?: () => string | undefined
   /** Injectable so a result can be turned into a URL outside a browser. */
   toObjectUrl?: (blob: Blob) => string
 }
@@ -254,6 +256,9 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
     this.autoDuration = this.config.autoDuration
     this.client = this.blockedReason ? undefined : new GradioClient({
       baseUrl: this.config.spaceUrl,
+      // Borrowed per request, never held: the Space is the thing that decides
+      // whether the caller may generate, and it re-checks every time.
+      ...(options.authorization ? { authorization: options.authorization } : {}),
       ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
       ...(options.requestTimeoutMs !== undefined ? { requestTimeoutMs: options.requestTimeoutMs } : {}),
       ...(options.heartbeatTimeoutMs !== undefined ? { heartbeatTimeoutMs: options.heartbeatTimeoutMs } : {}),

@@ -867,7 +867,8 @@ describe('the provider factory', () => {
     const constructing = files.filter((file) =>
       /new (AceStepProvider|ZeroGpuProvider)\(/.test(readFileSync(new URL(file, ui), 'utf8')))
     expect(constructing).toEqual([])
-    const users = files.filter((file) => readFileSync(new URL(file, ui), 'utf8').includes('createNeuralProvider()'))
+    // Matches any call, since the factory now also takes how to authorise.
+    const users = files.filter((file) => /createNeuralProvider\(/.test(readFileSync(new URL(file, ui), 'utf8')))
     expect(users.sort()).toEqual(['pages/StudioPage.tsx', 'useNeuralEngine.ts'])
   })
 })

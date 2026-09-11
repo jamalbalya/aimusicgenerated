@@ -151,6 +151,14 @@ export interface GradioSubmission {
 }
 
 export interface GradioClientOptions {
+  /**
+   * The `Authorization` header to send, asked for afresh on every request.
+   *
+   * A function rather than a value so the client never holds a token: it
+   * borrows one at the moment of sending and forgets it again, which is why
+   * signing out takes effect on the very next request.
+   */
+  authorization?: () => string | undefined
   /** The app's own origin, e.g. `https://owner-space.hf.space`. */
   baseUrl: string
   fetchImpl?: typeof fetch
@@ -254,6 +262,7 @@ export class SseParser {
 
 export class GradioClient {
   readonly baseUrl: string
+  private readonly authorization: () => string | undefined
   private readonly fetchImpl: typeof fetch
   private readonly requestTimeoutMs: number
   private readonly heartbeatTimeoutMs: number
@@ -261,6 +270,7 @@ export class GradioClient {
 
   constructor(options: GradioClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '')
+    this.authorization = options.authorization ?? (() => undefined)
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis)
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS
@@ -349,7 +359,7 @@ export class GradioClient {
 
     const joined = await this.fetchWithTimeout(`${api}/queue/join`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         data, event_data: null, fn_index: endpoint.fnIndex, trigger_id: null, session_hash: sessionHash,
       }),
@@ -410,7 +420,7 @@ export class GradioClient {
       let response: Response
       try {
         response = await this.fetchImpl(url, {
-          method: 'GET', headers: { Accept: 'text/event-stream' }, signal: controller.signal,
+          method: 'GET', headers: this.headers({ Accept: 'text/event-stream' }), signal: controller.signal,
         })
       } catch (error) {
         if (signal?.aborted) throw new GradioCancelledError()
@@ -531,6 +541,12 @@ export class GradioClient {
    * Gradio fills `url` itself as `{root}{api_prefix}/file={path}`; when a
    * payload carries only `path`, the same address is built the same way.
    */
+  /** Request headers with the bearer added, when there is one to add. */
+  private headers(base: Record<string, string> = {}): Record<string, string> {
+    const value = this.authorization()
+    return value ? { ...base, Authorization: value } : { ...base }
+  }
+
   fileUrl(file: GradioFileData, endpoint: GradioEndpoint): string {
     if (typeof file.url === 'string' && file.url) return new URL(file.url, `${this.baseUrl}/`).href
     if (typeof file.path === 'string' && file.path) return `${this.baseUrl}${endpoint.apiPrefix}/file=${file.path}`
@@ -550,7 +566,10 @@ export class GradioClient {
     if (signal?.aborted) throw new GradioCancelledError()
     let response: Response
     try {
-      response = await this.fetchImpl(url, { method: 'GET', ...(signal ? { signal } : {}) })
+      response = await this.fetchImpl(url, {
+        // The generated file is behind the same gate as the generation.
+        method: 'GET', headers: this.headers(), ...(signal ? { signal } : {}),
+      })
     } catch (error) {
       if (signal?.aborted) throw new GradioCancelledError()
       throw new GradioNetworkError(

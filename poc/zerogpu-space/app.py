@@ -48,6 +48,8 @@ import gradio as gr
 import spaces
 import torch
 
+import guard
+
 # --- configuration -----------------------------------------------------------
 
 DIT_MODEL = os.environ.get("ACE_STEP_MODEL", "acestep-v15-turbo")
@@ -188,9 +190,53 @@ _load()
 
 # --- the one GPU function -----------------------------------------------------
 
+RATE_LIMITER = guard.RateLimiter()
+
+
+def _deny(error: guard.AuthError):
+    """An `AuthError` as the failure Gradio reports, status first.
+
+    The status leads the message because the queue protocol carries a message
+    and not a status code: a caller reading the error text can still tell a
+    refusal to sign in from a refusal to admit them.
+    """
+    return gr.Error(f"{error.status}: {error.message}")
+
+
+def authorize_request(request):
+    """The gate, run by FastAPI before any handler and before any GPU.
+
+    Gradio calls this for `/queue/join`, `/queue/data`, `/call/*`, `/run/*`,
+    `/api/*` and `/file=*` — every path that costs GPU time or hands back a
+    result. Returning `None` is a 401; raising is whatever was raised. Either
+    way the generation function is never entered, so a refused request cannot
+    consume the quota.
+
+    The token is read from the real `Authorization` header of the real
+    request. It is not read from the body, which is why a caller cannot supply
+    their own identity.
+    """
+    from fastapi import HTTPException
+
+    path = request.url.path
+    if request.method == "OPTIONS" or guard.is_public_path(path):
+        # A CORS preflight carries no credentials by definition, and the public
+        # paths cost nothing and reveal nothing.
+        return "anonymous"
+    try:
+        token = guard.parse_bearer(request.headers.get("authorization"))
+        identity = guard.authorize(token)
+    except guard.AuthError as error:
+        raise HTTPException(status_code=error.status, detail=error.message)
+    return identity.username
+
+
 @spaces.GPU(duration=DECLARED_DURATION, size=GPU_SIZE)
-def generate(style, lyrics, language, vocal_gender, instrumental, duration):
+def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, duration):
     """One request in, one complete song out.
+
+    Only reached once the caller has been authenticated, authorised and their
+    inputs validated: nothing in here decides who may run it.
 
     Returns (wav_path, metadata_json). Every timing in the metadata is measured
     here, inside the GPU call, so nothing has to be extrapolated later.
@@ -297,6 +343,37 @@ def generate(style, lyrics, language, vocal_gender, instrumental, duration):
 STYLE = (SPACE_ROOT / "fixtures" / "bos-toxic-style.txt").read_text(encoding="utf8").strip()
 LYRICS = (SPACE_ROOT / "fixtures" / "bos-toxic-lyrics.txt").read_text(encoding="utf8")
 
+def generate(style, lyrics, language, vocal_gender, instrumental, duration, request: gr.Request):
+    """The generation endpoint, and the second half of the boundary.
+
+    `authorize_request` has already refused unauthenticated callers at the HTTP
+    layer. This checks again anyway, from the same server-derived header, so
+    that the handler is safe even if it is ever reached by a path that was not
+    gated — a security check that only exists in one place is one deployment
+    change away from not existing.
+
+    `request` is built by Gradio from the actual HTTP request. It is not part of
+    the six inputs and cannot be supplied by the caller, which is what makes it
+    usable as the source of identity. The body is never consulted for who the
+    caller is.
+    """
+    try:
+        token = guard.parse_bearer(request.headers.get("authorization"))
+        identity = guard.authorize(token)
+        checked = guard.validate_request(
+            style, lyrics, language, vocal_gender, instrumental, duration
+        )
+        RATE_LIMITER.check(identity.username)
+    except guard.AuthError as error:
+        # Raised before the GPU function is called, so a refusal costs nothing.
+        raise _deny(error) from None
+
+    return _generate_on_gpu(
+        checked["style"], checked["lyrics"], checked["language"],
+        checked["vocal_gender"], checked["instrumental"], checked["duration"],
+    )
+
+
 with gr.Blocks(title="ACE-Step 1.5 full-song POC") as demo:
     gr.Markdown(
         "### ACE-Step 1.5 — full-song ZeroGPU proof of concept\n"
@@ -330,4 +407,7 @@ with gr.Blocks(title="ACE-Step 1.5 full-song POC") as demo:
     )
 
 if __name__ == "__main__":
-    demo.queue().launch()
+    # `auth_dependency` is what makes this a boundary rather than a suggestion:
+    # FastAPI runs it before the queue, the call endpoints and the file route,
+    # so an unauthenticated request is refused before a GPU is ever asked for.
+    demo.queue().launch(auth_dependency=authorize_request)
