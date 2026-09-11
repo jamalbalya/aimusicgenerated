@@ -387,3 +387,31 @@ def is_public_path(path: str) -> bool:
     if path in ("/", ""):
         return True
     return any(path == suffix or path.endswith(suffix) for suffix in PUBLIC_PATH_SUFFIXES)
+
+
+def authorize_request(request):
+    """The gate, run by FastAPI before any handler and before any GPU.
+
+    Gradio calls this for `/queue/join`, `/queue/data`, `/call/*`, `/run/*`,
+    `/api/*` and `/file=*` — every path that costs GPU time or hands back a
+    result. Returning `None` is a 401; raising is whatever was raised. Either
+    way the generation function is never entered, so a refused request cannot
+    consume the quota.
+
+    The token is read from the real `Authorization` header of the real
+    request. It is not read from the body, which is why a caller cannot supply
+    their own identity.
+    """
+    from fastapi import HTTPException
+
+    path = request.url.path
+    if request.method == "OPTIONS" or is_public_path(path):
+        # A CORS preflight carries no credentials by definition, and the public
+        # paths cost nothing and reveal nothing.
+        return "anonymous"
+    try:
+        token = parse_bearer(request.headers.get("authorization"))
+        identity = authorize(token)
+    except AuthError as error:
+        raise HTTPException(status_code=error.status, detail=error.message)
+    return identity.username

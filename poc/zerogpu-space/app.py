@@ -192,6 +192,12 @@ _load()
 
 RATE_LIMITER = guard.RateLimiter()
 
+# The gate itself lives in `guard`, so it can be exercised by a real HTTP client
+# without importing this file — which would mean importing torch, ACE-Step and
+# eleven gigabytes of checkpoints. A security check that cannot be tested is a
+# security check nobody has tested.
+authorize_request = guard.authorize_request
+
 
 def _deny(error: guard.AuthError):
     """An `AuthError` as the failure Gradio reports, status first.
@@ -201,34 +207,6 @@ def _deny(error: guard.AuthError):
     refusal to sign in from a refusal to admit them.
     """
     return gr.Error(f"{error.status}: {error.message}")
-
-
-def authorize_request(request):
-    """The gate, run by FastAPI before any handler and before any GPU.
-
-    Gradio calls this for `/queue/join`, `/queue/data`, `/call/*`, `/run/*`,
-    `/api/*` and `/file=*` — every path that costs GPU time or hands back a
-    result. Returning `None` is a 401; raising is whatever was raised. Either
-    way the generation function is never entered, so a refused request cannot
-    consume the quota.
-
-    The token is read from the real `Authorization` header of the real
-    request. It is not read from the body, which is why a caller cannot supply
-    their own identity.
-    """
-    from fastapi import HTTPException
-
-    path = request.url.path
-    if request.method == "OPTIONS" or guard.is_public_path(path):
-        # A CORS preflight carries no credentials by definition, and the public
-        # paths cost nothing and reveal nothing.
-        return "anonymous"
-    try:
-        token = guard.parse_bearer(request.headers.get("authorization"))
-        identity = guard.authorize(token)
-    except guard.AuthError as error:
-        raise HTTPException(status_code=error.status, detail=error.message)
-    return identity.username
 
 
 @spaces.GPU(duration=DECLARED_DURATION, size=GPU_SIZE)
