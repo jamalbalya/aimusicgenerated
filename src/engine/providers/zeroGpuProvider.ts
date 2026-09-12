@@ -37,7 +37,8 @@ import {
 } from './aceStepRequest'
 import { spaceUrlProblem, zeroGpuConfig, type ZeroGpuConfig } from './config'
 import {
-  AuthenticationRequiredError, EngineUnavailableError, GenerationCancelledError, QuotaExceededError,
+  AccountNotAllowedError, AuthenticationRequiredError, EngineUnavailableError,
+  GenerationCancelledError, QuotaExceededError,
   type GenerateOptions, type GenerationStatus, type MusicGenerationRequest,
   type MusicGenerationResult, type NeuralMusicProvider, type NeuralProviderStatus,
 } from './types'
@@ -532,6 +533,14 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
     if (error instanceof GradioHttpError && error.status === 401) {
       return new AuthenticationRequiredError(this.id,
         `${plain(error.detail) || 'The Space would not accept this sign-in.'} (HTTP 401 from the Space.)`)
+    }
+    // 403 is the other half of the boundary, and it means something different:
+    // the Space verified this account and does not serve it. Kept apart from
+    // the 401 above because the answers differ — one needs a new sign-in, the
+    // other needs a different account, or a change to the studio's list.
+    if (error instanceof GradioHttpError && error.status === 403) {
+      return new AccountNotAllowedError(this.id,
+        `${plain(error.detail) || 'The Space does not serve this account.'} (HTTP 403 from the Space.)`)
     }
     if (context.stage === 'connect') {
       return new EngineUnavailableError(this.id, `${ZEROGPU_UNAVAILABLE_MESSAGE} (${this.unreachable(error)})`)

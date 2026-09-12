@@ -194,6 +194,24 @@ export class AuthenticationRequiredError extends Error {
 }
 
 /**
+ * Thrown when the engine knows who the caller is and will not serve them.
+ *
+ * Deliberately not an `AuthenticationRequiredError`. The sign-in worked: this
+ * account is simply not on the studio's list, and signing in again with the
+ * same account would fail in exactly the same way. Ending the session here
+ * would be worse than useless — it would hide the one fact that explains the
+ * refusal, which is *who* they are signed in as. So the session is kept, the
+ * engine's own sentence is carried, and the remedy is a decision for whoever
+ * keeps the list.
+ */
+export class AccountNotAllowedError extends Error {
+  constructor(readonly engineId: string, message: string) {
+    super(message)
+    this.name = 'AccountNotAllowedError'
+  }
+}
+
+/**
  * Thrown when the engine refused because a usage allowance is spent.
  *
  * Kept apart from ordinary failures because the remedy is different: nothing

@@ -49,6 +49,20 @@ def allows(name: str, call) -> None:
         check(name, False, f"(refused {error.status}: {error.message})")
 
 
+class FakeRequest:
+    """The parts of a Starlette request the boundary actually reads.
+
+    Headers are asked for in lower case, which is what Starlette's
+    case-insensitive mapping hands back, so a plain dict is a faithful stand-in.
+    """
+
+    def __init__(self, headers=None, host=None, path="/gradio_api/queue/join", method="POST"):
+        self.headers = headers or {}
+        self.client = type("Client", (), {"host": host})() if host else None
+        self.url = type("Url", (), {"path": path})()
+        self.method = method
+
+
 # --- identity is never taken from the caller ---------------------------------
 
 print("\nbearer parsing")
@@ -123,23 +137,52 @@ except guard.AuthError as error:
 guard.verify_identity = real_verify
 
 
+# --- exactly one account may generate ----------------------------------------
+
+print("\nonly the configured account")
+
+THE_ACCOUNT = "jamalbalya"
+guard.ALLOWED_USERS_RAW = THE_ACCOUNT
+
+# The account itself, however Hugging Face happens to capitalise it.
+for spelling in (THE_ACCOUNT, "JamalBalya", "JAMALBALYA", "jamalBalya"):
+    guard.verify_identity = stub_identity(spelling)
+    allows(f"the studio's own account is admitted as {spelling!r}",
+           lambda: guard.authorize("good"))
+
+# Everything that merely looks like it. A substring match here would be a
+# catastrophe rather than a bug — this project has already been bitten once by
+# "male" matching inside "female" — so near misses are tested explicitly.
+for imposter in ("jamalbalya2", "jamalbaly", "amalbalya", "jamal.balya", "jamal-balya",
+                 "jamalbalya-admin", "xjamalbalyax", "jamalbalya.hf", "jamal balya"):
+    guard.verify_identity = stub_identity(imposter)
+    refuses(f"{imposter!r} is not that account", 403, lambda: guard.authorize("good"))
+
+# The claim in the request loses to the answer from the network. This is the
+# whole of requirement "verify server-side": a caller who says they are the
+# owner, while holding a token that belongs to somebody else, is refused as
+# whoever the token says they are.
+guard.verify_identity = stub_identity("someone-else")
+impersonator = FakeRequest(headers={"authorization": "Bearer somebody-elses-token"})
+impersonator.username = THE_ACCOUNT       # type: ignore[attr-defined]
+impersonator.json = {"username": THE_ACCOUNT}  # type: ignore[attr-defined]
+refuses("claiming to be the owner while holding another account's token is 403", 403,
+        lambda: guard.caller_for(impersonator))
+
+# And an unverifiable token is refused before the allowlist is consulted at
+# all, so a fake bearer can never be answered with 403 instead of 401.
+guard.verify_identity = stub_identity(THE_ACCOUNT)
+refuses("a forged token is 401, not 403", 401,
+        lambda: guard.caller_for(FakeRequest(headers={"authorization": "Bearer forged"})))
+refuses("an expired token is 401, not 403", 401,
+        lambda: guard.caller_for(FakeRequest(headers={"authorization": "Bearer expired"})))
+guard.verify_identity = real_verify
+guard.ALLOWED_USERS_RAW = original_raw
+
+
 # --- a sign-in is mandatory, and no configuration lifts it --------------------
 
 print("\nmandatory sign-in")
-
-
-class FakeRequest:
-    """The parts of a Starlette request the boundary actually reads.
-
-    Headers are asked for in lower case, which is what Starlette's
-    case-insensitive mapping hands back, so a plain dict is a faithful stand-in.
-    """
-
-    def __init__(self, headers=None, host=None, path="/gradio_api/queue/join", method="POST"):
-        self.headers = headers or {}
-        self.client = type("Client", (), {"host": host})() if host else None
-        self.url = type("Url", (), {"path": path})()
-        self.method = method
 
 
 def under(require: str, allow: str, call):
@@ -179,8 +222,16 @@ refuses("nor is the header behind it", 401,
         lambda: guard.caller_for(FakeRequest(headers={"x-real-ip": "198.51.100.7"})))
 refuses("nor is the socket address", 401,
         lambda: guard.caller_for(FakeRequest(host="192.0.2.5")))
-refuses("nor is a username in the payload", 401,
-        lambda: guard.caller_for(FakeRequest(headers={"x-forwarded-for": "203.0.113.9"})))
+# Anything else hanging off the request is not identity either. `caller_for`
+# reads one header; a body, a query string or an attribute Gradio happens to
+# expose are all things the caller wrote.
+claimed = FakeRequest(headers={"x-forwarded-for": "203.0.113.9"})
+claimed.username = "jamalbalya"          # type: ignore[attr-defined]
+claimed.user_id = "jamalbalya"           # type: ignore[attr-defined]
+claimed.oauth_token = "hf_forged"        # type: ignore[attr-defined]
+claimed.json = {"username": "jamalbalya", "oauth_token": "hf_forged"}  # type: ignore[attr-defined]
+refuses("a username asserted on the request is not a credential", 401,
+        lambda: guard.caller_for(claimed))
 for header in ("Bearer ", "Bearer", "Basic nonsense", "Token abc", "hf_looks_real"):
     refuses(f"{header!r} is refused rather than read generously", 401,
             lambda h=header: guard.caller_for(FakeRequest(headers={"authorization": h})))

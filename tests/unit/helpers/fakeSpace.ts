@@ -135,6 +135,11 @@ export interface SpaceScript {
   join?: Reply
   /** Raw stream chunks; defaults to the successful job. */
   stream?: string[]
+  /**
+   * Answers the stream request itself rather than serving chunks — the only
+   * way to give it a status, which a refusal mid-run has and chunks cannot.
+   */
+  streamReply?: Reply
   /** Leave the stream open after the last chunk, as a stalled connection does. */
   hang?: boolean
   file?: Reply
@@ -181,6 +186,7 @@ export function fakeSpace(script: SpaceScript = {}) {
       return reply(script.join, () => json({ event_id: EVENT_ID }))
     }
     if (url.startsWith(`${api}/queue/data?session_hash=`)) {
+      if (script.streamReply !== undefined) return reply(script.streamReply, () => json({}))
       const encoder = new TextEncoder()
       const chunks = script.stream ?? sse([
         ...SUCCESS_STREAM.slice(0, -2),

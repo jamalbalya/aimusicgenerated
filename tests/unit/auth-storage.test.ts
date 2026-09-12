@@ -87,6 +87,59 @@ describe('the sign-in writes to no storage', () => {
   })
 })
 
+describe('the password is typed on Hugging Face, and nowhere else', () => {
+  const executable = code(AUTH_SOURCE)
+
+  it('this application has no password field at all', () => {
+    // The requirement is not "our password form is careful". It is that the
+    // password never reaches this origin, so the only safe number of password
+    // fields in this source tree is none.
+    const source: string[] = []
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name)
+        if (entry.isDirectory()) walk(path)
+        else if (/\.(ts|tsx|html|css)$/.test(entry.name)) source.push(readFileSync(path, 'utf8'))
+      }
+    }
+    walk(new URL('../../src/', import.meta.url).pathname)
+    const executableSource = source.map(code).join('\n')
+    for (const shape of [
+      /type=["']password["']/,
+      /autocomplete=["'](current|new)-password["']/,
+      /\bpassword\b/i,
+      /\bcredentials\.password\b/,
+    ]) {
+      expect(executableSource, `${shape} must not appear in the frontend`).not.toMatch(shape)
+    }
+  })
+
+  it('sends the visitor to the provider to type it, over https', () => {
+    // The authorize endpoint is Hugging Face's own, discovered from its
+    // OpenID document, and anything that is not https is refused in favour of
+    // the documented path — so the login page cannot be moved by an answer.
+    expect(executable).toContain('/.well-known/openid-configuration')
+    expect(executable).toContain('/oauth/authorize')
+    expect(executable).toMatch(/startsWith\('https:\/\/'\)/)
+  })
+
+  it('proves possession with PKCE rather than with any secret of its own', () => {
+    expect(executable).toContain("code_challenge_method: 'S256'")
+    expect(executable).toContain('code_verifier')
+    expect(executable).toContain("response_type: 'code'")
+    expect(executable).not.toContain('client_secret')
+  })
+
+  it('asks Hugging Face for the smallest thing that names the account', () => {
+    // Enough to learn the username the Space checks, and nothing that could
+    // write to the account or read a repository.
+    expect(AUTH_SOURCE).toMatch(/SCOPES\s*=\s*'openid profile'/)
+    for (const scope of ['write', 'repo', 'inference', 'email ']) {
+      expect(AUTH_SOURCE.match(new RegExp(`SCOPES = '[^']*${scope}`))).toBeNull()
+    }
+  })
+})
+
 describe('nothing else in the app reaches for the token', () => {
   it('only the two known places ask for the header', () => {
     const root = new URL('../../src/', import.meta.url).pathname

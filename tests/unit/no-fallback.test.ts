@@ -279,6 +279,8 @@ describe('a failed ZeroGPU generation never reaches the procedural engine', () =
       { file: () => new Response(wav(30), { headers: { 'Content-Type': 'audio/wav' } }) }, {}, {}, {}],
     ['the Space refused the sign-in',
       { join: new Response('{"detail":"That Hugging Face sign-in is no longer valid. Sign in again."}', { status: 401 }) }, {}, {}, {}],
+    ['the Space refused the account',
+      { join: new Response('{"detail":"This Hugging Face account is not approved for this studio."}', { status: 403 }) }, {}, {}, {}],
     ['the file that came back is not a WAV',
       { file: () => new Response(new Uint8Array(8192).fill(7), { headers: { 'Content-Type': 'audio/wav' } }) }, {}, {}, {}],
     ['the job ran out of time', { stream: [], hang: true }, { jobTimeoutMs: 30 }, { heartbeatTimeoutMs: 10_000 }, {}],

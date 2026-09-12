@@ -13,7 +13,8 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import {
-  AceStepProvider, AuthenticationRequiredError, EngineUnavailableError, GenerationCancelledError,
+  AccountNotAllowedError, AceStepProvider, AuthenticationRequiredError,
+  EngineUnavailableError, GenerationCancelledError,
   GradioClient, GradioProtocolError,
   MisconfiguredNeuralProvider, ProceduralMusicProvider, QuotaExceededError, SseParser,
   ZeroGpuError, ZeroGpuProvider, ENGINE_UNAVAILABLE_MESSAGE, ZEROGPU_UNAVAILABLE_MESSAGE,
@@ -513,14 +514,42 @@ describe('a refused sign-in is its own answer', () => {
 
   it('keeps an account that is merely not approved apart from a bad sign-in', async () => {
     // 403 is a different thing: the sign-in is fine, the person is not on the
-    // list. Ending their session would be the wrong answer, so it stays an
-    // ordinary refusal — with the Space's sentence and status still shown.
+    // list. Its own error, so the studio can keep the session and say which
+    // account was refused rather than offering a sign-in that would not help.
     const refused = 'This Hugging Face account is not approved for this studio.'
     const { provider } = zeroGpu({ join: () => json({ detail: refused }, 403) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'http-error')
+    const error = await failure(provider.generate(BOS_TOXIC))
+    expect(error).toBeInstanceOf(AccountNotAllowedError)
+    expect(error).not.toBeInstanceOf(AuthenticationRequiredError)
     expect(error.message).toContain(refused)
     expect(error.message).toContain('HTTP 403')
-    expect(error).not.toBeInstanceOf(AuthenticationRequiredError)
+  })
+
+  it('recognises a refused account wherever in the run it is refused', async () => {
+    // The allowlist is checked on every request, not once per session, so the
+    // answer can arrive while streaming or while fetching the finished file.
+    for (const script of [
+      { streamReply: () => json({ detail: 'nope' }, 403) },
+      { file: () => json({ detail: 'nope' }, 403) },
+    ]) {
+      const { provider } = zeroGpu(script)
+      expect(await failure(provider.generate(BOS_TOXIC))).toBeInstanceOf(AccountNotAllowedError)
+    }
+  })
+
+  it('does not end the session for an account the Space will not serve', () => {
+    // Signing out here would delete the one fact that explains the refusal —
+    // which account they are signed in as — and signing in again with it would
+    // fail identically. So the page shows it and keeps the session.
+    const studio = readFileSync(new URL('../../src/ui/pages/StudioPage.tsx', import.meta.url), 'utf8')
+    expect(studio).toContain('if (error instanceof AccountNotAllowedError) throw error')
+    // The only signOut() in the file is the one for a refused sign-in.
+    expect(studio.match(/signOut\(\)/g)).toHaveLength(1)
+    const refusedAccount = studio.indexOf('AccountNotAllowedError) throw error')
+    const signsOut = studio.indexOf('signOut()')
+    expect(signsOut).toBeLessThan(refusedAccount)
+    // And it reaches the page rather than only a toast that clears itself.
+    expect(studio).toMatch(/\|\| error instanceof AccountNotAllowedError\) \{\s*\n\s*setEngineError\(message\)/)
   })
 
   it('signs every gated request, and leaves the public one alone', async () => {

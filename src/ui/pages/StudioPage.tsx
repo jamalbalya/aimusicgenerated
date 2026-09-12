@@ -32,8 +32,8 @@ import { useAuth } from '../useAuth'
 import { authorizationHeader, signOut } from '../../auth/hfOAuth'
 import { decodeWav } from '../../engine/audio/wav'
 import {
-  AuthenticationRequiredError, createNeuralProvider, EngineUnavailableError,
-  GenerationCancelledError, QuotaExceededError,
+  AccountNotAllowedError, AuthenticationRequiredError, createNeuralProvider,
+  EngineUnavailableError, GenerationCancelledError, QuotaExceededError,
   engineLabel, resolveEngineMode, VERIFIED_ZEROGPU_DURATION,
   type EngineMode, type GenerationStatus, type NeuralBackend,
 } from '../../engine/providers'
@@ -393,6 +393,10 @@ export default function StudioPage() {
             signOut()
             throw error
           }
+          // A refused *account* is not a refused sign-in: the session stays,
+          // because who they are signed in as is the explanation. Every later
+          // take would be refused for the same reason, so the run ends here.
+          if (error instanceof AccountNotAllowedError) throw error
           const message = error instanceof Error ? error.message : String(error)
           failures.push(`Take ${index + 1}: ${message}`)
           // A spent allowance is spent for every take after this one too, and
@@ -430,7 +434,9 @@ export default function StudioPage() {
       // Both of these need reading and acting on, so they stay on the page
       // instead of only passing through a toast that clears itself: the engine
       // being absent, and the Space refusing the sign-in this page was holding.
-      if (error instanceof EngineUnavailableError || error instanceof AuthenticationRequiredError) {
+      if (error instanceof EngineUnavailableError
+          || error instanceof AuthenticationRequiredError
+          || error instanceof AccountNotAllowedError) {
         setEngineError(message)
       }
       notify(message, 'error')

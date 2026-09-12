@@ -147,6 +147,49 @@ test.describe('generating needs an account', () => {
       .toEqual([`Bearer ${TEST_HF_TOKEN}`])
   })
 
+  test('an account the Space will not serve is told so, and stays signed in', async ({ page }) => {
+    // The other half of the boundary. This visitor signed in correctly; they
+    // are simply not the account the studio serves, so the Space answers 403.
+    // Signing them out would delete the one fact that explains it.
+    const refused = 'This Hugging Face account is not approved for this studio.'
+    let joins = 0
+    await page.route(`${SPACE}/**`, async (route: Route) => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/config') {
+        return route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({
+            version: '6.2.0', protocol: 'sse_v3', api_prefix: API, root: SPACE,
+            dependencies: [{ id: 0, api_name: 'generate_music', queue: true, api_visibility: 'public', backend_fn: true }],
+          }),
+        })
+      }
+      if (path.includes('/queue/join')) joins += 1
+      return route.fulfill({
+        status: 403, contentType: 'application/json', body: JSON.stringify({ detail: refused }),
+      })
+    })
+
+    await openNeural(page)
+    await describeSong(page)
+    await signIn(page)
+    await page.getByRole('button', { name: /^(Generate song|Generating…)$/ }).click()
+
+    // The Space's own sentence, on the page rather than in a toast that goes.
+    await expect(page.getByRole('alert').filter({ hasText: refused }))
+      .toBeVisible({ timeout: 60_000 })
+    await expect(page.getByRole('alert').filter({ hasText: /HTTP 403/ })).toBeVisible()
+
+    // Still signed in: the session is valid, and who it belongs to is the
+    // explanation. No sign-in is offered, because signing in again is not it.
+    await expect(page.getByTestId('hf-auth')).toContainText(TEST_HF_USERNAME)
+    await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
+    await expect(page.getByTestId('hf-signin-required')).toHaveCount(0)
+
+    // And it was asked once, not once per take.
+    expect(joins, 'the refusal ended the run instead of being retried').toBe(1)
+  })
+
   test('the offline engine is never blocked, because it asks for nobody', async ({ page }) => {
     const space = await fakeSpace(page)
     await openNeural(page)
