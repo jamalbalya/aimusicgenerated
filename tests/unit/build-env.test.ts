@@ -151,8 +151,11 @@ describe('the build identifies itself', () => {
 /* -------------------------------------------------------- signing in ----- */
 
 describe('the bundle carries the sign-in settings and nothing else', () => {
-  it('allows exactly two, neither of them a secret', () => {
-    expect([...AUTH_SETTINGS].sort()).toEqual(['HF_CLIENT_ID', 'HF_PROVIDER_URL'])
+  it('allows exactly three, none of them a secret', () => {
+    // The third is the allowlist the login page reads. A username is public —
+    // it is on the account's own page — and the decision that matters is made
+    // by the Space, which keeps its own copy where a browser cannot reach it.
+    expect([...AUTH_SETTINGS].sort()).toEqual(['HF_ALLOWED_USERS', 'HF_CLIENT_ID', 'HF_PROVIDER_URL'])
     // A *public* client has no secret. Anything secret-shaped appearing beside
     // these would be a different kind of value that must never be baked in.
     expect(AUTH_SETTINGS.filter((name) => /SECRET|TOKEN|PASSWORD|PRIVATE/.test(name))).toEqual([])

@@ -54,6 +54,12 @@ jobs:
           # it is a fixture, not a credential. The deployed build takes the real
           # one from a repository variable, in deploy.yml.
           VITE_HF_CLIENT_ID: not-a-real-oauth-client-id
+          # The studio is private to one account, and the suite signs in as that
+          # account through a stand-in. Matches TEST_HF_USERNAME in
+          # tests/e2e/helpers/hfSignIn.ts; a build without it would admit the
+          # stand-in anyway, and the test for "another account is kept out"
+          # would then pass for the wrong reason.
+          VITE_HF_ALLOWED_USERS: jamalbalya
 
       - name: Build the standalone single-file bundle
         run: npm run build:single

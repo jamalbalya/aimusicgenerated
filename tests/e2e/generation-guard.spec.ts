@@ -169,12 +169,12 @@ async function requireFakeSpace(page: Page): Promise<void> {
 
 /** Selects the neural engine and fills a brief, without pressing anything. */
 async function readyToGenerate(page: Page): Promise<void> {
+  // The whole studio is private, so signing in comes before there is an
+  // engine to choose; this spec is about what happens afterwards.
   await page.goto('/')
+  await signIn(page)
   await page.getByRole('group', { name: 'Generation engine' })
     .getByRole('button', { name: 'Neural', exact: true }).click()
-  // The neural engine needs a signed-in account now; this spec is about
-  // what happens afterwards.
-  await signIn(page)
   await requireFakeSpace(page)
   await page.getByLabel('Style').fill('Indonesian dangdut koplo, dramatic male vocal')
   await page.getByLabel('Lyrics').fill('Pagi datang hati berdebar\nBelum kerja sudah mulai gemetar')

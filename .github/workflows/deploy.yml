@@ -130,6 +130,31 @@ jobs:
             echo "Sign-in: Hugging Face OAuth public client is configured."
           fi
 
+      # Which account the login page admits. The Space decides who may generate;
+      # this decides who is shown the application at all, and an empty value
+      # means "anyone who signs in", which is not what a private studio wants.
+      - name: Check who the studio is private to
+        env:
+          VITE_HF_ALLOWED_USERS: ${{ vars.VITE_HF_ALLOWED_USERS }}
+        run: |
+          if [ -z "$VITE_HF_ALLOWED_USERS" ]; then
+            {
+              echo "### VITE_HF_ALLOWED_USERS is not set"
+              echo
+              echo "The login page will admit **any** Hugging Face account that signs in."
+              echo "Generation is still refused by the Space to everyone outside its own"
+              echo "\`ALLOWED_HF_USERS\`, so nothing can be spent — but the tools that run"
+              echo "in the browser would be visible to a stranger."
+              echo
+              echo "**Settings → Secrets and variables → Actions → Variables → VITE_HF_ALLOWED_USERS**"
+              echo
+              echo "Set it to the same value as the Space secret, e.g. \`jamalbalya\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::VITE_HF_ALLOWED_USERS is not set; the login page will admit any Hugging Face account."
+          else
+            echo "Private to: $VITE_HF_ALLOWED_USERS (the Space enforces its own copy)"
+          fi
+
       - name: Build
         # The site is served from https://<owner>.github.io/<repo>/, so every
         # asset URL has to be prefixed with the repository name.
@@ -154,6 +179,13 @@ jobs:
           # above. Public by design and safe in the bundle; there is no client
           # secret anywhere in this workflow, the bundle or the frontend.
           VITE_HF_CLIENT_ID: ${{ vars.VITE_HF_CLIENT_ID }}
+          # Who the login page lets into the application. A username, not a
+          # secret — it is on the account's own public page — and not the
+          # decision that matters: the Space keeps its own copy in
+          # ALLOWED_HF_USERS and checks it against a token it verifies itself.
+          # Unset would show the application to any verified account, so the
+          # step below says so rather than leaving it quiet.
+          VITE_HF_ALLOWED_USERS: ${{ vars.VITE_HF_ALLOWED_USERS }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

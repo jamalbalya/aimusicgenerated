@@ -543,8 +543,10 @@ describe('a refused sign-in is its own answer', () => {
     // fail identically. So the page shows it and keeps the session.
     const studio = readFileSync(new URL('../../src/ui/pages/StudioPage.tsx', import.meta.url), 'utf8')
     expect(studio).toContain('if (error instanceof AccountNotAllowedError) throw error')
-    // The only signOut() in the file is the one for a refused sign-in.
-    expect(studio.match(/signOut\(\)/g)).toHaveLength(1)
+    // The only sign-out in the file is the one for a refused sign-in, and it
+    // carries the reason so the login page can say why the session ended.
+    expect(studio.match(/signOut\(/g)).toHaveLength(1)
+    expect(studio).toContain('signOut(error.message)')
     const refusedAccount = studio.indexOf('AccountNotAllowedError) throw error')
     const signsOut = studio.indexOf('signOut()')
     expect(signsOut).toBeLessThan(refusedAccount)
@@ -578,7 +580,7 @@ describe('a refused sign-in is its own answer', () => {
     // page that kept saying "Signed in" over a token already refused would send
     // the same person into the same failure on every press.
     const studio = readFileSync(new URL('../../src/ui/pages/StudioPage.tsx', import.meta.url), 'utf8')
-    expect(studio).toMatch(/if \(error instanceof AuthenticationRequiredError\) \{\s*\n\s*signOut\(\)/)
+    expect(studio).toMatch(/if \(error instanceof AuthenticationRequiredError\) \{[\s\S]{0,400}?signOut\(error\.message\)/)
     // Taken straight from the auth module, so the identity of the function
     // cannot change between renders and the callback needs no dependency on it.
     expect(studio).toContain("import { authorizationHeader, signOut } from '../../auth/hfOAuth'")
@@ -612,24 +614,42 @@ describe('the neural engine is closed to anyone who has not signed in', () => {
     expect(studio()).toMatch(/\}, \[busy, engineMode, generate, generateNeural, clearNeural, auth\.status, notify\]\)/)
   })
 
-  it('disables both generate controls, and only for the neural engine', () => {
-    const source = studio()
-    expect(source).toContain("const needsSignIn = engineMode === 'neural' && auth.status !== 'signed-in'")
-    expect(source).toContain('disabled={busy || needsSignIn}')
-    expect(source).toContain('disabled={needsSignIn || (engineMode === \'neural\' ? neuralTakes.length === 0 : !result)}')
-  })
-
-  it('shows a blocking panel rather than only grey buttons', () => {
-    const source = studio()
-    expect(source).toContain('data-testid="hf-signin-required"')
-    expect(source).toMatch(/needsSignIn && \(/)
-    expect(source).toContain('Sign in with Hugging Face to use the neural engine.')
+  it('is not the gate: the application itself does not render without one', () => {
+    // The studio used to grey its own buttons. The whole application is private
+    // now, so the shell is never mounted for a signed-out visitor and there are
+    // no buttons to grey — which is why this checks App rather than the page.
+    const app = readFileSync(new URL('../../src/App.tsx', import.meta.url), 'utf8')
+    expect(app).toMatch(/if \(auth\.status !== 'signed-in' \|\| !mayEnter\(auth\.identity\?\.username\)\) \{\s*\n\s*return <LoginPage auth=\{auth\} \/>/)
+    // The shell is a separate component, so none of its hooks or effects run
+    // until that check has passed.
+    expect(app).toContain('return <Shell />')
+    expect(app).toMatch(/^function Shell\(\)/m)
+    // And the studio no longer carries a gate of its own to drift out of step.
+    const studio = readFileSync(new URL('../../src/ui/pages/StudioPage.tsx', import.meta.url), 'utf8')
+    expect(studio).not.toContain('needsSignIn')
+    expect(studio).not.toContain('hf-signin-required')
   })
 
   it('makes no claim that a signed-out visitor can generate', () => {
     const source = studio()
     expect(source).not.toContain('open to everyone')
     expect(source).not.toMatch(/Sign in only if/)
+  })
+
+  it('keeps the offline engine behind the same door', () => {
+    // Requirement, and easy to get wrong: the procedural engine costs nobody
+    // anything, so it is tempting to leave it reachable. It is not reachable,
+    // because nothing is — the gate is in front of the whole shell.
+    const app = readFileSync(new URL('../../src/App.tsx', import.meta.url), 'utf8')
+    const gate = app.indexOf('return <LoginPage auth={auth} />')
+    expect(gate).toBeGreaterThan(-1)
+    expect(app.indexOf('return <Shell />')).toBeGreaterThan(gate)
+    // No tool is rendered above it: the one place a route becomes a page is
+    // inside the shell, which is only reached once the gate has been passed.
+    // (`routeElement` is *defined* at the top of the file; what matters is
+    // where it is called.)
+    expect(app.indexOf('routeElement(path)')).toBeGreaterThan(gate)
+    expect(app.match(/routeElement\(path\)/g)).toHaveLength(1)
   })
 })
 

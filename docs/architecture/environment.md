@@ -50,6 +50,7 @@ Actions → Variables:
 |---|---|---|
 | `ACE_STEP_SPACE_URL` | yes | `https://<owner>-<space>.hf.space` |
 | `VITE_HF_CLIENT_ID` | yes | the Hugging Face OAuth application's client id |
+| `VITE_HF_ALLOWED_USERS` | yes | who the login page admits, e.g. `jamalbalya`. Unset admits any verified account |
 | `ACE_STEP_BACKEND` | no | overrides `zerogpu` |
 | `ACE_STEP_SPACE_AUTO_DURATION`, `ACE_STEP_SPACE_MAX_DURATION`, `ACE_STEP_SPACE_TIMEOUT_SECONDS` | no | as above |
 
@@ -78,6 +79,41 @@ the Space as `ALLOWED_HF_USERS`, where the browser cannot read or change it.
 Signing in proves who you are; the Space alone decides what that entitles you
 to. Nothing in this table is a security control: the gate is the Space's, and
 the studio's own refusal of a signed-out visitor is a courtesy in front of it.
+
+### The login page's allowlist
+
+`VITE_HF_ALLOWED_USERS` decides who is *shown the application*. It is a
+username, which is public, so it is a variable and belongs in the bundle.
+
+It is not the security boundary and must not be mistaken for one: this is a
+static site, so its JavaScript can be read and its checks removed by anyone who
+cares to. What that would get them is the offline tools running in their own
+browser at their own expense. Everything that costs anything is refused by the
+Space, which verifies the token against Hugging Face and checks its own
+`ALLOWED_HF_USERS` on every request.
+
+Keep the two the same. Different values are not dangerous — the Space still
+decides — but they are confusing: an account admitted here and refused there
+gets an application in which nothing works.
+
+### The OAuth redirect URI
+
+Not a setting, because it cannot be one: an OAuth provider only sends a code to
+a URI registered against the client id, character for character. The registered
+one is the site root **with its trailing slash**:
+
+```
+https://jamalbalya.github.io/aimusicgenerated/     accepted
+https://jamalbalya.github.io/aimusicgenerated      Invalid redirect_uri
+https://jamalbalya.github.io/aimusicgenerated/auth/callback   Invalid redirect_uri
+```
+
+So the app builds it from Vite's `BASE_URL` and always ends it in exactly one
+slash (`buildRedirectUri` in `src/auth/hfOAuth.ts`), and the popup comes back to
+the application root rather than to a route of its own. A local build sends
+`http://localhost:5173/`, which is not registered — sign-in works against the
+stand-in in the tests, not against the real Hugging Face, unless that address is
+registered too.
 
 ### The Space's own variables
 

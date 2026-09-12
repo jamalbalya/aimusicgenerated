@@ -390,7 +390,10 @@ export default function StudioPage() {
           // above a button that can only fail. The next take would be refused
           // for the same reason, so the run stops here too.
           if (error instanceof AuthenticationRequiredError) {
-            signOut()
+            // Carried out of the session, because ending it closes this page:
+            // the login screen shows this sentence instead of appearing for no
+            // stated reason.
+            signOut(error.message)
             throw error
           }
           // A refused *account* is not a refused sign-in: the session stays,
@@ -534,16 +537,6 @@ export default function StudioPage() {
       inFlight.current = false
     }
   }, [busy, engineMode, generate, generateNeural, clearNeural, auth.status, notify])
-
-  /**
-   * True when the neural engine is chosen and nobody has signed in.
-   *
-   * Generating is blocked while this holds. The Space requires a Hugging Face
-   * account, so a signed-out visitor has nothing to gain from the request and
-   * would get an error for an answer; the offline engine is still right there
-   * and asks for nothing.
-   */
-  const needsSignIn = engineMode === 'neural' && auth.status !== 'signed-in'
 
   const cancelGeneration = useCallback(() => {
     if (neuralController) {
@@ -874,38 +867,17 @@ export default function StudioPage() {
                   Re-check
                 </button>
               </p>
-              {/* Signing in is only for the neural engine: the offline one runs
-                  here and answers to nobody. The Space decides whether an
-                  account may generate — this is how you hand it one to ask
-                  about, and what it says here is never the reason it agrees.
-                  Signing in is required, not offered: the Space generates only
-                  for an account it can name. This line is the status; the
-                  blocking panel further down is what asks. */}
+              {/* Who the Space will be asked as. The sign-in itself happens at
+                  the door — the application does not render at all without one
+                  — so this is a reminder of which account is about to spend a
+                  GPU allowance, not a control. Signing out is in the sidebar,
+                  where it belongs: it closes every tool, not only this one. */}
               {engineMode === 'neural' && (
                 <p className="flex flex-wrap items-center gap-2 text-[12px] text-[var(--text-dim)]"
                    data-testid="hf-auth">
-                  {auth.status === 'signed-in' ? (
-                    <>
-                      <span>Signed in to Hugging Face as <strong>{auth.identity?.username}</strong>.</span>
-                      <button type="button" className="btn btn-ghost btn-sm" onClick={auth.signOut}>
-                        Sign out
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      {/* Status only. The one sign-in button lives in the
-                          blocking panel below, both because that is where a
-                          visitor is stopped and so that there is exactly one
-                          control with this name on the page. */}
-                      <span>
-                        {auth.configured
-                          ? 'Not signed in. The neural engine needs a Hugging Face account.'
-                          : 'Signing in is not configured in this build, so the neural engine cannot be used.'}
-                      </span>
-                    </>
-                  )}
+                  <span>Generating as <strong>{auth.identity?.username}</strong> on Hugging Face.</span>
                   {auth.problem && <span className="text-[var(--bad,#f87171)]">{auth.problem}</span>}
-                  <span className="opacity-70">Signing out here does not stop a song already being made.</span>
+                  <span className="opacity-70">Signing out does not stop a song already being made.</span>
                 </p>
               )}
             </div>
@@ -937,48 +909,11 @@ export default function StudioPage() {
             </div>
           )}
 
-          {/* The sign-in requirement, said where the refusal would happen
-              rather than only in the dim line above the engine switch. It sits
-              in front of the Generate button on purpose: a visitor should read
-              why they cannot generate before they try, and be one click from
-              fixing it. */}
-          {needsSignIn && (
-            <div className="grid gap-2 rounded-[10px] border border-[var(--line)] p-3"
-                 role="note" data-testid="hf-signin-required">
-              <p className="text-[13px]">
-                <strong>Sign in with Hugging Face to use the neural engine.</strong>{' '}
-                {auth.configured
-                  ? 'It runs on a Hugging Face Space that generates only for a signed-in account.'
-                  : 'Signing in is not configured in this build, so the neural engine cannot be used here.'}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {auth.configured && (
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-primary"
-                    onClick={auth.signIn}
-                    disabled={auth.status === 'signing-in'}
-                  >
-                    {auth.status === 'signing-in' ? 'Signing in…' : 'Sign in with Hugging Face'}
-                  </button>
-                )}
-                <button type="button" className="btn btn-sm"
-                  onClick={() => chooseEngine('procedural')}>
-                  Use Offline Procedural Mode
-                </button>
-              </div>
-              <p className="text-[12px] text-[var(--text-dim)]">
-                The offline engine needs no account and runs in this browser.
-              </p>
-            </div>
-          )}
-
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               className="btn btn-primary min-w-[150px]"
-              disabled={busy || needsSignIn}
-              title={needsSignIn ? 'Sign in with Hugging Face to use the neural engine' : undefined}
+              disabled={busy}
               onClick={() => void generateSong()}
             >
               {busy ? 'Generating…' : 'Generate song'}
@@ -989,10 +924,8 @@ export default function StudioPage() {
               <button
                 type="button"
                 className="btn"
-                disabled={needsSignIn || (engineMode === 'neural' ? neuralTakes.length === 0 : !result)}
-                title={needsSignIn
-                  ? 'Sign in with Hugging Face to use the neural engine'
-                  : 'Same settings, a different take'}
+                disabled={engineMode === 'neural' ? neuralTakes.length === 0 : !result}
+                title="Same settings, a different take"
                 onClick={() => void generateSong(`${Date.now()}-${Math.random()}`)}
               >
                 <Icon name="dice" size={14} />

@@ -184,6 +184,7 @@ test.describe('a finished neural take reaches the player', () => {
   test('loads into the transport, and Play plays it', async ({ page }) => {
     await fakeSpace(page)
     await page.goto('/')
+    await signIn(page)
     await selectNeural(page)
     await requireFakeSpace(page)
 
@@ -232,6 +233,7 @@ test.describe('a finished neural take reaches the player', () => {
     })
     await fakeSpace(page)
     await page.goto('/')
+    await signIn(page)
     await selectNeural(page)
     await requireFakeSpace(page)
 

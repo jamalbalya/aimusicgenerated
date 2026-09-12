@@ -188,7 +188,7 @@ export function packageVersion(root: string = projectRoot): string {
  * allowlist is here so that the next thing added beside them in `.env` — which
  * may well be a secret — cannot follow them into the bundle.
  */
-export const AUTH_SETTINGS = ['HF_CLIENT_ID', 'HF_PROVIDER_URL'] as const
+export const AUTH_SETTINGS = ['HF_CLIENT_ID', 'HF_PROVIDER_URL', 'HF_ALLOWED_USERS'] as const
 
 export function authDefines(env: Record<string, string>): Record<string, string> {
   const set = (value: string | undefined) => (value && value.trim() ? value.trim() : undefined)

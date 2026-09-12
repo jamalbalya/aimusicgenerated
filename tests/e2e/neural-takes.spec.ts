@@ -158,6 +158,7 @@ test.describe('the free GPU writes one take per run', () => {
   test('asks the Space for one generation however many takes are set', async ({ page }) => {
     const space = await fakeSpace(page)
     await page.goto('/')
+    await signIn(page)
     await page.getByRole('group', { name: 'Generation engine' })
       .getByRole('button', { name: 'Neural', exact: true }).click()
   // The neural engine needs a signed-in account now; this spec is about
@@ -201,6 +202,7 @@ test.describe('the free GPU writes one take per run', () => {
     // past one before the hint can be caught making it.
     const space = await fakeSpace(page)
     await page.goto('/')
+    await signIn(page)
     await page.getByRole('group', { name: 'Generation engine' })
       .getByRole('button', { name: 'Neural', exact: true }).click()
   // The neural engine needs a signed-in account now; this spec is about
@@ -225,6 +227,7 @@ test.describe('the offline engine keeps its takes', () => {
     // a backend at all — the offline engine renders on the device.
     const space = await fakeSpace(page)
     await page.goto('/')
+    await signIn(page)
     await page.getByRole('group', { name: 'Generation engine' })
       .getByRole('button', { name: 'Offline Procedural' }).click()
     await page.getByRole('button', { name: /Show controls|Hide controls/ }).click()

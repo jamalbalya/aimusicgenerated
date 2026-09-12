@@ -107,23 +107,38 @@ async function watchSpace(page: Page): Promise<{ authHeaders: () => (string | un
   return { authHeaders: () => authHeaders }
 }
 
-/** Skips when the build under test was not pointed at the stand-ins. */
-async function requireFakes(page: Page): Promise<void> {
-  const ready = await page.evaluate(() => ({
-    space: document.body.innerText.includes('fake-space.hf.space'),
-    client: Boolean(document.querySelector('[data-testid="hf-auth"]')),
-  }))
-  test.skip(!ready.space,
-    'This build does not point at the fake Space. Rebuild with '
-    + 'ACE_STEP_BACKEND=zerogpu ACE_STEP_SPACE_URL=https://fake-space.hf.space.')
-  test.skip(!ready.client, 'The sign-in control is not on the page; VITE_HF_CLIENT_ID may be unset.')
+/** Skips when the build under test cannot sign in at all. */
+async function requireSignIn(page: Page): Promise<void> {
+  const ready = await page.evaluate(() =>
+    Boolean(document.querySelector('[data-testid="login-page"]'))
+    && document.body.innerText.includes('Sign in with Hugging Face'))
+  test.skip(!ready, 'This build has no sign-in control; VITE_HF_CLIENT_ID may be unset.')
 }
 
-async function openNeural(page: Page): Promise<void> {
+/** Skips when the signed-in build was not pointed at the stand-in Space. */
+async function requireFakeSpace(page: Page): Promise<void> {
+  const ready = await page.evaluate(() => document.body.innerText.includes('fake-space.hf.space'))
+  test.skip(!ready,
+    'This build does not point at the fake Space. Rebuild with '
+    + 'ACE_STEP_BACKEND=zerogpu ACE_STEP_SPACE_URL=https://fake-space.hf.space.')
+}
+
+/**
+ * Loads the login page, which is all a signed-out visitor gets.
+ *
+ * The engine cannot be chosen from here: the application does not exist until
+ * the sign-in these tests are about has happened.
+ */
+async function openLogin(page: Page): Promise<void> {
   await page.goto('/')
+  await requireSignIn(page)
+}
+
+/** Selects the neural engine, once the application is open. */
+async function openNeural(page: Page): Promise<void> {
   await page.getByRole('group', { name: 'Generation engine' })
     .getByRole('button', { name: 'Neural', exact: true }).click()
-  await requireFakes(page)
+  await requireFakeSpace(page)
 }
 
 /** Everywhere a credential could have been left, read from the live page. */
@@ -150,13 +165,12 @@ test.describe('signing in keeps nothing', () => {
     // provider routes too.
     context.on('page', (popup) => { void fakeProvider(popup) })
 
-    await openNeural(page)
-    await expect(page.getByTestId('hf-auth')).toContainText(/Not signed in/i)
+    await openLogin(page)
+    // Nothing but the login page yet: this is the moment before a sign-in.
+    await expect(page.getByTestId('login-page')).toBeVisible()
 
     await page.getByRole('button', { name: /Sign in with Hugging Face/ }).click()
-    await expect(page.getByTestId('hf-auth')).toContainText(`Signed in to Hugging Face as ${USERNAME}`, {
-      timeout: 30_000,
-    })
+    await expect(page.getByTestId('signed-in-as')).toContainText(USERNAME, { timeout: 30_000 })
     expect(provider.exchanges(), 'the code was exchanged exactly once').toBe(1)
 
     // Now the part that matters: what is left in the browser.
@@ -181,9 +195,10 @@ test.describe('signing in keeps nothing', () => {
     const space = await watchSpace(page)
     context.on('page', (popup) => { void fakeProvider(popup) })
 
-    await openNeural(page)
+    await openLogin(page)
     await page.getByRole('button', { name: /Sign in with Hugging Face/ }).click()
-    await expect(page.getByTestId('hf-auth')).toContainText(USERNAME, { timeout: 30_000 })
+    await expect(page.getByTestId('signed-in-as')).toContainText(USERNAME, { timeout: 30_000 })
+    await openNeural(page)
 
     await page.getByRole('button', { name: /Show controls|Hide controls/ }).click()
     await page.getByLabel('Style').fill('Indonesian dangdut koplo')
@@ -193,14 +208,11 @@ test.describe('signing in keeps nothing', () => {
 
     expect(space.authHeaders(), 'the Space was handed the bearer').toEqual([`Bearer ${TOKEN}`])
 
-    // Signing out ends the ability to generate, not just the header.
-    await page.getByRole('button', { name: 'Sign out' }).click()
-    await expect(page.getByTestId('hf-auth')).toContainText(/Not signed in/i)
-    await expect(page.getByTestId('hf-auth')).not.toContainText(USERNAME)
-
-    // No second request goes out at all — signed out, there is nothing to send
-    // and the Space would refuse it. The button says so by being disabled.
-    await expect(page.getByRole('button', { name: /^Generate song$/ })).toBeDisabled()
+    // Signing out closes the whole application, so there is no second request
+    // to make: the controls that could have made one are gone with it.
+    await page.getByRole('button', { name: 'Sign out' }).first().click()
+    await expect(page.getByTestId('login-page')).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Generate song$/ })).toHaveCount(0)
     expect(space.authHeaders(), 'no second request was made at all').toHaveLength(1)
 
     const left = await residue(page)
@@ -232,20 +244,23 @@ test.describe('signing in keeps nothing', () => {
     })
     context.on('page', (popup) => { void fakeProvider(popup) })
 
-    await openNeural(page)
+    await openLogin(page)
     await page.getByRole('button', { name: /Sign in with Hugging Face/ }).click()
-    await expect(page.getByTestId('hf-auth')).toContainText(USERNAME, { timeout: 30_000 })
+    await expect(page.getByTestId('signed-in-as')).toContainText(USERNAME, { timeout: 30_000 })
+    await openNeural(page)
 
     await page.getByRole('button', { name: /Show controls|Hide controls/ }).click()
     await page.getByLabel('Style').fill('Indonesian dangdut koplo')
     await page.getByLabel('Lyrics').fill('baris satu\nbaris dua')
     await page.getByRole('button', { name: /^(Generate song|Generating…)$/ }).click()
 
-    // What the Space said, shown as it said it.
-    await expect(page.getByRole('alert').filter({ hasText: refusal })).toBeVisible({ timeout: 60_000 })
-    // And the session is over: the page no longer claims to be signed in, and
-    // offers the one thing that can help.
-    await expect(page.getByTestId('hf-auth')).not.toContainText(USERNAME)
+    // The session is over — a refused sign-in ends it, and ending it closes the
+    // whole application — so what the Space said has to be waiting on the login
+    // page. Being returned to the door with no explanation would be worse than
+    // the refusal itself.
+    await expect(page.getByTestId('login-page')).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByTestId('login-problem')).toContainText(refusal)
+    await expect(page.getByTestId('login-problem')).toContainText('HTTP 401')
     await expect(page.getByRole('button', { name: /Sign in with Hugging Face/ })).toBeVisible()
     // Nothing was kept anywhere, exactly as when signing out by hand.
     const left = await residue(page)
@@ -259,15 +274,15 @@ test.describe('signing in keeps nothing', () => {
     await watchSpace(page)
     context.on('page', (popup) => { void fakeProvider(popup) })
 
-    await openNeural(page)
+    await openLogin(page)
     await page.getByRole('button', { name: /Sign in with Hugging Face/ }).click()
-    await expect(page.getByTestId('hf-auth')).toContainText(USERNAME, { timeout: 30_000 })
+    await expect(page.getByTestId('signed-in-as')).toContainText(USERNAME, { timeout: 30_000 })
 
     await page.reload()
-    await page.getByRole('group', { name: 'Generation engine' })
-      .getByRole('button', { name: 'Neural', exact: true }).click()
-    // Intended, not a defect: the session lived in a heap that no longer exists.
-    await expect(page.getByTestId('hf-auth')).toContainText(/Not signed in/i)
+    // Intended, not a defect: the session lived in a heap that no longer
+    // exists, so the studio is shut again and asks to be opened.
+    await expect(page.getByTestId('login-page')).toBeVisible()
+    await expect(page.getByTestId('signed-in-as')).toHaveCount(0)
     expect((await residue(page)).cookie).toBe('')
   })
 })

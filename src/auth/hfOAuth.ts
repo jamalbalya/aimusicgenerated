@@ -37,10 +37,54 @@
 const CONFIG = {
   clientId: readEnv('VITE_HF_CLIENT_ID'),
   provider: (readEnv('VITE_HF_PROVIDER_URL') || 'https://huggingface.co').replace(/\/+$/, ''),
+  /**
+   * Which accounts this build shows the application to. Same shape as the
+   * Space's `ALLOWED_HF_USERS`, and deliberately the same names.
+   *
+   * This is not where the decision is made — the Space checks the allowlist
+   * itself, on every request, against a token it verifies with Hugging Face,
+   * and a browser cannot argue with it. This copy exists so a person who is
+   * not the owner is told plainly instead of being handed an application that
+   * refuses everything they touch. A username is not a secret; it is on the
+   * account's public page.
+   *
+   * Unset means any verified account may see the application, which is what a
+   * local build wants. The deployed build sets it.
+   */
+  allowed: readEnv('VITE_HF_ALLOWED_USERS'),
 } as const
 
-/** Where the popup lands. Same origin, and a route this app answers. */
-export const CALLBACK_PATH = '/auth/callback'
+/**
+ * Where the popup lands, and it is not a choice.
+ *
+ * An OAuth provider will only send a code to a URI registered against the
+ * client id, character for character. The one registered for this application
+ * is the site root *with its trailing slash* — checked against Hugging Face,
+ * which rejects every other spelling of it, including the same path without
+ * the slash:
+ *
+ *     https://jamalbalya.github.io/aimusicgenerated/   accepted
+ *     https://jamalbalya.github.io/aimusicgenerated    Invalid redirect_uri
+ *     https://jamalbalya.github.io/aimusicgenerated/auth/callback
+ *                                                     Invalid redirect_uri
+ *
+ * So this is built from Vite's own base path — the same value the site is
+ * served under — and always ends in exactly one slash. It must be sent
+ * identically to the authorize endpoint and to the token endpoint, because the
+ * provider compares the two.
+ *
+ * The consequence for the popup: it comes back to the application's own root
+ * carrying `?code=`, rather than to a route of its own. `main.tsx` recognises
+ * that and finishes the handshake before React starts.
+ */
+export function buildRedirectUri(origin: string, base: string): string {
+  const path = base || '/'
+  return `${origin}${path.endsWith('/') ? path : `${path}/`}`
+}
+
+export function redirectUri(): string {
+  return buildRedirectUri(window.location.origin, import.meta.env.BASE_URL || '/')
+}
 
 /** Least privilege: who you are, and nothing about your repositories. */
 const SCOPES = 'openid profile'
@@ -67,6 +111,34 @@ export interface AuthState {
 /** True when this build was given the public client id it needs. */
 export function isConfigured(): boolean {
   return CONFIG.clientId !== ''
+}
+
+/** Reads an allowlist in the Space's own format: comma or space separated. */
+export function parseAllowedAccounts(raw: string): string[] {
+  return raw.replace(/,/g, ' ').split(/\s+/).filter(Boolean).map((name) => name.toLowerCase())
+}
+
+/** The accounts this build admits, lowercased. Empty means "any verified one". */
+export function allowedAccounts(): string[] {
+  return parseAllowedAccounts(CONFIG.allowed)
+}
+
+/**
+ * Whether a verified username may see the application.
+ *
+ * Case-insensitive, because Hugging Face keeps the capitalisation its owner
+ * chose — `whoami` answers `Jamalbalya` for an allowlist that says
+ * `jamalbalya` — and an account is not a different account for being written
+ * differently. Matched whole: a name that merely contains an allowed one is
+ * somebody else.
+ */
+export function accountAllowed(username: string | undefined, allowed: string[]): boolean {
+  if (typeof username !== 'string' || !username.trim()) return false
+  return allowed.length === 0 || allowed.includes(username.trim().toLowerCase())
+}
+
+export function mayEnter(username: string | undefined): boolean {
+  return accountAllowed(username, allowedAccounts())
 }
 
 /* --------------------------------------------------------- in-memory only --- */
@@ -113,11 +185,15 @@ export function authorizationHeader(): string | undefined {
  * result is still coming, and throwing it away would punish the wrong thing.
  * What logging out prevents is the *next* request, which is what it should.
  */
-export function signOut(): void {
+export function signOut(reason?: string): void {
   accessToken = null
   identity = null
   pending = null
-  publish({ status: 'signed-out' })
+  // A session ended by something other than the person — a token the Space
+  // refused, most often — carries the reason out with it. Signing out closes
+  // the whole application, so without this the visitor would land back on the
+  // login page with no idea why they were sent there.
+  publish(reason ? { status: 'signed-out', problem: reason } : { status: 'signed-out' })
 }
 
 /* ------------------------------------------------------------------ PKCE --- */
@@ -288,7 +364,7 @@ export async function signIn(): Promise<void> {
     const query = new URLSearchParams({
       client_id: CONFIG.clientId,
       response_type: 'code',
-      redirect_uri: `${window.location.origin}${import.meta.env.BASE_URL.replace(/\/$/, '')}${CALLBACK_PATH}`,
+      redirect_uri: redirectUri(),
       scope: SCOPES,
       state: transaction,
       code_challenge: await challengeFor(verifier),
@@ -306,7 +382,9 @@ export async function signIn(): Promise<void> {
       code,
       // A public client: there is no secret, which is the whole point of PKCE.
       client_id: CONFIG.clientId,
-      redirect_uri: `${window.location.origin}${import.meta.env.BASE_URL.replace(/\/$/, '')}${CALLBACK_PATH}`,
+      // The same string, byte for byte: the provider compares what the token
+      // request claims against what the authorize request asked for.
+      redirect_uri: redirectUri(),
       code_verifier: pending.verifier,
     })
     // The verifier and the code have both done their job by the time this

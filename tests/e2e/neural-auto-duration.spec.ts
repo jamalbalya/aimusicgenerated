@@ -146,12 +146,12 @@ const generateButton = (page: Page) =>
   page.getByRole('button', { name: /^(Generate song|Generating…)$/ })
 
 async function openNeuralControls(page: Page): Promise<void> {
+  // The whole studio is private, so signing in comes before there is an
+  // engine to choose; this spec is about what happens afterwards.
   await page.goto('/')
+  await signIn(page)
   await page.getByRole('group', { name: 'Generation engine' })
     .getByRole('button', { name: 'Neural', exact: true }).click()
-  // The neural engine needs a signed-in account now; this spec is about
-  // what happens afterwards.
-  await signIn(page)
   await requireFakeSpace(page)
   await page.getByRole('button', { name: /Show controls|Hide controls/ }).click()
 }

@@ -1,4 +1,4 @@
-/** Application shell: navigation, theme, transport and routing. */
+/** Application shell: navigation, theme, transport and routing — behind a sign-in. */
 
 import { lazy, Suspense, useEffect } from 'react'
 import { Icon } from './ui/components/Icon'
@@ -8,6 +8,9 @@ import { TOOLS, toolFor } from './ui/nav'
 import { linkProps, useRoute } from './lib/router'
 import { applyTheme, useStudio } from './state/store'
 import { QUALITY_HINTS, QUALITY_LABELS, type RenderQuality } from './workers/protocol'
+import { useAuth } from './ui/useAuth'
+import { mayEnter } from './auth/hfOAuth'
+import LoginPage from './ui/pages/LoginPage'
 
 const StudioPage = lazy(() => import('./ui/pages/StudioPage'))
 const LyricsPage = lazy(() => import('./ui/pages/LyricsPage'))
@@ -43,7 +46,34 @@ function NotFound({ path }: { path: string }) {
   )
 }
 
+/**
+ * The door.
+ *
+ * Everything below this is private, so the shell is not rendered at all until
+ * someone is signed in and allowed: not hidden with CSS, not disabled, not
+ * mounted. That also means none of its effects run — no worker starts, no
+ * transport, no tool — so there is nothing for a signed-out visitor to reach,
+ * including the offline engine.
+ *
+ * The real boundary is the Space's, which refuses any request it cannot place.
+ * This one decides what is worth showing.
+ */
 export default function App() {
+  const auth = useAuth()
+  const theme = useStudio((s) => s.theme)
+
+  // The login page has a theme too, and it is applied here because `Shell`,
+  // which usually does it, is not mounted yet.
+  useEffect(() => applyTheme(theme), [theme])
+
+  if (auth.status !== 'signed-in' || !mayEnter(auth.identity?.username)) {
+    return <LoginPage auth={auth} />
+  }
+  return <Shell />
+}
+
+function Shell() {
+  const auth = useAuth()
   const [path] = useRoute()
   const theme = useStudio((s) => s.theme)
   const setTheme = useStudio((s) => s.setTheme)
@@ -111,6 +141,18 @@ export default function App() {
           </nav>
 
           <div className="border-t border-[var(--line)] p-2.5">
+            {/* Who is in, and the way out. Present on every tool rather than
+                only in the studio, because signing out closes all of them. */}
+            <div className="px-2 pb-2 pt-1" data-testid="signed-in-as">
+              <p className="t-label">Signed in</p>
+              <p className="truncate text-[12px]" title={auth.identity?.username}>
+                {auth.identity?.username}
+              </p>
+            </div>
+            <button type="button" className="nav-item w-full" onClick={auth.signOut}>
+              <Icon name="close" size={15} />
+              <span>Sign out</span>
+            </button>
             <button
               type="button"
               className="nav-item w-full"
@@ -132,6 +174,14 @@ export default function App() {
               <Wordmark compact />
             </a>
             <div className="flex items-center gap-1">
+              <span className="max-w-[110px] truncate text-[12px] text-[var(--text-dim)] lg:hidden"
+                    data-testid="signed-in-as-compact">
+                {auth.identity?.username}
+              </span>
+              <button type="button" className="btn btn-ghost btn-sm !px-2"
+                      aria-label="Sign out" onClick={auth.signOut}>
+                <Icon name="close" size={16} />
+              </button>
               <a className="btn btn-ghost btn-sm !px-2" aria-label="How this works" {...linkProps('/about')}>
                 <Icon name="info" size={16} />
               </a>

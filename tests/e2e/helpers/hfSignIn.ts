@@ -1,13 +1,13 @@
 /**
  * Signing in, for the tests that are about something else.
  *
- * The neural engine needs a signed-in Hugging Face account now, so every spec
- * that drives a neural generation has to get past that first. This stands in
- * for Hugging Face so they can, without reaching it and without an OAuth
- * application existing.
+ * The whole application is private now: a visitor who is not signed in sees a
+ * login page and nothing else, so every spec begins here whatever its subject.
+ * This stands in for Hugging Face so they can get through, without reaching it
+ * and without an OAuth application existing.
  *
- * `auth-cookie-free.spec.ts` is the one that tests the sign-in itself. This is
- * only the door being opened so the other specs can get to their subject.
+ * `auth-cookie-free.spec.ts` tests the sign-in itself and `auth-required.spec.ts`
+ * tests the door. This is only the door being opened for everyone else.
  */
 
 import { expect, type Page, type Route } from '@playwright/test'
@@ -58,22 +58,28 @@ export async function routeHuggingFace(page: Page): Promise<void> {
 }
 
 /**
- * Signs in through the real popup flow.
+ * Signs in through the real popup flow, from the login page.
  *
- * Call it with the Neural engine already selected, since the control only
- * appears there. Does nothing when the build has no client id — those builds
- * cannot sign in, and the caller will skip for its own reasons.
+ * Call it on a freshly loaded page: the login page is all there is until it
+ * returns, and the application shell only exists afterwards. Does nothing when
+ * the build has no client id — those builds cannot sign in at all, and the
+ * caller skips for its own reasons.
  */
 export async function signIn(page: Page): Promise<void> {
   await routeHuggingFace(page)
   // The popup is its own page in the same context, and needs the same answers.
   page.context().on('page', (popup) => { void routeHuggingFace(popup) })
 
-  const panel = page.getByTestId('hf-auth')
-  if (await panel.count() === 0) return
   const button = page.getByRole('button', { name: /Sign in with Hugging Face/ })
   if (await button.count() === 0) return
 
   await button.click()
-  await expect(panel).toContainText(TEST_HF_USERNAME, { timeout: 30_000 })
+  // The proof that it worked is the application: the shell names the account.
+  await expect(page.getByTestId('signed-in-as')).toContainText(TEST_HF_USERNAME, { timeout: 30_000 })
+}
+
+/** Loads the site and signs in, which is what every spec needs to begin. */
+export async function openStudio(page: Page): Promise<void> {
+  await page.goto('/')
+  await signIn(page)
 }

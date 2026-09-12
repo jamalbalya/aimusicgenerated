@@ -52,6 +52,7 @@ test.describe('shell', () => {
   test('loads, routes between every tool, and survives a reload', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/')
+    await signIn(page)
     await expect(page.getByRole('heading', { name: /Describe a song/i })).toBeVisible()
 
     const routes: [string, RegExp][] = [
@@ -66,18 +67,24 @@ test.describe('shell', () => {
 
     for (const [path, heading] of routes) {
       await page.goto(path)
+      await signIn(page)
       await expect(page.getByRole('heading', { name: heading, level: 1 })).toBeVisible()
       // A deep link must survive a hard reload, not only client-side routing.
+      // The session does not survive it — nothing is stored, by design — so
+      // the sign-in happens again and the same address is still the same tool.
       await page.reload()
+      await signIn(page)
       await expect(page.getByRole('heading', { name: heading, level: 1 })).toBeVisible()
     }
 
     await page.goto('/')
+    await signIn(page)
     expect(errors).toEqual([])
   })
 
   test('shows a 404 for an unknown route', async ({ page }) => {
     await page.goto('/not-a-real-page')
+    await signIn(page)
     await expect(page.getByRole('heading', { name: /No tool lives here/i })).toBeVisible()
     await page.getByRole('link', { name: /Back to the studio/i }).click()
     await expect(page.getByRole('heading', { name: /Describe a song/i })).toBeVisible()
@@ -85,6 +92,7 @@ test.describe('shell', () => {
 
   test('remembers the theme across reloads', async ({ page, isMobile }) => {
     await page.goto('/')
+    await signIn(page)
     const toggle = isMobile
       ? page.getByRole('button', { name: /Switch to light theme/i })
       : page.getByRole('button', { name: /Light theme/i })
@@ -99,6 +107,7 @@ test.describe('song studio', () => {
   test('generates, plays, and exposes lyrics, chords and stems', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/')
+    await signIn(page)
 
     await page.getByRole('textbox').first().fill('an upbeat pop song about the summer, 30 seconds')
     await page.getByRole('button', { name: 'Generate song' }).click()
@@ -143,6 +152,7 @@ test.describe('song studio', () => {
   test('sings the words you type, in the language you typed them in', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/')
+    await signIn(page)
 
     await page.getByLabel('Style').fill('gentle acoustic ballad, 30 seconds')
     await page.getByLabel('Lyrics').fill('Aku masih di sini menunggu\nSampai malam berganti pagi')
@@ -167,6 +177,7 @@ test.describe('song studio', () => {
   test('picks a genre from the chips and turns vocals off', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/')
+    await signIn(page)
 
     // The popular genres are offered up front; the rest are behind the chevron.
     await expect(page.getByRole('button', { name: 'Pop', exact: true })).toBeVisible()
@@ -203,6 +214,7 @@ test.describe('song studio', () => {
   test('exports the song as MIDI, subtitles and separate mixes', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/')
+    await signIn(page)
 
     await page.getByLabel('Style').fill('a short pop song, 30 seconds')
     await page.getByRole('button', { name: 'Generate song' }).click()
@@ -228,6 +240,7 @@ test.describe('song studio', () => {
   test('downloads the finished song as an audio file', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/')
+    await signIn(page)
 
     await page.getByLabel('Style').fill('a short pop song, 30 seconds')
     await page.getByRole('button', { name: 'Generate song' }).click()
@@ -257,6 +270,7 @@ test.describe('song studio', () => {
 
   test('the same seed reproduces the same song', async ({ page }) => {
     await page.goto('/')
+    await signIn(page)
     await page.getByRole('textbox').first().fill('a lo-fi beat, 20 seconds')
     await page.getByRole('button', { name: /Show controls/i }).click()
     await page.getByLabel('Seed').fill('reproducible-seed')
@@ -275,6 +289,7 @@ test.describe('song studio', () => {
   test('shows the neural engine as not connected, and never silently substitutes', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/')
+    await signIn(page)
 
     // No ACE-Step backend runs in the test environment, so the honest state is
     // "Not Connected" — never "available", and never a quiet downgrade.
@@ -328,6 +343,7 @@ test.describe('song studio', () => {
   test('offers a vocal gender only for the neural engine, and starts on Auto', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/')
+    await signIn(page)
     await page.getByRole('button', { name: /Show controls/i }).click()
     const engines = page.getByRole('group', { name: 'Generation engine' })
     const gender = page.getByRole('group', { name: 'Vocal gender' })
@@ -351,6 +367,7 @@ test.describe('song studio', () => {
   test('writes several takes from one brief and lets you pick between them', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/')
+    await signIn(page)
     await page.getByRole('textbox').first().fill('a short lo-fi loop, 20 seconds')
     await page.getByRole('button', { name: /Show controls/i }).click()
 
@@ -386,6 +403,7 @@ test.describe('song studio', () => {
   test('offers a re-render when the quality setting changes', async ({ page, isMobile }) => {
     test.skip(isMobile, 'The quality control lives in the desktop sidebar.')
     await page.goto('/')
+    await signIn(page)
     await page.getByRole('textbox').first().fill('a short lo-fi loop, 20 seconds')
     await page.getByRole('button', { name: 'Generate song' }).click()
     await expect(page.getByRole('heading', { level: 2 }).first()).toBeVisible({ timeout: 150_000 })
@@ -402,6 +420,7 @@ test.describe('song studio', () => {
 
   test('refuses to generate with nothing to go on', async ({ page }) => {
     await page.goto('/')
+    await signIn(page)
     await page.getByRole('button', { name: 'Generate song' }).click()
     await expect(page.getByText(/Describe the song you want/i)).toBeVisible()
   })
@@ -411,6 +430,7 @@ test.describe('lyric writer', () => {
   test('writes editable, structured lyrics', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/lyrics')
+    await signIn(page)
     await page.getByLabel(/What is it about/i).fill('the last summer before everyone moved away')
     await page.getByRole('button', { name: /Write lyrics/i }).click()
 
@@ -433,6 +453,7 @@ test.describe('lyric writer', () => {
   test('sings edited lyrics over a backing track', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/lyrics')
+    await signIn(page)
     await page.getByLabel(/What is it about/i).fill('driving home at the end of a long year')
     await page.getByRole('button', { name: /Write lyrics/i }).click()
     await expect(page.getByLabel('Lyrics')).toBeVisible({ timeout: 60_000 })
@@ -462,6 +483,7 @@ test.describe('text to speech', () => {
   test('synthesises speech and loads it into the transport', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/voice')
+    await signIn(page)
     await page.getByLabel('Text to speak').fill('Testing the built in speech engine.')
     await page.getByRole('button', { name: /Speak & load/i }).click()
 
@@ -475,6 +497,7 @@ test.describe('stem splitter', () => {
   test('separates an uploaded mix into stems', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/stems')
+    await signIn(page)
     await page.setInputFiles('input[type="file"]', FIXTURE)
     await expect(page.getByText('test-mix.wav')).toBeVisible()
 
@@ -489,6 +512,7 @@ test.describe('voice changer', () => {
   test('applies a character to an uploaded file', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/shifter')
+    await signIn(page)
     await page.setInputFiles('input[type="file"]', FIXTURE)
     await expect(page.getByText('test-mix.wav')).toBeVisible()
 
@@ -503,6 +527,7 @@ test.describe('audio toolkit', () => {
   test('edits and analyses an uploaded file', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/toolkit')
+    await signIn(page)
     await page.setInputFiles('input[type="file"]', FIXTURE)
     await expect(page.getByText('Length', { exact: true })).toBeVisible()
 
@@ -523,6 +548,7 @@ test.describe('library', () => {
   test('saves a generated song and lists it', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/')
+    await signIn(page)
     await page.getByRole('textbox').first().fill('a short lo-fi loop, 20 seconds')
     await page.getByRole('button', { name: 'Generate song' }).click()
     await expect(page.getByRole('heading', { level: 2 }).first()).toBeVisible({ timeout: 150_000 })
@@ -531,6 +557,7 @@ test.describe('library', () => {
     await expect(page.getByText(/Saved to your library/i)).toBeVisible({ timeout: 60_000 })
 
     await page.goto('/library')
+    await signIn(page)
     await expect(page.getByRole('button', { name: /^Open$|^Play$/ }).first()).toBeVisible({ timeout: 30_000 })
     expect(errors).toEqual([])
   })
@@ -540,6 +567,7 @@ test.describe('cover', () => {
   test('separates, transforms and rebuilds a full song', async ({ page }) => {
     const errors = watchForErrors(page)
     await page.goto('/shifter')
+    await signIn(page)
     await page.setInputFiles('input[type="file"]', FIXTURE)
     await expect(page.getByText('test-mix.wav')).toBeVisible()
 
@@ -561,23 +589,24 @@ test.describe('cover', () => {
 test.describe('single-file build', () => {
   test.skip(({ isMobile }) => isMobile, 'The bundle is identical; running it once is enough.')
 
-  test('runs standalone, with no worker and no server', async ({ page }) => {
+  test('is private too: a file on disk is not a way round the door', async ({ page }) => {
     const built = resolve(process.cwd(), 'dist-single/resonant-studio.html')
     test.skip(!existsSync(built), 'Run `npm run build:single` first.')
 
     const errors = watchForErrors(page)
-    // Opened straight from disk: no origin, no worker, no network at all.
+    // Opened straight from disk: no origin, no worker, no network at all. This
+    // used to be the whole point of the bundle — the studio in one file,
+    // working offline — and the private studio has taken that away: the same
+    // door stands in front of it, and a `file://` page cannot complete an OAuth
+    // flow, so nothing beyond this screen is reachable from here.
     await page.goto(pathToFileURL(built).href)
-    await expect(page.getByRole('heading', { name: /Describe a song/i })).toBeVisible()
 
-    await page.getByRole('textbox').first().fill('a lofi beat, 20 seconds')
-    await page.getByRole('button', { name: 'Generate song' }).click()
-    await expect(page.getByText('Arrangement', { exact: true })).toBeVisible({ timeout: 150_000 })
-    await expect(page.getByText(/0:00 \/ 0:\d\d/)).toBeVisible()
-
-    // Routing has to work with no server able to rewrite paths.
-    await page.getByRole('link', { name: 'Audio Toolkit', exact: true }).first().click()
-    await expect(page.getByRole('heading', { name: /Edit, treat and measure/i })).toBeVisible()
+    await expect(page.getByTestId('login-page')).toBeVisible()
+    // Not the tools, and not the offline engine that needs no account.
+    await expect(page.getByRole('heading', { name: /Describe a song/i })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Generate song' })).toHaveCount(0)
+    await expect(page.getByRole('link', { name: 'Audio Toolkit', exact: true })).toHaveCount(0)
+    await expect(page.locator('input[type="password"]')).toHaveCount(0)
 
     expect(errors).toEqual([])
   })

@@ -19,6 +19,8 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
+import { accountAllowed, buildRedirectUri, parseAllowedAccounts } from '../../src/auth/hfOAuth'
+
 const AUTH_SOURCE = readFileSync(new URL('../../src/auth/hfOAuth.ts', import.meta.url), 'utf8')
 
 /** Storage a token must never reach. */
@@ -104,11 +106,16 @@ describe('the password is typed on Hugging Face, and nowhere else', () => {
     }
     walk(new URL('../../src/', import.meta.url).pathname)
     const executableSource = source.map(code).join('\n')
+    // The shapes that *take* a password, rather than the word itself: this
+    // page says "your password is typed on huggingface.co", and saying so is
+    // the opposite of a violation.
     for (const shape of [
       /type=["']password["']/,
       /autocomplete=["'](current|new)-password["']/,
-      /\bpassword\b/i,
-      /\bcredentials\.password\b/,
+      /name=["']password["']/i,
+      /\bpassword\s*[:=]/i,
+      /\.password\b/i,
+      /(get|set|read|store|save)Password/i,
     ]) {
       expect(executableSource, `${shape} must not appear in the frontend`).not.toMatch(shape)
     }
@@ -195,5 +202,81 @@ describe('the built bundle keeps nothing either', () => {
     ]) {
       expect(bundle, `${shape} must not reach a public bundle`).not.toMatch(shape)
     }
+  })
+})
+
+describe('the redirect URI is the one Hugging Face has registered', () => {
+  /**
+   * The string Hugging Face accepts for this client id, confirmed against its
+   * authorize endpoint: every other spelling — the same path without the
+   * trailing slash, and the `/auth/callback` route this app used to use — is
+   * answered with "Invalid redirect_uri, must be one of the registered
+   * redirect_uris for this client_id".
+   */
+  const REGISTERED = 'https://jamalbalya.github.io/aimusicgenerated/'
+
+  it('builds exactly the registered URI for the deployed site', () => {
+    // What the deployed build passes: its own origin, and the base path Vite
+    // serves it under, which is the repository name for a project page.
+    expect(buildRedirectUri('https://jamalbalya.github.io', '/aimusicgenerated/')).toBe(REGISTERED)
+  })
+
+  it('ends in exactly one slash however the base path is written', () => {
+    for (const base of ['/aimusicgenerated/', '/aimusicgenerated']) {
+      expect(buildRedirectUri('https://jamalbalya.github.io', base)).toBe(REGISTERED)
+    }
+    expect(buildRedirectUri('http://localhost:4173', '/')).toBe('http://localhost:4173/')
+    expect(buildRedirectUri('http://localhost:4173', '')).toBe('http://localhost:4173/')
+  })
+
+  it('never goes back to a callback route of its own', () => {
+    // The route is gone, and so is the constant that named it: the popup comes
+    // back to the application root, which is what is registered. Checked
+    // against the code rather than the file, because the comment above
+    // `redirectUri` records the rejected spellings on purpose.
+    expect(code(AUTH_SOURCE)).not.toContain('/auth/callback')
+    expect(code(AUTH_SOURCE)).not.toContain('CALLBACK_PATH')
+    const entry = readFileSync(new URL('../../src/main.tsx', import.meta.url), 'utf8')
+    expect(entry).not.toContain('CALLBACK_PATH')
+    expect(entry).toContain('completeCallbackInPopup')
+  })
+
+  it('sends the same URI to the authorize endpoint and to the token endpoint', () => {
+    // The provider compares them, so a mismatch fails the exchange after the
+    // person has already signed in — the worst moment to be wrong.
+    const uses = code(AUTH_SOURCE).match(/redirect_uri: redirectUri\(\)/g) ?? []
+    expect(uses).toHaveLength(2)
+  })
+})
+
+describe('only the studio owner is shown the application', () => {
+  const OWNER = parseAllowedAccounts('jamalbalya')
+
+  it('admits the configured account whatever Hugging Face capitalises it as', () => {
+    // Hugging Face answers `Jamalbalya`; the allowlist says `jamalbalya`.
+    for (const spelling of ['Jamalbalya', 'jamalbalya', 'JAMALBALYA', 'jamalBalya']) {
+      expect(accountAllowed(spelling, OWNER), spelling).toBe(true)
+    }
+  })
+
+  it('refuses every other account, including names that merely contain it', () => {
+    for (const other of ['someone-else', 'jamalbalya2', 'jamalbaly', 'xjamalbalyax',
+                         'jamal.balya', 'jamal balya', '', '   ', undefined]) {
+      expect(accountAllowed(other, OWNER), String(other)).toBe(false)
+    }
+  })
+
+  it('treats an unset allowlist as "any verified account", but never as "anyone"', () => {
+    // A local build has no list and must still be usable by whoever signs in;
+    // the Space refuses the accounts it does not know, which is the boundary.
+    expect(parseAllowedAccounts('')).toEqual([])
+    expect(accountAllowed('anybody', [])).toBe(true)
+    // Still nobody without a verified name: a signed-out visitor has none.
+    expect(accountAllowed(undefined, [])).toBe(false)
+    expect(accountAllowed('', [])).toBe(false)
+  })
+
+  it('reads several names, comma or space separated', () => {
+    expect(parseAllowedAccounts('alice, bob  Jamalbalya')).toEqual(['alice', 'bob', 'jamalbalya'])
   })
 })

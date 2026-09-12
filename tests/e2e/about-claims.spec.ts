@@ -8,6 +8,8 @@
 
 import { test, expect } from '@playwright/test'
 
+import { signIn } from './helpers/hfSignIn'
+
 const RETIRED = [
   /nothing\s+uploaded,?\s+ever/i,
   /no\s+daily\s+quota/i,
@@ -20,6 +22,7 @@ const RETIRED = [
 test.describe('About page claims', () => {
   test('describes the neural engine honestly, and makes no retired promise', async ({ page }) => {
     await page.goto('/about')
+    await signIn(page)
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
 
     const prose = (await page.locator('body').innerText()).replace(/\s+/g, ' ')

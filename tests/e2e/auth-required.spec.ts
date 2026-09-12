@@ -1,18 +1,20 @@
 /**
- * The neural engine is for signed-in visitors only.
+ * The studio is private, and the door is the whole of it.
  *
- * The Space generates for an account it can name and refuses everyone else
- * with a 401, so a signed-out visitor must be stopped here, clearly, before a
- * request that could only fail. Three things have to hold at once, and this
- * file tests all three because any one of them alone is a gap:
+ * Not "the neural engine asks for an account" — the application does. A
+ * visitor who is not signed in gets a login page and nothing else: no
+ * navigation, no tools, no transport, and no offline engine, which runs in the
+ * browser and would otherwise be the way around the door.
  *
- *   * the Generate button is disabled, so the obvious way in is closed;
- *   * a panel says why, and offers the one thing that helps;
- *   * the action itself refuses, so the ⌘/Ctrl + Enter shortcut — which never
- *     touches the button — cannot get past it.
+ * These tests check the absence of things, which is the hard half. It is easy
+ * to hide a feature and leave it reachable — by a deep link, by a keyboard
+ * shortcut, by a control that is merely disabled — so each of those is tried
+ * rather than assumed.
  *
- * And the opposite claim, which matters just as much: the offline engine asks
- * for nothing, so blocking the neural one must not block it too.
+ * The real boundary is the Space's, tested in `poc/zerogpu-space/test_guard.py`
+ * and over real HTTP by `live_boundary_test.py`. This is the door in front of
+ * it: on a static site it is what a visitor meets, not what stops a determined
+ * one.
  *
  * Hugging Face is stood in for and the Space is intercepted. Nothing here
  * reaches either, and no GPU allowance is spent.
@@ -20,196 +22,179 @@
 
 import { test, expect, type Page, type Route } from '@playwright/test'
 
-import { signIn, TEST_HF_TOKEN, TEST_HF_USERNAME } from './helpers/hfSignIn'
+import { routeHuggingFace, signIn, TEST_HF_USERNAME } from './helpers/hfSignIn'
 
-/** Must match ACE_STEP_SPACE_URL in the build these tests run against. */
 const SPACE = 'https://fake-space.hf.space'
-const API = '/gradio_api'
+const PROVIDER = 'https://huggingface.co'
 
-interface FakeSpace {
-  /** Generations the Space was asked for, and what each one carried. */
-  joins: () => (string | undefined)[]
-}
-
-/**
- * A Space that answers `/config` and records every generation asked of it.
- *
- * It deliberately fails the generation itself: what these tests need to know
- * is whether a request was made and what credential it carried, and a real
- * song would only make them slower. The refusal is a 500 rather than a 401,
- * because a 401 means "the Space refused this sign-in" and the studio answers
- * that by ending the session — true behaviour, tested in
- * `auth-cookie-free.spec.ts`, and not what is being measured here.
- */
-async function fakeSpace(page: Page): Promise<FakeSpace> {
-  const joins: (string | undefined)[] = []
+/** Counts anything the page tries to ask of the Space. */
+async function watchSpace(page: Page): Promise<{ calls: () => string[] }> {
+  const calls: string[] = []
   await page.route(`${SPACE}/**`, async (route: Route) => {
-    const path = new URL(route.request().url()).pathname
-    if (path === '/config') {
-      return route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({
-          version: '6.2.0', protocol: 'sse_v3', api_prefix: API, root: SPACE,
-          dependencies: [{ id: 0, api_name: 'generate_music', queue: true, api_visibility: 'public', backend_fn: true }],
-        }),
-      })
-    }
-    if (path.includes('/queue/join')) {
-      joins.push(route.request().headers()['authorization'])
-    }
+    const url = new URL(route.request().url())
+    calls.push(`${route.request().method()} ${url.pathname}`)
     return route.fulfill({ status: 500, contentType: 'text/plain', body: 'not what this test is about' })
   })
-  return { joins: () => joins }
+  return { calls: () => calls }
 }
 
-/** Skips when the build under test was not pointed at the stand-ins. */
-async function openNeural(page: Page): Promise<void> {
-  await page.goto('/')
-  await page.getByRole('group', { name: 'Generation engine' })
-    .getByRole('button', { name: 'Neural', exact: true }).click()
-  const ready = await page.evaluate(() => ({
-    space: document.body.innerText.includes('fake-space.hf.space'),
-    client: Boolean(document.querySelector('[data-testid="hf-auth"]')),
-  }))
-  test.skip(!ready.space,
-    'This build does not point at the fake Space. Rebuild with '
-    + 'ACE_STEP_BACKEND=zerogpu ACE_STEP_SPACE_URL=https://fake-space.hf.space.')
-  test.skip(!ready.client, 'The sign-in control is not on the page; VITE_HF_CLIENT_ID may be unset.')
+/** Every name the application shows once it is open, and never before. */
+const APPLICATION = [
+  'Generate song',
+  'Neural',
+  'Offline Procedural',
+  'Lyric Writer',
+  'Text to Speech',
+  'Stem Splitter',
+  'Voice Changer',
+  'Audio Toolkit',
+  'Library',
+]
+
+async function expectOnlyLoginPage(page: Page): Promise<void> {
+  await expect(page.getByTestId('login-page')).toBeVisible()
+  // One way in, and it is the only primary action on the page.
+  await expect(page.getByRole('button', { name: 'Sign in with Hugging Face' })).toBeVisible()
+  // The shell is not rendered: not hidden, not disabled — absent.
+  await expect(page.getByRole('navigation', { name: 'Tools' })).toHaveCount(0)
+  await expect(page.getByTestId('signed-in-as')).toHaveCount(0)
+  for (const name of APPLICATION) {
+    await expect(page.getByText(name, { exact: true }), `"${name}" must not be on the page`)
+      .toHaveCount(0)
+  }
+  // And nothing anywhere on this origin asks for a password.
+  await expect(page.locator('input[type="password"]')).toHaveCount(0)
 }
 
-/** Fills in enough of a brief that nothing else could refuse the generation. */
-async function describeSong(page: Page): Promise<void> {
-  await page.getByRole('button', { name: /Show controls|Hide controls/ }).click()
-  await page.getByLabel('Style').fill('Indonesian dangdut koplo, dramatic male vocal')
-  await page.getByLabel('Lyrics').fill('baris satu\nbaris dua')
-}
-
-test.describe('generating needs an account', () => {
-  test('a signed-out visitor is blocked, and told why', async ({ page }) => {
-    await fakeSpace(page)
-    await openNeural(page)
-
-    // The panel is the explanation, and it is not hidden in a tooltip.
-    const panel = page.getByTestId('hf-signin-required')
-    await expect(panel).toBeVisible()
-    await expect(panel).toContainText(/Sign in with Hugging Face to use the neural engine/i)
-    await expect(panel.getByRole('button', { name: /Sign in with Hugging Face/ })).toBeVisible()
-
-    // The status line agrees with it, rather than claiming anything else.
-    await expect(page.getByTestId('hf-auth')).toContainText(/Not signed in/i)
-    await expect(page.getByTestId('hf-auth')).not.toContainText(TEST_HF_USERNAME)
-
-    // And the ways to start a generation are closed.
-    await expect(page.getByRole('button', { name: /^Generate song$/ })).toBeDisabled()
-    await expect(page.getByRole('button', { name: /New take/ })).toBeDisabled()
+test.describe('the application is private', () => {
+  test('a first visit shows the login page and nothing else', async ({ page }) => {
+    await page.goto('/')
+    await expectOnlyLoginPage(page)
   })
 
-  test('nothing reaches the Space while signed out, not even by keyboard', async ({ page }) => {
-    const space = await fakeSpace(page)
-    await openNeural(page)
-    await describeSong(page)
-
-    // The shortcut never touches the button, so a disabled button cannot be
-    // what stops it. The action has to refuse on its own.
-    await page.getByLabel('Lyrics').click()
-    await page.keyboard.press('Meta+Enter')
-    await page.keyboard.press('Control+Enter')
-    await page.getByLabel('Style').click()
-    await page.keyboard.press('Meta+Enter')
-    await page.keyboard.press('Control+Enter')
-
-    // Scoped to the toast — the blocking panel carries the same sentence, and
-    // matching that instead would pass without the shortcut being refused at
-    // all. The toast is the studio answering this press.
-    await expect(page.getByRole('status').filter({ hasText: /Sign in with Hugging Face/i }).first())
-      .toBeVisible()
-    expect(space.joins(), 'the Space was never asked to generate').toEqual([])
+  test('no tool can be reached by its own address', async ({ page }) => {
+    // A deep link is the obvious way past a door that only guards the front.
+    for (const path of ['/lyrics', '/voice', '/stems', '/shifter', '/toolkit', '/library', '/about']) {
+      await page.goto(path)
+      await expectOnlyLoginPage(page)
+    }
   })
 
-  test('signing in unlocks generation, and the request carries the account', async ({ page }) => {
-    const space = await fakeSpace(page)
-    await openNeural(page)
-    await describeSong(page)
+  test('neither engine can be used, and the Space is never asked', async ({ page }) => {
+    const space = await watchSpace(page)
+    await page.goto('/')
 
+    // Neither the neural engine nor the offline one is on the page at all.
+    await expect(page.getByRole('group', { name: 'Generation engine' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /^Generate song$/ })).toHaveCount(0)
+
+    // The keyboard shortcuts belong to controls that do not exist; pressing
+    // them anyway must start nothing.
+    await page.keyboard.press('Meta+Enter')
+    await page.keyboard.press('Control+Enter')
+    await page.waitForTimeout(500)
+
+    await expectOnlyLoginPage(page)
+    expect(space.calls(), 'the Space was never contacted').toEqual([])
+  })
+
+  test('signing in opens the application and names the account', async ({ page }) => {
+    await page.goto('/')
     await signIn(page)
 
-    // The block is gone, and the state is on the page rather than implied.
-    await expect(page.getByTestId('hf-signin-required')).toHaveCount(0)
-    await expect(page.getByTestId('hf-auth')).toContainText(`Signed in to Hugging Face as ${TEST_HF_USERNAME}`)
-    await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
-
-    const generate = page.getByRole('button', { name: /^(Generate song|Generating…)$/ })
-    await expect(generate).toBeEnabled()
-    await generate.click()
-    await expect(generate).toBeEnabled({ timeout: 60_000 })
-
-    expect(space.joins(), 'one generation, carrying the signed-in account')
-      .toEqual([`Bearer ${TEST_HF_TOKEN}`])
+    // The shell is there, with the account it belongs to.
+    await expect(page.getByTestId('signed-in-as')).toContainText(TEST_HF_USERNAME)
+    await expect(page.getByRole('navigation', { name: 'Tools' }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Generate song$/ })).toBeVisible()
+    await expect(page.getByRole('group', { name: 'Generation engine' })).toBeVisible()
+    await expect(page.getByTestId('login-page')).toHaveCount(0)
   })
 
-  test('an account the Space will not serve is told so, and stays signed in', async ({ page }) => {
-    // The other half of the boundary. This visitor signed in correctly; they
-    // are simply not the account the studio serves, so the Space answers 403.
-    // Signing them out would delete the one fact that explains it.
-    const refused = 'This Hugging Face account is not approved for this studio.'
-    let joins = 0
-    await page.route(`${SPACE}/**`, async (route: Route) => {
-      const path = new URL(route.request().url()).pathname
-      if (path === '/config') {
+  test('signing out closes it again, at once', async ({ page }) => {
+    await page.goto('/')
+    await signIn(page)
+    await expect(page.getByRole('button', { name: /^Generate song$/ })).toBeVisible()
+
+    await page.getByRole('navigation', { name: 'Tools' }).first()
+      .locator('xpath=..').getByRole('button', { name: 'Sign out' }).first()
+      .click()
+
+    await expectOnlyLoginPage(page)
+  })
+
+  test('a reload locks it again, because nothing was kept', async ({ page }) => {
+    await page.goto('/')
+    await signIn(page)
+    // Asserted by what every viewport shows: the sidebar carrying the account
+    // is hidden on a phone, so its visibility is not the thing to check.
+    await expect(page.getByTestId('login-page')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /^Generate song$/ })).toBeVisible()
+
+    await page.reload()
+    await expectOnlyLoginPage(page)
+  })
+
+  test('another Hugging Face account is signed in, and still kept out', async ({ page, context }) => {
+    // The account is real and the sign-in works. It is simply not the one this
+    // studio belongs to, so the application is not shown to it.
+    const OTHER = 'someone-else'
+    await routeHuggingFace(page)
+    // Registered *after* the helper, because Playwright consults the most
+    // recently added handler first: this one answers "who signed in" with a
+    // different account and hands everything else back to the helper.
+    await page.route(`${PROVIDER}/**`, async (route: Route) => {
+      if (new URL(route.request().url()).pathname === '/oauth/userinfo') {
         return route.fulfill({
           contentType: 'application/json',
-          body: JSON.stringify({
-            version: '6.2.0', protocol: 'sse_v3', api_prefix: API, root: SPACE,
-            dependencies: [{ id: 0, api_name: 'generate_music', queue: true, api_visibility: 'public', backend_fn: true }],
-          }),
+          body: JSON.stringify({ sub: 'user-2', preferred_username: OTHER }),
         })
       }
-      if (path.includes('/queue/join')) joins += 1
-      return route.fulfill({
-        status: 403, contentType: 'application/json', body: JSON.stringify({ detail: refused }),
-      })
+      return route.fallback()
     })
+    context.on('page', (popup) => { void routeHuggingFace(popup) })
 
-    await openNeural(page)
-    await describeSong(page)
-    await signIn(page)
-    await page.getByRole('button', { name: /^(Generate song|Generating…)$/ }).click()
+    await page.goto('/')
+    const gate = page.getByTestId('login-page')
+    await expect(gate).toBeVisible()
+    await page.getByRole('button', { name: 'Sign in with Hugging Face' }).click()
 
-    // The Space's own sentence, on the page rather than in a toast that goes.
-    await expect(page.getByRole('alert').filter({ hasText: refused }))
-      .toBeVisible({ timeout: 60_000 })
-    await expect(page.getByRole('alert').filter({ hasText: /HTTP 403/ })).toBeVisible()
-
-    // Still signed in: the session is valid, and who it belongs to is the
-    // explanation. No sign-in is offered, because signing in again is not it.
-    await expect(page.getByTestId('hf-auth')).toContainText(TEST_HF_USERNAME)
-    await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
-    await expect(page.getByTestId('hf-signin-required')).toHaveCount(0)
-
-    // And it was asked once, not once per take.
-    expect(joins, 'the refusal ended the run instead of being retried').toBe(1)
+    // Told plainly who they are and that it is not enough.
+    await expect(gate).toContainText(OTHER, { timeout: 30_000 })
+    await expect(gate).toContainText(/not the one this studio belongs to/i)
+    // And none of the application came with them.
+    await expect(page.getByRole('navigation', { name: 'Tools' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /^Generate song$/ })).toHaveCount(0)
+    // The way out is offered, and it returns them to the way in.
+    await gate.getByRole('button', { name: 'Sign out' }).click()
+    await expectOnlyLoginPage(page)
   })
 
-  test('the offline engine is never blocked, because it asks for nobody', async ({ page }) => {
-    const space = await fakeSpace(page)
-    await openNeural(page)
-    await expect(page.getByRole('button', { name: /^Generate song$/ })).toBeDisabled()
+  test('the sign-in goes to Hugging Face with the registered redirect URI', async ({ page, context }) => {
+    await routeHuggingFace(page)
+    context.on('page', (popup) => { void routeHuggingFace(popup) })
+    await page.goto('/')
 
-    // Same visitor, same signed-out state, the other engine.
-    await page.getByRole('group', { name: 'Generation engine' })
-      .getByRole('button', { name: 'Offline Procedural', exact: true }).click()
+    const popupPromise = page.waitForEvent('popup')
+    await page.getByRole('button', { name: 'Sign in with Hugging Face' }).click()
+    const popup = await popupPromise
+    await popup.waitForURL(/huggingface\.co/, { timeout: 30_000 })
+    const url = new URL(popup.url())
 
-    await expect(page.getByTestId('hf-signin-required')).toHaveCount(0)
-    await expect(page.getByRole('button', { name: /^Generate song$/ })).toBeEnabled()
-    await describeSong(page)
-    await page.getByRole('button', { name: /^Generate song$/ }).click()
+    expect(url.origin, 'the password is typed on Hugging Face').toBe(PROVIDER)
+    expect(url.pathname).toBe('/oauth/authorize')
 
-    // It rendered here, in this browser, without asking anyone for anything:
-    // a titled song and a transport reporting a real length.
-    const title = page.getByRole('heading', { level: 2 }).first()
-    await expect(title).toBeVisible({ timeout: 150_000 })
-    await expect(title).not.toHaveText('')
-    await expect(page.getByText(/0:00 \/ \d+:\d\d/)).toBeVisible()
-    expect(space.joins(), 'the Space was not involved at all').toEqual([])
+    // The registered URI is the application root, with its trailing slash. The
+    // live one is https://jamalbalya.github.io/aimusicgenerated/ — here the
+    // origin is the preview server, and the rule is what is being checked.
+    const redirect = url.searchParams.get('redirect_uri') ?? ''
+    expect(redirect).toBe(new URL('/', page.url()).toString())
+    expect(redirect.endsWith('/'), `${redirect} must end in a slash`).toBe(true)
+    expect(redirect).not.toContain('/auth/callback')
+
+    // PKCE, still, and no secret of ours anywhere near it.
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256')
+    expect(url.searchParams.get('code_challenge')).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(url.searchParams.has('client_secret')).toBe(false)
+    expect(url.searchParams.get('scope')).toBe('openid profile')
   })
 })

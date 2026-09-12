@@ -26,6 +26,10 @@ export function useAuth(): Auth {
     // Called straight from the click handler, because a popup opened after an
     // await is a popup the browser blocks.
     signIn: () => { void signIn() },
-    signOut,
+    // Wrapped, and not passed through: `signOut` takes an optional reason, and
+    // an `onClick={auth.signOut}` would hand it the click event as one. That
+    // reason is rendered on the login page, so the event became a React child
+    // and took the whole application down with it.
+    signOut: () => { signOut() },
   }
 }

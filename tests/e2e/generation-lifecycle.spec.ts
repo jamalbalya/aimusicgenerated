@@ -179,6 +179,7 @@ const TO_STUDIO = /^(Song Studio|Studio)$/
 /** Starts one generation and returns once the Space has it. */
 async function startGeneration(page: Page, space: HeldSpace): Promise<void> {
   await page.goto('/')
+  await signIn(page)
   await page.getByRole('group', { name: 'Generation engine' })
     .getByRole('button', { name: 'Neural', exact: true }).click()
   // The neural engine needs a signed-in account now; this spec is about
