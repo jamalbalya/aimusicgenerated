@@ -145,20 +145,15 @@ def parse_bearer(header_value: str | None) -> str:
     return token
 
 
-_discovery_lock = threading.Lock()
-_discovery: dict[str, object] = {}
-
 
 def _userinfo_endpoint() -> str:
-    """Where to ask who a token belongs to.
+    """Return the Hugging Face endpoint used to verify Personal Access Tokens.
 
-    Discovered from the provider rather than written down here: the endpoint is
-    the provider's to name, and a deployment should not need a code change when
-    it moves. The well-known `whoami-v2` is the fallback when discovery is
-    unavailable, and the result is cached for the process's life.
+    Hugging Face Personal Access Tokens are verified through
+    /api/whoami-v2. The OAuth/OIDC userinfo endpoint is intended for
+    OAuth/OIDC access tokens and rejects regular Hugging Face PATs.
     """
     return f"{PROVIDER_URL}/api/whoami-v2"
-
 
 _verify_lock = threading.Lock()
 _verified: dict[str, tuple[float, Identity]] = {}
@@ -197,9 +192,18 @@ def verify_identity(token: str) -> Identity:
     if cached is not None:
         return cached
 
+    print(
+        "[guard] verifying token using:",
+        _userinfo_endpoint(),
+        flush=True,
+    )
+
     request = urllib.request.Request(
         _userinfo_endpoint(),
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=VERIFY_TIMEOUT_SECONDS) as response:
