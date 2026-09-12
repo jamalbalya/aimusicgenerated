@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Refuses a commit message that credits anyone but the repository owner.
+#
+# This repository's commits are jamalbalya's. No assistant, bot or tool is
+# named as an author, a co-author or a generator — not in a trailer, and not in
+# the prose. See docs/GIT_IDENTITY_POLICY.md.
+#
+# Installed by `git config --local core.hooksPath .githooks`, so it is version
+# controlled and applies to every clone that runs the same setup line.
+set -euo pipefail
+
+message_file="$1"
+message="$(cat "$message_file")"
+
+# Comment lines are stripped by git before the message is stored, so they are
+# stripped here too — otherwise git's own commented template would trip this.
+body="$(printf '%s\n' "$message" | sed '/^[[:space:]]*#/d')"
+
+# `.claude/` is a directory in the vendored upstream project, named in the
+# deploy script's prune list. It is a path, not a credit, and a commit that
+# describes that prune must still be possible. Neutralise it before matching so
+# the check can stay strict about everything else.
+# The placeholder must not itself contain a blocked word, or neutralising the
+# path would re-trip the very rule it exists to sidestep.
+haystack="$(printf '%s\n' "$body" | sed 's/\.claude/<dot-dir-path>/g')"
+
+# Each entry is "pattern<TAB>explanation". Extended regex, case-insensitive.
+violations=()
+while IFS=$'\t' read -r pattern explanation; do
+  [[ -z "$pattern" ]] && continue
+  if printf '%s\n' "$haystack" | grep -qiE "$pattern"; then
+    violations+=("$explanation")
+  fi
+done <<'RULES'
+^[[:space:]]*co-authored-by:	a Co-authored-by trailer
+^[[:space:]]*generated-by:	a Generated-by trailer
+^[[:space:]]*(assisted|created|authored)-by:	an assistance trailer
+claude	the word "claude"
+anthropic	the word "anthropic"
+generated with	a "generated with" credit
+🤖	a robot emoji used as attribution
+\bco-authored\b	a co-authorship claim
+RULES
+
+if (( ${#violations[@]} > 0 )); then
+  echo >&2
+  echo "COMMIT REFUSED — this repository's commits carry no assistant attribution." >&2
+  echo >&2
+  echo "Found:" >&2
+  printf '  - %s\n' "${violations[@]}" >&2
+  echo >&2
+  echo "Remove it and commit again. The policy is docs/GIT_IDENTITY_POLICY.md." >&2
+  echo "A path such as .claude/ is allowed; a credit is not." >&2
+  echo >&2
+  exit 1
+fi

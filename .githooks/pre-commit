@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Refuses a commit made under any identity but the repository owner's.
+#
+# The message hook catches attribution written into the text. This catches the
+# quieter failure: a commit whose author or committer is wrong because a global
+# git config was inherited and the repository-local one was missing.
+set -euo pipefail
+
+EXPECTED_NAME="jamalbalya"
+
+# `git var` resolves exactly what the commit will record, config precedence and
+# environment overrides included, so this checks the real value and not a guess.
+author="$(git var GIT_AUTHOR_IDENT)"
+committer="$(git var GIT_COMMITTER_IDENT)"
+
+# "Name <email> timestamp offset" -> "Name"
+name_of() { printf '%s' "$1" | sed 's/ <.*//'; }
+
+bad=()
+[[ "$(name_of "$author")" == "$EXPECTED_NAME" ]] || bad+=("author is '$(name_of "$author")'")
+[[ "$(name_of "$committer")" == "$EXPECTED_NAME" ]] || bad+=("committer is '$(name_of "$committer")'")
+
+if (( ${#bad[@]} > 0 )); then
+  echo >&2
+  echo "COMMIT REFUSED — wrong identity." >&2
+  echo >&2
+  printf '  - %s\n' "${bad[@]}" >&2
+  echo "  - expected both to be '$EXPECTED_NAME'" >&2
+  echo >&2
+  echo "Fix it for this repository, which overrides any global setting:" >&2
+  echo "    git config --local user.name  \"jamalbalya\"" >&2
+  echo "    git config --local user.email \"<your GitHub-verified address>\"" >&2
+  echo >&2
+  exit 1
+fi
