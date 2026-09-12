@@ -157,28 +157,7 @@ def _userinfo_endpoint() -> str:
     it moves. The well-known `whoami-v2` is the fallback when discovery is
     unavailable, and the result is cached for the process's life.
     """
-    with _discovery_lock:
-        cached = _discovery.get("userinfo")
-        if isinstance(cached, str):
-            return cached
-        endpoint = f"{PROVIDER_URL}/api/whoami-v2"
-        try:
-            request = urllib.request.Request(
-                f"{PROVIDER_URL}/.well-known/openid-configuration",
-                headers={"Accept": "application/json"},
-            )
-            with urllib.request.urlopen(request, timeout=VERIFY_TIMEOUT_SECONDS) as response:
-                document = json.loads(response.read().decode("utf8"))
-            found = document.get("userinfo_endpoint")
-            if isinstance(found, str) and found.startswith("https://"):
-                endpoint = found
-        except Exception:
-            # Discovery is a convenience, not the boundary. Falling back to the
-            # documented endpoint is fine; failing to verify is not, and that is
-            # handled by the caller.
-            pass
-        _discovery["userinfo"] = endpoint
-        return endpoint
+    return f"{PROVIDER_URL}/api/whoami-v2"
 
 
 _verify_lock = threading.Lock()
