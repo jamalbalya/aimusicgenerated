@@ -23,28 +23,30 @@ not in a trailer, a co-author line or the prose of a message.
    having written the change.
 3. **No `Co-authored-by` trailers.** Nor `Generated-by`, `Assisted-by`,
    `Created-by` or any equivalent.
-4. **No `claude/*` branches.** The canonical branch is the one named above.
+4. **No branch named after a tool, assistant or vendor**, or prefixed with
+   one. The canonical branch is the one named above.
 5. **Every push is authenticated as `jamalbalya`.** Check before pushing;
    see below.
 6. **Verify your identity before you push**, not after. A wrong identity is
    cheap to prevent and expensive to remove, because removing it means
    rewriting history and force-pushing.
 
-### Writing about the policy
+### Where the specific names live
+
+The repository does not spell out the vendor and product names it rejects.
+Writing them into a tracked file to ban them would put them back in exactly the
+place this policy is clearing. So `commit-msg` carries only the generic rules —
+attribution trailers, "generated with" lines, a robot emoji used as a credit —
+and reads any specific names from an untracked local list at
+`.git/attribution-blocklist`, one name or extended-regex pattern per line.
+
+That list is per clone and is not version controlled. Without it the generic
+rules still stand, and `pre-commit` still refuses any identity but the owner's,
+which is the mechanical guarantee; the list only adds name matching on top.
 
 The message hook matches text, so it cannot tell a credit from a description of
-one: a commit message that quotes a banned trailer verbatim is refused even when
-it is explaining the rule. Describe the pattern instead of reproducing it. This
-is a deliberate trade — a hook loose enough to allow the quote would be loose
-enough to miss the real thing — and it is the reason this document, rather than
-a commit message, is where the exact strings live.
-
-### One deliberate exception
-
-The string `.claude` may appear where it names a *directory path*. The vendored
-upstream project ships such a directory, and `poc/zerogpu-space/deploy.sh`
-prunes it before deploying — a commit describing that prune has to be possible.
-The hooks allow the path and block the credit. A path is not an attribution.
+one: a message quoting a banned trailer verbatim is refused even when explaining
+the rule. Describe the pattern instead of reproducing it.
 
 ## How this is enforced
 
@@ -68,6 +70,18 @@ Hooks are not copied by `git clone`. Once per clone:
 git config --local core.hooksPath .githooks
 git config --local user.name  "jamalbalya"
 git config --local user.email "<your GitHub-verified address>"
+
+# Optional, and untracked by design: names to reject in a commit message.
+printf '%s\n' 'name-to-reject' 'another-name' > "$(git rev-parse --git-dir)/attribution-blocklist"
+```
+
+Verify all four with:
+
+```sh
+git config --local core.hooksPath                       # .githooks
+git var GIT_AUTHOR_IDENT                                # jamalbalya <...>
+printf 'test\n\nCo-authored-by: x <y@z>\n' > /tmp/m && .githooks/commit-msg /tmp/m   # must fail
+printf 'fix: an ordinary message\n' > /tmp/m && .githooks/commit-msg /tmp/m            # must pass
 ```
 
 The repository-local settings override any global ones. That matters: a global

@@ -32,18 +32,33 @@ BINARY_ASSET_EXTS=(
 # openrouter/ references "assets/" or "docs/".
 DOC_ONLY_DIRS=(docs assets)
 
-# Repository metadata that is never imported at runtime.
-METADATA_DIRS=(.git .github .githooks .claude)
+# Repository metadata and tooling configuration, none of it imported at runtime.
+#
+# Matched as a pattern rather than a list of names: upstream adds a dot
+# directory whenever it adopts another tool, and a fixed list silently stops
+# covering them. No Python package needs a top-level dot directory to import,
+# so removing all of them is both safer and less to maintain than guessing
+# which ones will exist next.
+METADATA_DIR_GLOB='.*'
 
 prune_vendor() {
   local root="$1" removed=0 before after
   before=$(find "$root" -type f | wc -l | tr -d ' ')
 
-  local d
-  for d in "${METADATA_DIRS[@]}" "${DOC_ONLY_DIRS[@]}"; do
-    if [[ -e "$root/$d" ]]; then
-      echo "    - removing $d/"
-      rm -rf "${root:?}/${d:?}"
+  local d name
+  # Every top-level dot directory, whatever it is called.
+  for d in "$root"/$METADATA_DIR_GLOB; do
+    name="$(basename "$d")"
+    [[ "$name" == "." || "$name" == ".." ]] && continue
+    if [[ -d "$d" ]]; then
+      echo "    - removing $name/"
+      rm -rf "${d:?}"
+    fi
+  done
+  for name in "${DOC_ONLY_DIRS[@]}"; do
+    if [[ -e "$root/$name" ]]; then
+      echo "    - removing $name/"
+      rm -rf "${root:?}/${name:?}"
     fi
   done
 

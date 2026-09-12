@@ -83,7 +83,7 @@ Removed wholesale — verified by grep that no `.py` file under `acestep/` or
 | `assets/` | 9 PNG, 1 GIF, 1 SVG of README artwork. `star.gif` alone is 2.9 MB |
 | `docs/` | the VitePress documentation site: 81 markdown files and 12 JPG screenshots under `docs/pics/` |
 | `.git/` | replaced by `vendor/COMMIT.txt`, which records the exact upstream SHA |
-| `.github/`, `.githooks/`, `.claude/` | upstream CI, hooks and agent config. Never imported |
+| every top-level dot directory | upstream CI, hooks and tooling configuration. Never imported |
 
 Then a tree-wide sweep by extension — images, video, design sources, documents,
 archives and fonts — which is what catches

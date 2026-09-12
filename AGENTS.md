@@ -24,18 +24,16 @@ file committed to this repository:**
 - a "generated with" line, or a robot emoji used as a credit
 - any attribution footer of any kind
 
-There is one exception, and it is a path rather than a credit: `.claude` may be
-named where it refers to the directory the vendored upstream project ships,
-which `poc/zerogpu-space/deploy.sh` prunes before deploying.
-
-**Never create a branch whose name begins with `claude/`.** The canonical branch
-is `free-music-generation-tools-fy4esb`. Push there unless the owner asks
-otherwise, and never to a differently named branch without being asked.
+**Never create a branch named after a tool, assistant or vendor**, or prefixed
+with one. The canonical branch is `free-music-generation-tools-fy4esb`. Push
+there unless the owner asks otherwise, and never to a differently named branch
+without being asked.
 
 Two version-controlled hooks in `.githooks/` enforce this — `pre-commit` checks
 the identity, `commit-msg` checks the text. Do not weaken, bypass, disable or
 `--no-verify` past them. If one blocks a commit, the commit is wrong, not the
-hook. The full policy is `docs/GIT_IDENTITY_POLICY.md`.
+hook. The full policy, including how to install the hooks in a fresh clone, is
+`docs/GIT_IDENTITY_POLICY.md`.
 
 ## Working on this project
 
