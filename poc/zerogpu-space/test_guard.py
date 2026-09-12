@@ -123,9 +123,9 @@ except guard.AuthError as error:
 guard.verify_identity = real_verify
 
 
-# --- public by default, private on purpose ------------------------------------
+# --- a sign-in is mandatory, and no configuration lifts it --------------------
 
-print("\naccess mode")
+print("\nmandatory sign-in")
 
 
 class FakeRequest:
@@ -152,84 +152,77 @@ def under(require: str, allow: str, call):
         guard.REQUIRE_SIGN_IN_RAW, guard.ALLOWED_USERS_RAW = was
 
 
-check("nothing configured is a public studio",
-      under("", "", guard.sign_in_required) is False)
-check("naming who may generate makes it private",
-      under("", "jamalbalya", guard.sign_in_required) is True)
-check("a public studio can be asked for outright, allowlist or not",
-      under("0", "jamalbalya", guard.sign_in_required) is False)
-check("a private one can be asked for outright too",
-      under("1", "", guard.sign_in_required) is True)
-for word in ("true", "TRUE", "Yes", "on", "1"):
-    check(f"{word!r} means private", under(word, "", guard.sign_in_required) is True)
-for word in ("false", "FALSE", "no", "off", "0"):
-    check(f"{word!r} means public", under(word, "jamalbalya", guard.sign_in_required) is False)
-check("a value that means neither falls back to the allowlist",
-      under("maybe", "jamalbalya", guard.sign_in_required) is True
-      and under("maybe", "", guard.sign_in_required) is False)
+# The product requirement, stated as a test: signing in is not a setting. Every
+# value a deployment might plausibly set is tried, including the ones that used
+# to open the door, and the answer is the same each time.
+for require in ("", "0", "false", "FALSE", "no", "off", "1", "true", "yes", "on", "maybe"):
+    for allow in ("", "jamalbalya"):
+        check(f"a sign-in is required with REQUIRE_HF_SIGN_IN={require!r}, allowlist {allow!r}",
+              under(require, allow, guard.sign_in_required) is True)
 
-# The request that used to be refused with "Sign in with Hugging Face to
-# generate." — no credential of any kind — is the one a public studio serves.
-signed_out = FakeRequest(headers={"x-forwarded-for": "203.0.113.9"})
-check("a public studio serves a request with no credential at all",
-      under("", "", lambda: guard.caller_for(signed_out)) == "ip:203.0.113.9")
-refuses("a private studio still refuses that same request", 401,
-        lambda: under("1", "jamalbalya", lambda: guard.caller_for(signed_out)))
+# Switching it off is noticed rather than obeyed, so app.py can say so at
+# startup instead of a deployer believing the door is open.
+for word in ("0", "false", "No", "OFF"):
+    check(f"{word!r} is recognised as an attempt to allow anonymous callers",
+          under(word, "", guard.disabling_sign_in_was_attempted) is True)
+for word in ("", "1", "true", "maybe"):
+    check(f"{word!r} is not such an attempt",
+          under(word, "", guard.disabling_sign_in_was_attempted) is False)
 
-# A public studio never looks at a bearer, so it can never reject one: the
-# 401 that expired tokens and pasted PATs used to produce cannot happen.
-for header in ("Bearer expired", "Bearer forged", "Basic nonsense", "Bearer "):
-    check(f"a public studio ignores {header!r} rather than judging it",
-          under("", "", lambda h=header: guard.caller_for(
-              FakeRequest(headers={"authorization": h, "x-forwarded-for": "203.0.113.9"}),
-          )) == "ip:203.0.113.9")
+# The anonymous request, in each shape it arrives in. All of them are 401, and
+# none of them is turned into an identity.
+refuses("a request with no credential at all is refused", 401,
+        lambda: guard.caller_for(FakeRequest()))
+refuses("a forwarded address is not an identity", 401,
+        lambda: guard.caller_for(FakeRequest(headers={"x-forwarded-for": "203.0.113.9"})))
+refuses("nor is the header behind it", 401,
+        lambda: guard.caller_for(FakeRequest(headers={"x-real-ip": "198.51.100.7"})))
+refuses("nor is the socket address", 401,
+        lambda: guard.caller_for(FakeRequest(host="192.0.2.5")))
+refuses("nor is a username in the payload", 401,
+        lambda: guard.caller_for(FakeRequest(headers={"x-forwarded-for": "203.0.113.9"})))
+for header in ("Bearer ", "Bearer", "Basic nonsense", "Token abc", "hf_looks_real"):
+    refuses(f"{header!r} is refused rather than read generously", 401,
+            lambda h=header: guard.caller_for(FakeRequest(headers={"authorization": h})))
 
-# A private studio still gets its identity from the network, not the request.
+# The configuration that used to serve this request does not serve it now.
+refuses("an anonymous request is refused even when the environment asks otherwise", 401,
+        lambda: under("0", "jamalbalya", lambda: guard.caller_for(
+            FakeRequest(headers={"x-forwarded-for": "203.0.113.9"}))))
+refuses("and with no allowlist configured it is still 401, never served", 401,
+        lambda: under("0", "", lambda: guard.caller_for(
+            FakeRequest(headers={"x-forwarded-for": "203.0.113.9"}))))
+
+# The address-keyed caller is gone from the module, not merely unused. A helper
+# that exists is a helper something can start calling again.
+check("nothing in the boundary can key a caller by address",
+      not hasattr(guard, "client_key"))
+check("guard.py never mentions x-forwarded-for",
+      "x-forwarded-for" not in open(guard.__file__, encoding="utf8").read().lower())
+
+# What a signed-in, allowlisted caller gets: through, and named by the network.
 guard.verify_identity = stub_identity("jamalbalya")
-check("a private studio still answers with the verified username",
+check("an allowlisted account is admitted, and named by the verified username",
       under("1", "jamalbalya", lambda: guard.caller_for(
-          FakeRequest(headers={"authorization": "Bearer good", "x-forwarded-for": "203.0.113.9"}),
-      )) == "jamalbalya")
+          FakeRequest(headers={"authorization": "Bearer good",
+                               "x-forwarded-for": "203.0.113.9"}))) == "jamalbalya")
+refuses("an authenticated account that is not on the allowlist is refused", 403,
+        lambda: under("1", "someone-else", lambda: guard.caller_for(
+            FakeRequest(headers={"authorization": "Bearer good"}))))
+refuses("an expired sign-in is refused, and says so differently", 401,
+        lambda: under("1", "jamalbalya", lambda: guard.caller_for(
+            FakeRequest(headers={"authorization": "Bearer expired"}))))
+refuses("an empty allowlist admits nobody, however well they signed in", 403,
+        lambda: under("1", "", lambda: guard.caller_for(
+            FakeRequest(headers={"authorization": "Bearer good"}))))
 guard.verify_identity = real_verify
 
-
-print("\nwho the brake counts")
-check("the forwarded address is used, the nearest hop first",
-      guard.client_key(FakeRequest(headers={"x-forwarded-for": "203.0.113.9, 10.0.0.1"}))
-      == "ip:203.0.113.9")
-check("whitespace around it does not make a second bucket",
-      guard.client_key(FakeRequest(headers={"x-forwarded-for": "  203.0.113.9 "}))
-      == "ip:203.0.113.9")
-check("x-real-ip is the fallback",
-      guard.client_key(FakeRequest(headers={"x-real-ip": "198.51.100.7"})) == "ip:198.51.100.7")
-check("an empty forwarded header falls through rather than becoming a bucket",
-      guard.client_key(FakeRequest(headers={"x-forwarded-for": "", "x-real-ip": "198.51.100.7"}))
-      == "ip:198.51.100.7")
-check("the socket address is the last resort",
-      guard.client_key(FakeRequest(host="192.0.2.5")) == "ip:192.0.2.5")
-check("with nothing to go on, everyone shares one bucket rather than none",
-      guard.client_key(FakeRequest()) == "ip:unknown")
-check("an address is never mistaken for a username",
-      guard.client_key(FakeRequest(headers={"x-forwarded-for": "203.0.113.9"})).startswith("ip:"))
-
-# The brake is what a public studio has instead of a door, so it has to hold
-# for addresses exactly as it does for accounts.
-public_brake = guard.RateLimiter(limit=2, window=3600)
-first = guard.client_key(FakeRequest(headers={"x-forwarded-for": "203.0.113.9"}))
-second = guard.client_key(FakeRequest(headers={"x-forwarded-for": "198.51.100.7"}))
-allows("a public caller's first song", lambda: public_brake.check(first))
-allows("and their second", lambda: public_brake.check(first))
-refuses("the third is refused", 429, lambda: public_brake.check(first))
-allows("a different address has its own budget", lambda: public_brake.check(second))
-
-# And the checks that protect the GPU rather than the door are untouched by
-# opening it: a public request is still validated before anything runs.
-refuses("a public studio still refuses an oversized lyric sheet", 400,
-        lambda: under("", "", lambda: guard.validate_request(
-            "dangdut koplo", "x" * (guard.MAX_LYRICS_CHARS + 1), "id", "male", False, 271)))
-refuses("a public studio still refuses a length ACE-Step cannot make", 400,
-        lambda: under("", "", lambda: guard.validate_request(
-            "dangdut koplo", "baris satu", "id", "male", False, 9)))
+# And the checks that protect the GPU behind the door are still there.
+refuses("an oversized lyric sheet is refused", 400,
+        lambda: guard.validate_request(
+            "dangdut koplo", "x" * (guard.MAX_LYRICS_CHARS + 1), "id", "male", False, 271))
+refuses("a length ACE-Step cannot make is refused", 400,
+        lambda: guard.validate_request("dangdut koplo", "baris satu", "id", "male", False, 9))
 
 
 # --- paths that cost GPU time are gated --------------------------------------

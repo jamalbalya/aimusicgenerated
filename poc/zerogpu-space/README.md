@@ -20,49 +20,42 @@ Not an application. One function, one API name, defaults fixed to the fixture.
 
 ## Access
 
-**This Space is public.** Nobody signs in, no credential is read, and the web UI
-here works like any other Space's. Anyone can generate.
+**This Space requires a Hugging Face sign-in, and no configuration lifts it.**
+Every path that costs GPU time or hands back a result — `/queue/join`,
+`/queue/data`, `/call/*`, `/run/*`, `/api/*` and `/file=*` — requires an
+`Authorization: Bearer <hugging face token>` header. The token is verified
+against Hugging Face on this side of the wire, and the verified username is then
+checked against an allowlist. Nothing in the request body is ever read as
+identity, and an anonymous request is refused with 401 before any handler runs.
 
-What makes that safe to leave open is not a door but a ceiling: ZeroGPU's own
-quota. A request that would exceed the account's free GPU allowance is refused by
-Hugging Face before any GPU starts, so an open Space cannot run up a bill. There
-is nothing to pay for and nothing to leak — no key, no model weight and no
-private data lives here.
-
-What is still enforced on every request, signed in or not:
-
-- **Input validation** — style, lyrics, language, voice, the instrumental flag
-  and the length are all checked for shape and size before a handler runs
-  (`guard.validate_request`). An oversized lyric sheet or a length outside
-  10–600 seconds is refused without touching the GPU.
-- **Rate limiting** — every caller is counted, and a caller over the limit gets a
-  429 (`guard.RateLimiter`). With nobody signed in the caller is their forwarded
-  IP address, which the client can write, so this is a brake on casual
-  repetition rather than a security control. The quota above is the real
-  ceiling.
-- **Path policy** — only the paths a client genuinely needs are served.
-
-### Making it private instead
-
-Two Space **secrets** — not repository variables — turn the sign-in back on:
+Set these as **Space secrets**, not as repository variables:
 
 | secret | meaning |
 | --- | --- |
-| `ALLOWED_HF_USERS` | The guest list: who may generate. Comma or space separated. Naming anyone here makes the Space private, and then an `Authorization: Bearer <hugging face token>` header is required on every path that costs GPU time or hands back a result — `/queue/join`, `/queue/data`, `/call/*`, `/run/*`, `/api/*`, `/file=*`. The token is verified against Hugging Face on this side of the wire; nothing in the request body is ever read as identity. |
-| `REQUIRE_HF_SIGN_IN` | `1` demands a sign-in even with no guest list named — which, failing closed, admits nobody. `0` keeps the Space public even when a guest list exists. Unset lets the guest list decide, so neither mode is ever reached by accident. |
+| `ALLOWED_HF_USERS` | Who may generate. Comma or space separated. **Unset means nobody** — the Space fails closed. |
 | `OPENID_PROVIDER_URL` | Optional. Where identity is checked; defaults to `https://huggingface.co`. |
 | `AUTH_CACHE_SECONDS` | Optional, default 60. How long a verified token is trusted before Hugging Face is asked again — also how long a revoked one keeps working. |
-| `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | Optional abuse brake per caller, default 6 per hour. Applies in **both** modes. In process memory: it resets whenever the Space restarts, and it is not the ZeroGPU quota. |
+| `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | Optional abuse brake per verified user, default 6 per hour. In process memory: it resets whenever the Space restarts, and it is not the ZeroGPU quota. |
 
-In private mode everything fails closed: an empty guest list authorises nobody,
-and a Hugging Face that cannot be reached authorises nobody either. It also means
-**the Space's own web UI will not generate**, because there is no browser session
-to carry a bearer — the studio frontend, which holds an OAuth token, is then the
-only way in.
+`REQUIRE_HF_SIGN_IN=1` is set as a Space **variable**. It is documentation
+rather than a switch: `guard.sign_in_required()` returns true unconditionally,
+so setting it to `0` changes nothing and the Space says so in its startup log
+rather than quietly opening the door. There is no supported way to allow
+anonymous generation here.
 
-`poc/zerogpu-space/test_guard.py` covers both modes (`python3 test_guard.py`, no
-dependencies), and `live_boundary_test.py --public` probes a deployed one over
-real HTTP without spending GPU time.
+Rate limiting counts a **verified username**, never an address. A brake keyed to
+an IP would be a throttle standing in for a boundary: addresses are shared,
+spoofable and rotated freely, so counting anonymous callers by one is not a way
+to let them in safely.
+
+Because the gate applies to the queue as well, **the Space's own web UI will not
+generate** — there is no browser session to carry a bearer. That is intended:
+this Space is an API for the studio, and it was always a measuring harness
+rather than something to use directly.
+
+`test_guard.py` covers the boundary with no dependencies (`python3
+test_guard.py`), and `live_boundary_test.py` attacks a real Gradio server over
+real HTTP — locally, or a deployed Space with `--base URL`.
 
 ## Why the front-matter says what it says
 
@@ -90,9 +83,8 @@ It creates nothing on Hugging Face by itself — create the Space in the web UI
 with SDK *Gradio* and hardware *ZeroGPU* first, then run the script. It copies
 `app.py`, `guard.py`, `requirements.txt`, this README and the fixtures — `app.py`
 imports `guard.py`, so a deploy that left it behind would not start — vendors
-ACE-Step 1.5
-at a pinned commit under `vendor/`, records that commit in `vendor/COMMIT.txt`,
-and pushes. It never pushes weights or audio.
+ACE-Step 1.5 at a pinned commit under `vendor/`, records that commit in
+`vendor/COMMIT.txt`, and pushes. It never pushes weights or audio.
 
 ### What the vendored ACE-Step tree excludes, and why
 

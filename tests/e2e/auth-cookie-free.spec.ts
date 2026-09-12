@@ -151,7 +151,7 @@ test.describe('signing in keeps nothing', () => {
     context.on('page', (popup) => { void fakeProvider(popup) })
 
     await openNeural(page)
-    await expect(page.getByTestId('hf-auth')).toContainText(/Sign in only if this studio asks/i)
+    await expect(page.getByTestId('hf-auth')).toContainText(/Not signed in/i)
 
     await page.getByRole('button', { name: /Sign in with Hugging Face/ }).click()
     await expect(page.getByTestId('hf-auth')).toContainText(`Signed in to Hugging Face as ${USERNAME}`, {
@@ -193,20 +193,15 @@ test.describe('signing in keeps nothing', () => {
 
     expect(space.authHeaders(), 'the Space was handed the bearer').toEqual([`Bearer ${TOKEN}`])
 
-    // Signing out takes the token away from the very next request.
+    // Signing out ends the ability to generate, not just the header.
     await page.getByRole('button', { name: 'Sign out' }).click()
-    await expect(page.getByTestId('hf-auth')).toContainText(/Sign in only if this studio asks/i)
+    await expect(page.getByTestId('hf-auth')).toContainText(/Not signed in/i)
     await expect(page.getByTestId('hf-auth')).not.toContainText(USERNAME)
 
-    await page.getByRole('button', { name: /^Generate song$/ }).click()
-    await expect(page.getByRole('button', { name: /^(Generate song|Generating…)$/ }))
-      .toBeEnabled({ timeout: 60_000 })
-    // The request is still made, because a public Space would have served it.
-    // What changed is what it carries: nothing, rather than a token the
-    // visitor has just given up. The studio never refuses a signed-out
-    // visitor on its own — that decision belongs to the Space.
-    expect(space.authHeaders(), 'the second request went out unsigned')
-      .toEqual([`Bearer ${TOKEN}`, undefined])
+    // No second request goes out at all — signed out, there is nothing to send
+    // and the Space would refuse it. The button says so by being disabled.
+    await expect(page.getByRole('button', { name: /^Generate song$/ })).toBeDisabled()
+    expect(space.authHeaders(), 'no second request was made at all').toHaveLength(1)
 
     const left = await residue(page)
     expect(left.cookie).toBe('')
@@ -272,7 +267,7 @@ test.describe('signing in keeps nothing', () => {
     await page.getByRole('group', { name: 'Generation engine' })
       .getByRole('button', { name: 'Neural', exact: true }).click()
     // Intended, not a defect: the session lived in a heap that no longer exists.
-    await expect(page.getByTestId('hf-auth')).toContainText(/Sign in only if this studio asks/i)
+    await expect(page.getByTestId('hf-auth')).toContainText(/Not signed in/i)
     expect((await residue(page)).cookie).toBe('')
   })
 })

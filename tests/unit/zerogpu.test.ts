@@ -556,6 +556,54 @@ describe('a refused sign-in is its own answer', () => {
   })
 })
 
+describe('the neural engine is closed to anyone who has not signed in', () => {
+  // The behaviour is proved in the browser, by tests/e2e/auth-required.spec.ts:
+  // a disabled button, a panel that says why, and a keyboard shortcut that is
+  // refused. What is checked here is that the refusal lives in the action and
+  // not only in the markup — the shortcut calls the action directly, so a gate
+  // that existed only as a `disabled` attribute would not be a gate at all.
+  const studio = () => readFileSync(new URL('../../src/ui/pages/StudioPage.tsx', import.meta.url), 'utf8')
+
+  it('refuses inside the action, where every way in arrives', () => {
+    const source = studio()
+    const neuralBranch = source.slice(source.indexOf("if (engineMode === 'neural') {"))
+    // The check, and a `return` before anything is submitted.
+    expect(neuralBranch).toMatch(/if \(auth\.status !== 'signed-in'\) \{[\s\S]{0,200}?return\n/)
+    // And it is reached before the generation is started, not after.
+    const refusal = neuralBranch.indexOf("auth.status !== 'signed-in'")
+    const start = neuralBranch.indexOf('generateNeural(overrideSeed)')
+    expect(refusal).toBeGreaterThan(-1)
+    expect(refusal).toBeLessThan(start)
+  })
+
+  it('keeps the sign-in requirement in the dependency list, so it cannot go stale', () => {
+    // `auth.status` is read by the callback, so leaving it out would freeze the
+    // refusal at whatever the state was when the callback was built — blocking
+    // someone who has since signed in, or worse.
+    expect(studio()).toMatch(/\}, \[busy, engineMode, generate, generateNeural, clearNeural, auth\.status, notify\]\)/)
+  })
+
+  it('disables both generate controls, and only for the neural engine', () => {
+    const source = studio()
+    expect(source).toContain("const needsSignIn = engineMode === 'neural' && auth.status !== 'signed-in'")
+    expect(source).toContain('disabled={busy || needsSignIn}')
+    expect(source).toContain('disabled={needsSignIn || (engineMode === \'neural\' ? neuralTakes.length === 0 : !result)}')
+  })
+
+  it('shows a blocking panel rather than only grey buttons', () => {
+    const source = studio()
+    expect(source).toContain('data-testid="hf-signin-required"')
+    expect(source).toMatch(/needsSignIn && \(/)
+    expect(source).toContain('Sign in with Hugging Face to use the neural engine.')
+  })
+
+  it('makes no claim that a signed-out visitor can generate', () => {
+    const source = studio()
+    expect(source).not.toContain('open to everyone')
+    expect(source).not.toMatch(/Sign in only if/)
+  })
+})
+
 describe('every way ZeroGPU can say no, named', () => {
   it('a spent quota is its own error, carries ZeroGPU\'s words, and is asked exactly once', async () => {
     const text = 'You have exceeded your free ZeroGPU quota (120s requested vs. 44s left). Try again in 23:14:07.'

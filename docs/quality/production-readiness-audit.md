@@ -307,7 +307,7 @@ change: NO.**
 
 | Check | Result |
 | --- | --- |
-| HF token in the browser | **PASS** — no token exists anywhere in the frontend; the Space is public and unauthenticated |
+| HF token in the browser | **PASS** — no token exists anywhere in the frontend; the only credential is an OAuth access token the visitor obtains themselves, held in memory for one tab |
 | GitHub token in the browser | **PASS** — `grep -roiE "ghp_…\|github_pat_…"` over `dist/` returns nothing |
 | Secrets in the Vite build | **PASS** — two allowlists (`NEURAL_SETTINGS`, `BUILD_SETTINGS`); `build-env.test.ts` offers a full Actions environment with five token-shaped values and proves none is baked |
 | Secrets in `dist` | **PASS** — no `hf_`, `ghp_`, `github_pat_`, `AKIA`, or PEM header in a deploy-shaped build |

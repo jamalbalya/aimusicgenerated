@@ -10,23 +10,17 @@ replaced by a tripwire that records being entered and nothing else, because the
 question this answers is exactly "was the handler reached?" — and on a real
 Space that question costs GPU seconds to ask.
 
-A Space runs in one of two modes, and the two are attacked differently:
-
-  * **private** — a sign-in is required, so every unauthenticated request to a
-    gated path must be refused by the door.
-  * **public** — no sign-in is required, so the door must refuse nothing. What
-    still has to hold is that the *validator* refuses: every probe sent in this
-    mode carries a length ACE-Step cannot make, so a public Space answers 400
-    and no GPU ever starts. A valid payload here would spend the day's whole
-    allowance to prove something a rejected one proves just as well.
+A sign-in is required to generate, so every unauthenticated request to a gated
+path must be refused by the door, and none of them may reach the handler. Both
+halves are checked: the status code the caller sees, and a tripwire inside the
+handler that must never fire.
 
 So this proves the code. It does not prove the deployment: the Space could be
-running an older commit, or in the other mode. Only a run against the deployed
-Space proves that, and this file is what to run against it.
+running an older commit. Only a run against the deployed Space proves that, and
+this file is what to run against it.
 
-    python3 live_boundary_test.py             # local harness, both modes
-    python3 live_boundary_test.py --base URL  # a deployed private Space
-    python3 live_boundary_test.py --base URL --public  # a deployed public Space
+    python3 live_boundary_test.py             # the local harness
+    python3 live_boundary_test.py --base URL  # the deployed Space
 """
 
 from __future__ import annotations
@@ -121,11 +115,9 @@ def request(
 
 def payload(extra: dict | None = None) -> dict:
     body = {
-        # Auto length when the door is what is being tested; a length ACE-Step
-        # refuses when the door is open, so a served request still starts no
-        # generation and costs no quota.
-        "data": ["dangdut koplo, male vocal", "baris satu\nbaris dua", "id", "male", False,
-                 (guard.DURATION_MIN - 1) if PUBLIC else -1],
+        # Auto length: the door is what is being tested, and a refused request
+        # never reaches the point where a length would matter.
+        "data": ["dangdut koplo, male vocal", "baris satu\nbaris dua", "id", "male", False, -1],
         "event_data": None,
         "fn_index": 0,
         "session_hash": "attack-session",
@@ -154,30 +146,6 @@ def settle(seconds: float = 2.0) -> None:
 def refused(status: int) -> bool:
     """Any refusal that is not a success. 401/403 wanted; 4xx/5xx accepted."""
     return status >= 400
-
-
-#: Set for a Space that requires no sign-in. Changes what the probes send and
-#: what their answers are judged against; see the module docstring.
-PUBLIC = False
-
-#: Every sentence the door itself refuses with. Finding one of these in an
-#: answer is how a refusal by the door is told from a refusal by anything else
-#: — Gradio declining a file path, or the validator declining a length — which
-#: matters because in public mode the first is a failure and the others are not.
-SIGN_IN_REFUSALS = (
-    "sign in with hugging face",
-    "sign-in is no longer valid",
-    "not open for use yet",
-    "not approved for this studio",
-)
-
-
-def door_refused(status: int, text: str) -> bool:
-    """Whether the boundary refused this for want of a sign-in."""
-    if status not in (401, 403):
-        return False
-    lowered = text.lower()
-    return any(sentence in lowered for sentence in SIGN_IN_REFUSALS)
 
 
 def run_attacks(base: str, live: bool) -> None:
@@ -209,12 +177,7 @@ def run_attacks(base: str, live: bool) -> None:
     for name, path, headers, body in cases:
         method = "GET" if body is None else "POST"
         status, text = request(base, path, method, headers, body)
-        if PUBLIC:
-            # The door must refuse nothing. Whatever else happens to the
-            # request — the validator declining the length, Gradio declining a
-            # file path — is not this check's business.
-            verdict = "FAIL" if door_refused(status, text) else "PASS"
-        elif status in (401, 403):
+        if status in (401, 403):
             # Unauthenticated access to a gated path must be 401 or 403. Any
             # other refusal is still a refusal, but not the one being claimed.
             verdict = "PASS"
@@ -231,17 +194,8 @@ def run_attacks(base: str, live: bool) -> None:
     # the only two checks that reach Hugging Face. They are judged on whether
     # verification actually happened, not merely on being refused.
     for label, token in [("C  malformed token", "fake"), ("D  random valid-shaped token", f"hf_{fake}")]:
-        status, text = request(base, f"{API}/queue/join", "POST",
-                               {"Authorization": f"Bearer {token}"}, payload())
-        if PUBLIC:
-            # A public Space reads no credential, so a bad one is neither
-            # trusted nor refused — it is simply not looked at. Being served is
-            # the correct answer here; being refused *for the credential* is
-            # the failure, because that is the door acting when it should not.
-            verdict = "FAIL" if door_refused(status, text) else "PASS"
-            detail = f"HTTP {status} — no credential is read, so this one was never consulted"
-            record(label, verdict, detail)
-            continue
+        status, _ = request(base, f"{API}/queue/join", "POST",
+                            {"Authorization": f"Bearer {token}"}, payload())
         verdict, detail = credential_verdict(status)
         record(label, verdict, detail)
 
@@ -249,11 +203,8 @@ def run_attacks(base: str, live: bool) -> None:
     status, _ = request(base, f"{API}/queue/join", "POST", {}, None, raw_body=b"{not json")
     record("M  malformed JSON, no auth", "PASS" if refused(status) else "FAIL", f"HTTP {status}")
 
-    # XSS payloads are just text. In a private Space they must be refused for
-    # lack of auth; in a public one they are accepted as input, which is fine.
-    # The claim that holds in both is the one that matters: whatever comes back
-    # must never contain them, so nothing the caller wrote can be executed by a
-    # browser reading the answer.
+    # XSS payloads are just text; they must be refused for lack of auth, not
+    # interpreted, and must never come back executable.
     for label, field, value in [
         ("style", 0, "<script>alert(document.domain)</script>"),
         ("lyrics", 1, "<img src=x onerror=alert(document.domain)>"),
@@ -262,8 +213,8 @@ def run_attacks(base: str, live: bool) -> None:
         data["data"][field] = value
         status, text = request(base, f"{API}/queue/join", "POST", {}, data)
         clean = value not in text
-        wanted = clean if PUBLIC else (refused(status) and clean)
-        record(f"   XSS in {label} not reflected", "PASS" if wanted else "FAIL",
+        record(f"   XSS in {label} not reflected",
+               "PASS" if refused(status) and clean else "FAIL",
                f"HTTP {status}, payload {'absent from' if clean else 'ECHOED IN'} response")
 
     # The launch-path question, answered from behaviour rather than from
@@ -273,29 +224,6 @@ def run_attacks(base: str, live: bool) -> None:
     # source can settle that; four HTTP statuses can.
     print()
     expected = ("/queue/join", "/queue/data", "/call/generate_music", "/file=")
-    if PUBLIC:
-        # A door that refuses nothing cannot be seen from outside it. Whether
-        # the dependency is installed is answerable only in private mode, and
-        # claiming otherwise here would be inventing a pass.
-        #
-        # The local harness runs both modes against one server, so if the
-        # private phase already answered this, asking again proves nothing and
-        # is not a gap either. Against a deployed public Space there is no such
-        # phase, and then it is a real gap and says so.
-        answered = any(name.startswith("LAUNCH PATH") and verdict == "PASS"
-                       for name, verdict, _ in RESULTS)
-        record("LAUNCH PATH  auth_dependency is active",
-               "N/A" if answered else "UNVERIFIED",
-               "a public Space refuses nothing, so its gate leaves no trace in a status code"
-               + (" — already proven against this same server in private mode" if answered
-                  else "; run this against a private one to verify the dependency"))
-        settle()
-        print(f"\n  GPU function entered: {len(gpu_entries)} time(s)")
-        record("GPU never entered by a refused request",
-               "PASS" if not gpu_entries else "FAIL",
-               f"{len(gpu_entries)} entries recorded; every probe carried a length "
-               "ACE-Step refuses, so none should have reached the handler")
-        return
     missing = [k for k in expected if k not in GATED]
     ungated = {k: v for k, v in GATED.items() if v not in (401, 403)}
     if missing:
@@ -324,13 +252,16 @@ def run_attacks(base: str, live: bool) -> None:
 
 
 def run_rate_limit_check(base: str) -> None:
-    """Proves the brake still counts a caller nobody signed in as.
+    """Proves the brake counts a *verified user*, over real HTTP.
 
-    Local only, and the one place a payload the validator *accepts* is sent:
-    the brake is checked after validation, so a request refused for its length
-    never reaches it. That is safe here and nowhere else — the handler is a
-    tripwire, so an accepted request costs nothing. The same probe against a
-    deployed Space would spend real GPU time.
+    Runs with identity stubbed and a bearer attached, because the brake is only
+    reached by a request that got through the door: an anonymous one is refused
+    before it, which is the subject of every other check here.
+
+    Local only, and the one place a payload the validator accepts is sent — the
+    brake is checked after validation. Safe here and nowhere else: the handler
+    is a tripwire, so an accepted request costs nothing, while the same probe
+    against a deployed Space would spend real GPU time.
 
     The answer is read from the tripwire rather than from a status code, because
     a queued handler's refusal does not reach `/queue/join`: Gradio has already
@@ -338,29 +269,34 @@ def run_rate_limit_check(base: str) -> None:
     travels on the event stream instead.
     """
     global LIMITER
-    print("\n=== the brake, with nobody signed in ===")
+    print("\n=== the brake, for a signed-in caller ===")
+    real = guard.verify_identity
+    guard.verify_identity = lambda token: guard.Identity(username="jamalbalya", sub="u1")
+    guard._verified.clear()
     was, LIMITER = LIMITER, guard.RateLimiter(limit=2, window=3600)
     gpu_entries.clear()
     try:
         for _ in range(3):
-            request(base, f"{API}/queue/join", "POST", {},
+            request(base, f"{API}/queue/join", "POST", {"Authorization": "Bearer hf_stubbed"},
                     payload({"data": ["dangdut koplo", "baris satu", "id", "male", False, -1]}))
             settle()
-        record("a public caller is counted by address, and the third is refused",
+        record("a verified caller's third request in the window is refused",
                "PASS" if len(gpu_entries) == 2 else "FAIL",
-               f"3 accepted requests from one address reached the handler "
-               f"{len(gpu_entries)} time(s); the brake allows 2")
+               f"3 admitted requests reached the handler {len(gpu_entries)} time(s); "
+               "the brake allows 2")
         callers = {entry["caller"] for entry in gpu_entries}
-        record("the caller is an address, not anything the caller sent",
-               "PASS" if all(c.startswith("ip:") for c in callers) else "FAIL",
+        record("the brake counts the verified username, never an address",
+               "PASS" if callers == {"jamalbalya"} else "FAIL",
                f"counted as {', '.join(sorted(callers)) or 'nothing'}")
     finally:
         LIMITER = was
+        guard.verify_identity = real
+        guard._verified.clear()
         gpu_entries.clear()
 
 
 def run_local() -> None:
-    """Stands up real Gradio with the real gate, then attacks it in both modes."""
+    """Stands up real Gradio with the real gate, then attacks it."""
     if gr is None:
         print("gradio is not installed; `pip install gradio==6.2.0` to run the local harness")
         sys.exit(1)
@@ -428,20 +364,6 @@ def run_local() -> None:
 
     run_attacks(base, live=False)
 
-    # The same gate, the same server, with the sign-in requirement lifted. The
-    # gate asks `sign_in_required()` per request, so this needs no restart.
-    global PUBLIC
-    was = (guard.REQUIRE_SIGN_IN_RAW, guard.ALLOWED_USERS_RAW, PUBLIC)
-    guard.REQUIRE_SIGN_IN_RAW, guard.ALLOWED_USERS_RAW, PUBLIC = "0", "", True
-    gpu_entries.clear()
-    print("\n=== the same attacks against a public Space ===")
-    try:
-        run_attacks(base, live=False)
-        run_rate_limit_check(base)
-    finally:
-        guard.REQUIRE_SIGN_IN_RAW, guard.ALLOWED_USERS_RAW, PUBLIC = was
-        gpu_entries.clear()
-
     # The allowlist, through a real request, with Hugging Face's answer stubbed:
     # what is being tested here is the decision, not HF's uptime.
     print("\n=== authorization, with identity stubbed ===")
@@ -467,20 +389,16 @@ def run_local() -> None:
                    f"allowlist {'LEAKED' if leaks else 'not leaked'}")
     guard.verify_identity = real
 
+    run_rate_limit_check(base)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", help="attack a deployed Space instead of a local harness")
-    parser.add_argument("--public", action="store_true",
-                        help="the Space requires no sign-in: the door must refuse nothing, "
-                             "and every probe is built so the validator refuses it instead")
     args = parser.parse_args()
 
     if args.base:
-        global PUBLIC
-        PUBLIC = args.public
-        print(f"attacking the deployed Space at {args.base}"
-              f"{' (public: no sign-in expected)' if PUBLIC else ''}")
+        print(f"attacking the deployed Space at {args.base}")
         run_attacks(args.base.rstrip("/"), live=True)
         print("\nNote: the GPU tripwire is local only. Against a deployed Space, "
               "confirm from its logs that no generation started.")

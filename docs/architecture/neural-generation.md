@@ -582,16 +582,18 @@ ZeroGPU Space, which does:
 ```
 Browser
   └── HTTPS → Resonant Studio (GitHub Pages, static)
-        └── HTTPS → ACE-Step 1.5 Space on Hugging Face ZeroGPU   (free, public)
+        └── HTTPS → ACE-Step 1.5 Space on Hugging Face ZeroGPU   (free, sign-in required)
               └── one request → one complete WAV
 ```
 
 That path answers every point below for the hosted backend. CORS: Gradio
 echoes the page's origin, and the live Space returned
 `access-control-allow-origin: https://jamalbalya.github.io` for both the GET and
-the POST preflight. Mixed content: the Space is HTTPS. Authentication: none; the
-Space is public and no token is involved. Cost: none — each visitor spends their
-own daily ZeroGPU allowance, and running out is reported as exactly that.
+the POST preflight. Mixed content: the Space is HTTPS. Authentication: the
+visitor signs in with Hugging Face and the browser sends that OAuth token as a
+bearer; the Space verifies it and refuses anonymous callers with 401. Cost:
+none — each visitor spends their own daily ZeroGPU allowance, and running out is
+reported as exactly that.
 
 The deploy workflow builds with `ACE_STEP_BACKEND=zerogpu` and reads the Space's
 address from the `ACE_STEP_SPACE_URL` repository variable.

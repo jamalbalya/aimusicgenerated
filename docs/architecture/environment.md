@@ -20,14 +20,13 @@ read by this project.
 | `ACE_STEP_SPACE_MAX_DURATION` | unset | Requests longer than this are refused before anything is sent. Unset means no ceiling is claimed — **not** that any length fits the Space's GPU time. 10–600 |
 | `ACE_STEP_SPACE_TIMEOUT_SECONDS` | `900` | Outer bound on one generation, queue and a cold start included. A dead connection is caught much sooner, by the heartbeat. 60–3600 |
 
-No token is configured here, and none can be. The Space is public, the browser
-calls it directly, and there is no variable that would bake a Hugging Face token
-into the bundle — a personal access token in a public bundle is a published
-credential, so the door is simply not there. The only credential the frontend
-ever carries is an OAuth access token the visitor obtained themselves, held in
-memory for that one tab, and only when they chose to sign in. A token used to
-*push* the Space (`poc/zerogpu-space/deploy.sh`) may live in `.env`; it is never
-baked, because only the variables named on this page are.
+No token is configured here, and none can be. There is no variable that would
+bake a Hugging Face token into the bundle — a personal access token in a public
+bundle is a published credential, so the door is simply not there. The only
+credential the frontend ever carries is an OAuth access token the visitor
+obtained by signing in themselves, held in memory for that one tab. A token used
+to *push* the Space (`poc/zerogpu-space/deploy.sh`) may live in `.env`; it is
+never baked, because only the variables named on this page are.
 
 A value that is present but invalid — a duration that is not a whole number, a
 Space page URL instead of its host, an `http://` Space on the `https://` site —
@@ -50,7 +49,7 @@ Actions → Variables:
 | Repository variable | Required | Value |
 |---|---|---|
 | `ACE_STEP_SPACE_URL` | yes | `https://<owner>-<space>.hf.space` |
-| `VITE_HF_CLIENT_ID` | only for a private Space | the Hugging Face OAuth application's client id |
+| `VITE_HF_CLIENT_ID` | yes | the Hugging Face OAuth application's client id |
 | `ACE_STEP_BACKEND` | no | overrides `zerogpu` |
 | `ACE_STEP_SPACE_AUTO_DURATION`, `ACE_STEP_SPACE_MAX_DURATION`, `ACE_STEP_SPACE_TIMEOUT_SECONDS` | no | as above |
 
@@ -58,13 +57,12 @@ Variables, not secrets: every one of them ends up in a public bundle. If
 `ACE_STEP_SPACE_URL` is missing the deploy still runs, puts a warning in the
 workflow summary, and the site's neural engine says it is not configured.
 
-`VITE_HF_CLIENT_ID` is optional, and what makes it optional is the Space being
-public: visitors generate without signing in, so a build without a client id is
-fully usable. It becomes necessary only if the Space is made private — a guest
-list in `ALLOWED_HF_USERS`, or `REQUIRE_HF_SIGN_IN=1` — because then the Space
-asks every caller for a verified account and a build with no client id gives
-visitors no way to offer one. The workflow notes its absence in the summary
-rather than failing, so that pairing is visible rather than silent.
+`VITE_HF_CLIENT_ID` behaves the same way, and matters as much: without it the
+site builds and every offline tool works, but the neural engine is unusable —
+the studio says signing in is not configured and nothing can be generated,
+because the Space refuses a request that carries no verified account. The
+workflow warns in its summary rather than failing, so a deploy that is missing
+it is visible rather than silent.
 
 It is the **public client** id of an OAuth application, and public is the whole
 point: a public client has no secret, and every OAuth flow there is sends this
@@ -75,11 +73,11 @@ the bundle, not in `.env`. If an OAuth application hands you one, it does not
 belong here; this is an Authorization Code + PKCE flow, which exists precisely
 so that a browser client needs no secret.
 
-Whether an account is needed at all is **not** decided here. It is decided in
-the Space, where the browser cannot read or change it. Signing in proves who you
-are; the Space alone decides what that entitles you to — including, as it is
-deployed, that it entitles you to nothing in particular because everyone is
-already welcome. Nothing in this table is a security control.
+The allowlist deciding who may actually generate is **not** here. It lives in
+the Space as `ALLOWED_HF_USERS`, where the browser cannot read or change it.
+Signing in proves who you are; the Space alone decides what that entitles you
+to. Nothing in this table is a security control: the gate is the Space's, and
+the studio's own refusal of a signed-out visitor is a courtesy in front of it.
 
 ### The Space's own variables
 
@@ -89,15 +87,16 @@ requests meet; `poc/zerogpu-space/README.md` is the fuller account.
 
 | Space secret | Default | What it does |
 |---|---|---|
-| `ALLOWED_HF_USERS` | unset | The guest list. Naming anyone makes the Space private and every request needs a verified bearer; naming nobody leaves it public |
-| `REQUIRE_HF_SIGN_IN` | unset | `1` demands a sign-in regardless (and with no guest list, admits nobody); `0` keeps the Space public even with a guest list; unset lets the guest list decide |
-| `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | `6` / `3600` | Per-caller abuse brake, in both modes. The caller is the verified username when signed in, the forwarded IP when not |
+| `ALLOWED_HF_USERS` | unset | Who may generate, checked after the sign-in is verified. **Unset means nobody** — it fails closed |
+| `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | `6` / `3600` | Abuse brake per **verified user**, never per address |
 | `OPENID_PROVIDER_URL` | `https://huggingface.co` | Where identity is checked |
 | `AUTH_CACHE_SECONDS` | `60` | How long a verified token is trusted before Hugging Face is asked again |
 
-Input validation and the rate limiter run in both modes. What keeps a public
-Space free is ZeroGPU's own quota: a request beyond the free allowance is refused
-by Hugging Face before any GPU starts.
+`REQUIRE_HF_SIGN_IN=1` is set as a Space **variable** and is documentation
+rather than a switch: `guard.sign_in_required()` is unconditionally true, so a
+deployment cannot turn the sign-in off — setting it to `0` changes nothing and
+the Space says so in its startup log. Anonymous requests get 401 before any
+handler runs.
 
 ### Why there is no separate `VITE_` name to remember
 

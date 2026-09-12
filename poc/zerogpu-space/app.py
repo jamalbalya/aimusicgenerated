@@ -192,6 +192,16 @@ _load()
 
 RATE_LIMITER = guard.RateLimiter()
 
+# Said once, at startup, where a deployer will see it in the build log. A Space
+# configured to allow anonymous callers does not get them, and silently winning
+# that argument would leave someone believing the door is open.
+if guard.disabling_sign_in_was_attempted():
+    print(
+        "[guard] REQUIRE_HF_SIGN_IN asks for anonymous access; ignoring it. "
+        "A Hugging Face sign-in is required to generate.",
+        file=sys.stderr, flush=True,
+    )
+
 # The gate itself lives in `guard`, so it can be exercised by a real HTTP client
 # without importing this file — which would mean importing torch, ACE-Step and
 # eleven gigabytes of checkpoints. A security check that cannot be tested is a
@@ -324,12 +334,11 @@ LYRICS = (SPACE_ROOT / "fixtures" / "bos-toxic-lyrics.txt").read_text(encoding="
 def generate(style, lyrics, language, vocal_gender, instrumental, duration, request: gr.Request):
     """The generation endpoint, and the second half of the boundary.
 
-    `authorize_request` has already run at the HTTP layer: in a private studio
-    it refused anyone it could not place, and in a public one it named the
-    caller by address. This asks the same question again anyway, from the same
-    server-derived request, so the handler is safe even if it is ever reached by
-    a path that was not gated — a check that exists in only one place is one
-    deployment change away from not existing.
+    `authorize_request` has already refused unauthenticated callers at the HTTP
+    layer. This checks again anyway, from the same server-derived header, so
+    that the handler is safe even if it is ever reached by a path that was not
+    gated — a security check that only exists in one place is one deployment
+    change away from not existing.
 
     `request` is built by Gradio from the actual HTTP request. It is not part of
     the six inputs and cannot be supplied by the caller, which is what makes it

@@ -47,11 +47,9 @@ jobs:
           ACE_STEP_SPACE_URL: https://fake-space.hf.space
           # A stand-in client id, for the same reason as the stand-in Space
           # above. The sign-in control only renders when a build carries one,
-          # and the specs that sign in need it to be there; without this the
-          # suite does not test the sign-in, it tests a build that cannot sign
-          # in. Generating needs none of it — the Space is public and the specs
-          # prove a signed-out visitor is served. Each test answers
-          # huggingface.co itself, so
+          # and every spec that drives a neural generation has to get past it;
+          # without this the suite does not test the sign-in, it tests a build
+          # that cannot sign in. Each test answers huggingface.co itself, so
           # this value never reaches an OAuth server and authenticates nothing:
           # it is a fixture, not a credential. The deployed build takes the real
           # one from a repository variable, in deploy.yml.
