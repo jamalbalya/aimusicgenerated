@@ -9,7 +9,7 @@
 
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { BUILD_SETTINGS, NEURAL_SETTINGS, buildDefines, neuralDefines, packageVersion } from '../../vite.config'
+import { AUTH_SETTINGS, BUILD_SETTINGS, NEURAL_SETTINGS, authDefines, buildDefines, neuralDefines, packageVersion } from '../../vite.config'
 import { BUILD_INFO, buildLabel, buildTimeLabel } from '../../src/lib/buildInfo'
 
 const baked = (env: Record<string, string>, name: string) =>
@@ -148,6 +148,43 @@ describe('the build identifies itself', () => {
   })
 })
 
+/* -------------------------------------------------------- signing in ----- */
+
+describe('the bundle carries the sign-in settings and nothing else', () => {
+  it('allows exactly two, neither of them a secret', () => {
+    expect([...AUTH_SETTINGS].sort()).toEqual(['HF_CLIENT_ID', 'HF_PROVIDER_URL'])
+    // A *public* client has no secret. Anything secret-shaped appearing beside
+    // these would be a different kind of value that must never be baked in.
+    expect(AUTH_SETTINGS.filter((name) => /SECRET|TOKEN|PASSWORD|PRIVATE/.test(name))).toEqual([])
+  })
+
+  it('bakes the client id, which is public by design', () => {
+    const defines = authDefines({ VITE_HF_CLIENT_ID: 'a-public-client-id' })
+    expect(JSON.parse(defines['import.meta.env.VITE_HF_CLIENT_ID']!)).toBe('a-public-client-id')
+  })
+
+  it('lets nothing else through, however the environment is dressed up', () => {
+    const defines = authDefines({
+      VITE_HF_CLIENT_ID: 'a-public-client-id',
+      // The value this project does not have and must never acquire, offered
+      // under every name something might try to smuggle it in as.
+      VITE_HF_CLIENT_SECRET: 'should_never_ship',
+      HF_CLIENT_SECRET: 'should_never_ship',
+      OAUTH_CLIENT_SECRET: 'should_never_ship',
+      VITE_HF_TOKEN: 'should_never_ship',
+      ALLOWED_HF_USERS: 'should_never_ship',
+    })
+    expect(Object.keys(defines).sort())
+      .toEqual(AUTH_SETTINGS.map((name) => `import.meta.env.VITE_${name}`).sort())
+    expect(JSON.stringify(defines)).not.toContain('should_never_ship')
+  })
+
+  it('treats unset and blank alike, which the app reads as not configured', () => {
+    expect(JSON.parse(authDefines({})['import.meta.env.VITE_HF_CLIENT_ID']!)).toBe('')
+    expect(JSON.parse(authDefines({ VITE_HF_CLIENT_ID: '   ' })['import.meta.env.VITE_HF_CLIENT_ID']!)).toBe('')
+  })
+})
+
 describe('the Pages workflow hands the build its commit', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/deploy.yml', import.meta.url), 'utf8')
 
@@ -157,7 +194,35 @@ describe('the Pages workflow hands the build its commit', () => {
     expect(workflow).toMatch(/BUILD_SHA:\s*\$\{\{\s*github\.sha\s*\}\}/)
   })
 
+  it('passes the OAuth public client id, without which the site cannot sign in', () => {
+    // Dropping this does not fail the build or the deploy: it ships a site
+    // whose neural engine is unusable. That is exactly the kind of regression
+    // a deploy-time check cannot catch, so it is caught here instead.
+    expect(workflow).toMatch(/VITE_HF_CLIENT_ID:\s*\$\{\{\s*vars\.VITE_HF_CLIENT_ID\s*\}\}/)
+  })
+
   it('hands the build no secrets', () => {
+    expect(workflow).not.toMatch(/secrets\.[A-Z_]+/)
+    // A public client has no secret, so a client-secret name anywhere in the
+    // workflow means one was introduced where the flow has no use for it.
+    expect(workflow).not.toMatch(/CLIENT_SECRET/)
+  })
+})
+
+describe('CI builds something the sign-in tests can actually exercise', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8')
+
+  it('gives the test build a client id, so the sign-in is on the page', () => {
+    // Without one the control never renders, and every spec that drives a
+    // neural generation fails for that reason rather than its own.
+    expect(workflow).toMatch(/VITE_HF_CLIENT_ID:\s*\S+/)
+  })
+
+  it('uses a stand-in rather than the real application', () => {
+    // CI must not depend on an OAuth application existing, and the value it
+    // builds with must not be able to authenticate against a real one.
+    expect(workflow).toMatch(/VITE_HF_CLIENT_ID:\s*not-a-real-oauth-client-id/)
+    expect(workflow).not.toMatch(/vars\.VITE_HF_CLIENT_ID/)
     expect(workflow).not.toMatch(/secrets\.[A-Z_]+/)
   })
 })

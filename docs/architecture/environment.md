@@ -46,12 +46,34 @@ Actions → Variables:
 | Repository variable | Required | Value |
 |---|---|---|
 | `ACE_STEP_SPACE_URL` | yes | `https://<owner>-<space>.hf.space` |
+| `VITE_HF_CLIENT_ID` | yes | the Hugging Face OAuth application's client id |
 | `ACE_STEP_BACKEND` | no | overrides `zerogpu` |
 | `ACE_STEP_SPACE_AUTO_DURATION`, `ACE_STEP_SPACE_MAX_DURATION`, `ACE_STEP_SPACE_TIMEOUT_SECONDS` | no | as above |
 
 Variables, not secrets: every one of them ends up in a public bundle. If
 `ACE_STEP_SPACE_URL` is missing the deploy still runs, puts a warning in the
 workflow summary, and the site's neural engine says it is not configured.
+
+`VITE_HF_CLIENT_ID` behaves the same way, and matters as much: without it the
+site builds and every offline tool works, but the neural engine is unusable —
+the studio says signing in is not configured and nothing can be generated,
+because the Space refuses a request that carries no verified account. The
+workflow warns in its summary rather than failing, so a deploy that is missing
+it is visible rather than silent.
+
+It is the **public client** id of an OAuth application, and public is the whole
+point: a public client has no secret, and every OAuth flow there is sends this
+value to the browser in the authorization URL. Which is why it is a *variable*
+and not a *secret*, and why finding it in the bundle is expected rather than a
+leak. There is no client secret in this project — not in the workflow, not in
+the bundle, not in `.env`. If an OAuth application hands you one, it does not
+belong here; this is an Authorization Code + PKCE flow, which exists precisely
+so that a browser client needs no secret.
+
+The allowlist deciding who may actually generate is **not** here. It lives in
+the Space as `ALLOWED_HF_USERS`, where the browser cannot read or change it.
+Signing in proves who you are; the Space alone decides what that entitles you
+to. Nothing in this table is a security control.
 
 ### Why there is no separate `VITE_` name to remember
 

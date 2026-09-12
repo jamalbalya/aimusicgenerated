@@ -98,6 +98,36 @@ jobs:
             echo "Neural backend: zerogpu at $ACE_STEP_SPACE_URL"
           fi
 
+      # The Hugging Face OAuth *public client* id. Without it the site still
+      # builds and every offline tool works, but the neural engine cannot be
+      # used at all: the studio says signing in is not configured, and no
+      # generation can be authorised. That is quiet enough to ship by accident,
+      # so it is said out loud here.
+      - name: Check the sign-in configuration
+        env:
+          VITE_HF_CLIENT_ID: ${{ vars.VITE_HF_CLIENT_ID }}
+        run: |
+          if [ -z "$VITE_HF_CLIENT_ID" ]; then
+            {
+              echo "### VITE_HF_CLIENT_ID is not set"
+              echo
+              echo "The site will build and deploy, but **the neural engine will be"
+              echo "unusable**: visitors will see \"Signing in is not configured in this"
+              echo "build\" and cannot generate. The offline procedural engine is"
+              echo "unaffected."
+              echo
+              echo "**Settings → Secrets and variables → Actions → Variables → VITE_HF_CLIENT_ID**"
+              echo
+              echo "Use the client id of the Hugging Face OAuth application. It is a"
+              echo "*public client*: it has no secret, and every OAuth flow sends this"
+              echo "value to the browser, so it is a variable and not a secret. Never"
+              echo "put a client secret here \u2014 this build has no use for one."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::VITE_HF_CLIENT_ID repository variable is not set; the neural engine will be unusable because visitors cannot sign in."
+          else
+            echo "Sign-in: Hugging Face OAuth public client is configured."
+          fi
+
       - name: Build
         # The site is served from https://<owner>.github.io/<repo>/, so every
         # asset URL has to be prefixed with the repository name.
@@ -118,6 +148,10 @@ jobs:
           ACE_STEP_SPACE_AUTO_DURATION: ${{ vars.ACE_STEP_SPACE_AUTO_DURATION }}
           ACE_STEP_SPACE_MAX_DURATION: ${{ vars.ACE_STEP_SPACE_MAX_DURATION }}
           ACE_STEP_SPACE_TIMEOUT_SECONDS: ${{ vars.ACE_STEP_SPACE_TIMEOUT_SECONDS }}
+          # The OAuth public client id, from the repository variable checked
+          # above. Public by design and safe in the bundle; there is no client
+          # secret anywhere in this workflow, the bundle or the frontend.
+          VITE_HF_CLIENT_ID: ${{ vars.VITE_HF_CLIENT_ID }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
