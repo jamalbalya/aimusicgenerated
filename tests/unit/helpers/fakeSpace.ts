@@ -143,6 +143,8 @@ export interface SpaceScript {
 export interface RecordedCall {
   method: string
   url: string
+  /** The `Authorization` header as sent, so a missing bearer is visible. */
+  authorization?: string
   body?: unknown
 }
 
@@ -163,7 +165,12 @@ export function fakeSpace(script: SpaceScript = {}) {
     const url = String(input)
     const method = init?.method ?? 'GET'
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined
-    calls.push({ method, url, ...(body !== undefined ? { body } : {}) })
+    const authorization = new Headers((init?.headers as HeadersInit | undefined) ?? {}).get('authorization')
+    calls.push({
+      method, url,
+      ...(authorization !== null ? { authorization } : {}),
+      ...(body !== undefined ? { body } : {}),
+    })
 
     if (url === `${SPACE}/config`) return reply(script.config, () => json(SPACE_CONFIG))
     if (url === `${api}/queue/join`) {

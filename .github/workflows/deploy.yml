@@ -98,11 +98,12 @@ jobs:
             echo "Neural backend: zerogpu at $ACE_STEP_SPACE_URL"
           fi
 
-      # The Hugging Face OAuth *public client* id. Without it the site still
-      # builds and every offline tool works, but the neural engine cannot be
-      # used at all: the studio says signing in is not configured, and no
-      # generation can be authorised. That is quiet enough to ship by accident,
-      # so it is said out loud here.
+      # The Hugging Face OAuth *public client* id. It is optional: a public
+      # Space serves visitors who never sign in, so the site is fully usable
+      # without one. It becomes necessary the moment the Space is made private
+      # — a guest list in ALLOWED_HF_USERS, or REQUIRE_HF_SIGN_IN=1 — because
+      # then there is no way for a visitor to prove who they are. That pairing
+      # is easy to get half right, so it is said out loud here.
       - name: Check the sign-in configuration
         env:
           VITE_HF_CLIENT_ID: ${{ vars.VITE_HF_CLIENT_ID }}
@@ -111,10 +112,11 @@ jobs:
             {
               echo "### VITE_HF_CLIENT_ID is not set"
               echo
-              echo "The site will build and deploy, but **the neural engine will be"
-              echo "unusable**: visitors will see \"Signing in is not configured in this"
-              echo "build\" and cannot generate. The offline procedural engine is"
-              echo "unaffected."
+              echo "This is fine for a **public** Space: visitors generate without"
+              echo "signing in, and both engines work. It is only a problem if the"
+              echo "Space is **private** — \`ALLOWED_HF_USERS\` set, or"
+              echo "\`REQUIRE_HF_SIGN_IN=1\` — because then the Space asks for an"
+              echo "account and this build gives visitors no way to offer one."
               echo
               echo "**Settings → Secrets and variables → Actions → Variables → VITE_HF_CLIENT_ID**"
               echo
@@ -123,9 +125,9 @@ jobs:
               echo "value to the browser, so it is a variable and not a secret. Never"
               echo "put a client secret here \u2014 this build has no use for one."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning::VITE_HF_CLIENT_ID repository variable is not set; the neural engine will be unusable because visitors cannot sign in."
+            echo "::notice::VITE_HF_CLIENT_ID repository variable is not set; visitors cannot sign in. That is fine for a public Space, and breaks a private one."
           else
-            echo "Sign-in: Hugging Face OAuth public client is configured."
+            echo "Sign-in: Hugging Face OAuth public client is configured. A public Space will not ask for it."
           fi
 
       - name: Build

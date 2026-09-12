@@ -6,16 +6,30 @@ keyboard, and this module never treats one as identity. Identity comes from one
 place: a bearer token the caller presents, verified against Hugging Face over
 the network, on this side of the wire.
 
-Two decisions are kept apart, because they fail differently:
+A Space runs in one of two modes, and `sign_in_required()` decides which:
 
-  * authentication — "is this a real Hugging Face user?"  A bad answer is 401.
-  * authorization  — "is that user allowed to use this Space?"  A bad answer is
-    403, and the answer comes from an allowlist held in the Space environment,
-    never from anything the caller can reach.
+  * **public** — the default, and what this Space is deployed as. Nobody signs
+    in, no credential is read, and every request is checked for shape and
+    counted against a per-address brake. What keeps it free is ZeroGPU's own
+    quota: a request that would exceed it is refused by Hugging Face before any
+    GPU runs, so an open Space cannot cost anything.
+  * **private** — reached by naming the people allowed in (`ALLOWED_HF_USERS`)
+    or by asking for it outright (`REQUIRE_HF_SIGN_IN=1`). Then two decisions
+    are kept apart, because they fail differently:
 
-Everything here fails closed. An unset allowlist authorises nobody, and a
-Hugging Face that cannot be reached authorises nobody either: an outage must
-not become an open door.
+      * authentication — "is this a real Hugging Face user?"  A bad answer is 401.
+      * authorization  — "is that user allowed to use this Space?"  A bad answer
+        is 403, and the answer comes from the allowlist in the Space
+        environment, never from anything the caller can reach.
+
+In private mode everything fails closed. An empty allowlist authorises nobody,
+and a Hugging Face that cannot be reached authorises nobody either: an outage
+must not become an open door. Making the Space public is a deliberate act of
+configuration, never the result of something failing.
+
+What both modes share is the part that protects the GPU rather than the door:
+every request's style, lyrics, language, voice, instrumental flag and length are
+validated before a handler runs, and every caller is rate limited.
 
 Why a bearer token rather than `gr.OAuthToken`: Gradio builds that object from
 `body.oauth_token`, a field of the request body, with empty scope and no
@@ -40,15 +54,28 @@ from dataclasses import dataclass
 #: without a code change; the default is the public Hugging Face.
 PROVIDER_URL = os.environ.get("OPENID_PROVIDER_URL", "https://huggingface.co").rstrip("/")
 
-#: Who may generate. Comma or whitespace separated, matched case-insensitively.
-#: Unset means nobody: an empty allowlist is a closed door, not an open one.
+#: Who may generate, when a sign-in is required at all. Comma or whitespace
+#: separated, matched case-insensitively. Setting this is what turns the studio
+#: into a private one; an empty allowlist alongside a required sign-in is a
+#: closed door, not an open one.
 ALLOWED_USERS_RAW = os.environ.get("ALLOWED_HF_USERS", "")
+
+#: Whether a Hugging Face sign-in is required to generate.
+#:
+#: Unset is decided by the allowlist: configuring `ALLOWED_HF_USERS` means a
+#: private studio and so a required sign-in, while configuring nothing means a
+#: public one. Set it explicitly — "1"/"true" or "0"/"false" — to be certain.
+#: The two-sided default is deliberate: a deployer who names the people allowed
+#: in must never get a public Space by forgetting a second variable, and a
+#: deployer who names nobody must not get a Space that refuses everybody.
+REQUIRE_SIGN_IN_RAW = os.environ.get("REQUIRE_HF_SIGN_IN", "")
 
 #: Seconds a verified token is trusted before Hugging Face is asked again.
 #: Short, because this is also how long a revoked token keeps working.
 VERIFY_CACHE_SECONDS = int(os.environ.get("AUTH_CACHE_SECONDS", "60"))
 
-#: Abuse brake, per verified user. Not the authorization mechanism, and not
+#: Abuse brake, per caller — a verified user when the studio is private, the
+#: calling address when it is public. Not the authorization mechanism, and not
 #: durable — see `RateLimiter`.
 RATE_LIMIT_REQUESTS = int(os.environ.get("RATE_LIMIT_REQUESTS", "6"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "3600"))
@@ -96,6 +123,21 @@ def allowed_users() -> frozenset[str]:
     """The allowlist, lowercased. Empty when none is configured."""
     parts = ALLOWED_USERS_RAW.replace(",", " ").split()
     return frozenset(p.strip().lower() for p in parts if p.strip())
+
+
+def sign_in_required() -> bool:
+    """Whether callers must prove who they are before generating.
+
+    Explicit configuration wins. With none, the allowlist decides: naming the
+    people who may generate is what makes a studio private, and naming nobody
+    leaves it public.
+    """
+    explicit = REQUIRE_SIGN_IN_RAW.strip().lower()
+    if explicit in ("1", "true", "yes", "on"):
+        return True
+    if explicit in ("0", "false", "no", "off"):
+        return False
+    return bool(allowed_users())
 
 
 # --- failures ----------------------------------------------------------------
@@ -245,11 +287,55 @@ def authorize(token: str) -> Identity:
     return identity
 
 
+# --- who to hold responsible ---------------------------------------------------
+
+
+def client_key(request) -> str:
+    """A key for a caller who presents no identity.
+
+    Behind Hugging Face's proxy the socket address belongs to the proxy, so a
+    forwarded address is the only thing that tells one visitor from another. It
+    arrives in a header, which means the caller can write it: this is a brake on
+    casual repetition, not a security control. What actually bounds the cost is
+    ZeroGPU's own quota, which no number of requests can exceed and which keeps
+    a public Space free however it is used.
+
+    When no address can be read at all, every anonymous caller shares a single
+    bucket: slower for everyone in that case, rather than unlimited for anyone.
+    """
+    forwarded = request.headers.get("x-forwarded-for") or ""
+    first = forwarded.split(",")[0].strip()
+    if first:
+        return f"ip:{first}"
+    real = (request.headers.get("x-real-ip") or "").strip()
+    if real:
+        return f"ip:{real}"
+    host = getattr(getattr(request, "client", None), "host", "") or ""
+    return f"ip:{host}" if host else "ip:unknown"
+
+
+def caller_for(request) -> str:
+    """Who to hold responsible for a request: the key the brake counts against.
+
+    A private studio verifies the bearer against Hugging Face and answers with
+    the username. A public one does not look at credentials at all and answers
+    with the calling address — so it has no authentication failure to report,
+    which is the point: a bearer that is never checked is a bearer that can
+    never be wrongly rejected.
+    """
+    if sign_in_required():
+        return authorize(parse_bearer(request.headers.get("authorization"))).username
+    return client_key(request)
+
+
 # --- abuse brake --------------------------------------------------------------
 
 
 class RateLimiter:
-    """A per-user brake on how often generation may be asked for.
+    """A per-caller brake on how often generation may be asked for.
+
+    The caller is a verified username in a private studio and a calling address
+    in a public one; see `caller_for`.
 
     In process memory, so it resets whenever the Space restarts or sleeps, and
     it is not shared between replicas. That makes it an abuse brake and nothing
@@ -264,9 +350,10 @@ class RateLimiter:
         self._seen: dict[str, list[float]] = {}
         self._lock = threading.Lock()
 
-    def check(self, username: str) -> None:
+    def check(self, caller: str) -> None:
+        """Count one request against `caller`, or refuse it with a 429."""
         now = time.time()
-        key = username.lower()
+        key = caller.lower()
         with self._lock:
             recent = [t for t in self._seen.get(key, []) if now - t < self.window]
             if len(recent) >= self.limit:
@@ -377,13 +464,15 @@ def authorize_request(request):
 
     Gradio calls this for `/queue/join`, `/queue/data`, `/call/*`, `/run/*`,
     `/api/*` and `/file=*` — every path that costs GPU time or hands back a
-    result. Returning `None` is a 401; raising is whatever was raised. Either
-    way the generation function is never entered, so a refused request cannot
-    consume the quota.
+    result. It answers with the key the request is counted against, and raises
+    for a refusal, so the generation function is never entered and a refused
+    request cannot consume the quota.
 
-    The token is read from the real `Authorization` header of the real
-    request. It is not read from the body, which is why a caller cannot supply
-    their own identity.
+    In a public studio nothing is refused here: every caller gets a key and the
+    checks that matter happen further in, on the request's contents and on how
+    often that caller has asked. In a private one the token is read from the
+    real `Authorization` header of the real request — never from the body,
+    which is why a caller cannot supply their own identity.
     """
     from fastapi import HTTPException
 
@@ -393,8 +482,6 @@ def authorize_request(request):
         # paths cost nothing and reveal nothing.
         return "anonymous"
     try:
-        token = parse_bearer(request.headers.get("authorization"))
-        identity = authorize(token)
+        return caller_for(request)
     except AuthError as error:
         raise HTTPException(status_code=error.status, detail=error.message)
-    return identity.username

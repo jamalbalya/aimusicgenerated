@@ -13,7 +13,8 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import {
-  AceStepProvider, EngineUnavailableError, GenerationCancelledError, GradioClient, GradioProtocolError,
+  AceStepProvider, AuthenticationRequiredError, EngineUnavailableError, GenerationCancelledError,
+  GradioClient, GradioProtocolError,
   MisconfiguredNeuralProvider, ProceduralMusicProvider, QuotaExceededError, SseParser,
   ZeroGpuError, ZeroGpuProvider, ENGINE_UNAVAILABLE_MESSAGE, ZEROGPU_UNAVAILABLE_MESSAGE,
   ACE_STEP_AUTO_DURATION, DEFAULT_ZEROGPU_TIMEOUT_SECONDS,
@@ -476,6 +477,82 @@ describe('the engine never switches itself back to procedural', () => {
     // true and can never turn back.
     expect(hook).toContain('setHasAnswered((answered) => answered || status.connected)')
     expect(hook.match(/setHasAnswered\(/g)).toHaveLength(1)
+  })
+})
+
+describe('a refused sign-in is its own answer', () => {
+  // The two sentences the deployed gate actually returns, taken from its own
+  // source (`poc/zerogpu-space/guard.py`) and confirmed against the live Space:
+  // one for a request that carried no bearer, one for a bearer Hugging Face
+  // would not confirm.
+  const NO_SIGN_IN = 'Sign in with Hugging Face to generate.'
+  const STALE_SIGN_IN = 'That Hugging Face sign-in is no longer valid. Sign in again.'
+
+  it('passes on the gate\'s own sentence with the status, and asks only once', async () => {
+    const { server, provider } = zeroGpu({ join: () => json({ detail: STALE_SIGN_IN }, 401) })
+    const error = await failure(provider.generate(BOS_TOXIC))
+    expect(error).toBeInstanceOf(AuthenticationRequiredError)
+    expect(error.message).toContain(STALE_SIGN_IN)
+    expect(error.message).toContain('HTTP 401')
+    // A refused sign-in is not a transient failure: asking again with the same
+    // token would only be refused again, and would look like a retry storm.
+    expect(server.joins()).toBe(1)
+  })
+
+  it('says so too when nothing was signed in the first place', async () => {
+    const { provider } = zeroGpu({ join: () => json({ detail: NO_SIGN_IN }, 401) })
+    const error = await failure(provider.generate(BOS_TOXIC))
+    expect(error).toBeInstanceOf(AuthenticationRequiredError)
+    expect(error.message).toContain(NO_SIGN_IN)
+  })
+
+  it('catches a sign-in that expires while the finished song is being fetched', async () => {
+    const { provider } = zeroGpu({ file: () => json({ detail: STALE_SIGN_IN }, 401) })
+    expect(await failure(provider.generate(BOS_TOXIC))).toBeInstanceOf(AuthenticationRequiredError)
+  })
+
+  it('keeps an account that is merely not approved apart from a bad sign-in', async () => {
+    // 403 is a different thing: the sign-in is fine, the person is not on the
+    // list. Ending their session would be the wrong answer, so it stays an
+    // ordinary refusal — with the Space's sentence and status still shown.
+    const refused = 'This Hugging Face account is not approved for this studio.'
+    const { provider } = zeroGpu({ join: () => json({ detail: refused }, 403) })
+    const error = await expectCode(provider.generate(BOS_TOXIC), 'http-error')
+    expect(error.message).toContain(refused)
+    expect(error.message).toContain('HTTP 403')
+    expect(error).not.toBeInstanceOf(AuthenticationRequiredError)
+  })
+
+  it('signs every gated request, and leaves the public one alone', async () => {
+    const { server, provider } = zeroGpu({}, {}, { authorization: () => 'Bearer test-token' })
+    await provider.generate(BOS_TOXIC)
+    expect(server.calls.filter((call) => call.authorization === 'Bearer test-token')
+      .map((call) => call.url.replace(SPACE, ''))).toEqual([
+      '/gradio_api/queue/join',
+      `/gradio_api/queue/data?session_hash=${SESSION}`,
+      `/gradio_api/file=${FILE_DATA.path}`,
+    ])
+    // `/config` is public on the Space, and a token it does not need is a token
+    // it does not get.
+    expect(server.calls.find((call) => call.url.endsWith('/config'))?.authorization).toBeUndefined()
+  })
+
+  it('sends no Authorization header at all when signed out, never "Bearer undefined"', async () => {
+    const { server, provider } = zeroGpu({}, {}, { authorization: () => undefined })
+    await provider.generate(BOS_TOXIC)
+    expect(server.calls.map((call) => call.authorization)).toEqual(server.calls.map(() => undefined))
+    expect(JSON.stringify(server.calls)).not.toContain('Bearer')
+  })
+
+  it('ends the session in the studio instead of holding a token the Space rejected', () => {
+    // The provider reports it; the page that owns the session acts on it. A
+    // page that kept saying "Signed in" over a token already refused would send
+    // the same person into the same failure on every press.
+    const studio = readFileSync(new URL('../../src/ui/pages/StudioPage.tsx', import.meta.url), 'utf8')
+    expect(studio).toMatch(/if \(error instanceof AuthenticationRequiredError\) \{\s*\n\s*signOut\(\)/)
+    // Taken straight from the auth module, so the identity of the function
+    // cannot change between renders and the callback needs no dependency on it.
+    expect(studio).toContain("import { authorizationHeader, signOut } from '../../auth/hfOAuth'")
   })
 })
 

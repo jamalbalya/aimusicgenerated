@@ -97,7 +97,12 @@ async function watchSpace(page: Page): Promise<{ authHeaders: () => (string | un
         }),
       })
     }
-    return route.fulfill({ status: 401, contentType: 'text/plain', body: 'Unauthorized' })
+    // Everything else fails, because these tests are about which credential
+    // travels rather than about songs. It fails with a server error and not a
+    // 401 on purpose: a 401 means the Space refused this sign-in, and the
+    // studio answers that by ending the session — which is the subject of its
+    // own test below, and would end this one before it could sign out itself.
+    return route.fulfill({ status: 500, contentType: 'text/plain', body: 'not what this test is about' })
   })
   return { authHeaders: () => authHeaders }
 }
@@ -146,7 +151,7 @@ test.describe('signing in keeps nothing', () => {
     context.on('page', (popup) => { void fakeProvider(popup) })
 
     await openNeural(page)
-    await expect(page.getByTestId('hf-auth')).toContainText(/approved for this studio/i)
+    await expect(page.getByTestId('hf-auth')).toContainText(/Sign in only if this studio asks/i)
 
     await page.getByRole('button', { name: /Sign in with Hugging Face/ }).click()
     await expect(page.getByTestId('hf-auth')).toContainText(`Signed in to Hugging Face as ${USERNAME}`, {
@@ -190,13 +195,64 @@ test.describe('signing in keeps nothing', () => {
 
     // Signing out takes the token away from the very next request.
     await page.getByRole('button', { name: 'Sign out' }).click()
-    await expect(page.getByTestId('hf-auth')).toContainText(/approved for this studio/i)
+    await expect(page.getByTestId('hf-auth')).toContainText(/Sign in only if this studio asks/i)
     await expect(page.getByTestId('hf-auth')).not.toContainText(USERNAME)
 
     await page.getByRole('button', { name: /^Generate song$/ }).click()
-    await expect(page.getByText(/Sign in with Hugging Face to use the neural engine/)).toBeVisible()
-    expect(space.authHeaders(), 'no second request was made at all').toHaveLength(1)
+    await expect(page.getByRole('button', { name: /^(Generate song|Generating…)$/ }))
+      .toBeEnabled({ timeout: 60_000 })
+    // The request is still made, because a public Space would have served it.
+    // What changed is what it carries: nothing, rather than a token the
+    // visitor has just given up. The studio never refuses a signed-out
+    // visitor on its own — that decision belongs to the Space.
+    expect(space.authHeaders(), 'the second request went out unsigned')
+      .toEqual([`Bearer ${TOKEN}`, undefined])
 
+    const left = await residue(page)
+    expect(left.cookie).toBe('')
+    expect(left.local.join('|')).not.toContain(TOKEN)
+    expect(left.session.join('|')).not.toContain(TOKEN)
+  })
+
+  test('a sign-in the Space refuses ends the session, rather than being offered again', async ({ page, context }) => {
+    await fakeProvider(page)
+    // The gate's own answer for a bearer Hugging Face will not confirm — an
+    // expired token, most often — taken from `poc/zerogpu-space/guard.py` and
+    // confirmed against the live Space.
+    const refusal = 'That Hugging Face sign-in is no longer valid. Sign in again.'
+    await page.route(`${SPACE}/**`, async (route: Route) => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/config') {
+        return route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({
+            version: '6.2.0', protocol: 'sse_v3', api_prefix: '/gradio_api', root: SPACE,
+            dependencies: [{ id: 0, api_name: 'generate_music', queue: true, api_visibility: 'public', backend_fn: true }],
+          }),
+        })
+      }
+      return route.fulfill({
+        status: 401, contentType: 'application/json', body: JSON.stringify({ detail: refusal }),
+      })
+    })
+    context.on('page', (popup) => { void fakeProvider(popup) })
+
+    await openNeural(page)
+    await page.getByRole('button', { name: /Sign in with Hugging Face/ }).click()
+    await expect(page.getByTestId('hf-auth')).toContainText(USERNAME, { timeout: 30_000 })
+
+    await page.getByRole('button', { name: /Show controls|Hide controls/ }).click()
+    await page.getByLabel('Style').fill('Indonesian dangdut koplo')
+    await page.getByLabel('Lyrics').fill('baris satu\nbaris dua')
+    await page.getByRole('button', { name: /^(Generate song|Generating…)$/ }).click()
+
+    // What the Space said, shown as it said it.
+    await expect(page.getByRole('alert').filter({ hasText: refusal })).toBeVisible({ timeout: 60_000 })
+    // And the session is over: the page no longer claims to be signed in, and
+    // offers the one thing that can help.
+    await expect(page.getByTestId('hf-auth')).not.toContainText(USERNAME)
+    await expect(page.getByRole('button', { name: /Sign in with Hugging Face/ })).toBeVisible()
+    // Nothing was kept anywhere, exactly as when signing out by hand.
     const left = await residue(page)
     expect(left.cookie).toBe('')
     expect(left.local.join('|')).not.toContain(TOKEN)
@@ -216,7 +272,7 @@ test.describe('signing in keeps nothing', () => {
     await page.getByRole('group', { name: 'Generation engine' })
       .getByRole('button', { name: 'Neural', exact: true }).click()
     // Intended, not a defect: the session lived in a heap that no longer exists.
-    await expect(page.getByTestId('hf-auth')).toContainText(/approved for this studio/i)
+    await expect(page.getByTestId('hf-auth')).toContainText(/Sign in only if this studio asks/i)
     expect((await residue(page)).cookie).toBe('')
   })
 })

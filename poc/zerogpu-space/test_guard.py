@@ -123,6 +123,115 @@ except guard.AuthError as error:
 guard.verify_identity = real_verify
 
 
+# --- public by default, private on purpose ------------------------------------
+
+print("\naccess mode")
+
+
+class FakeRequest:
+    """The parts of a Starlette request the boundary actually reads.
+
+    Headers are asked for in lower case, which is what Starlette's
+    case-insensitive mapping hands back, so a plain dict is a faithful stand-in.
+    """
+
+    def __init__(self, headers=None, host=None, path="/gradio_api/queue/join", method="POST"):
+        self.headers = headers or {}
+        self.client = type("Client", (), {"host": host})() if host else None
+        self.url = type("Url", (), {"path": path})()
+        self.method = method
+
+
+def under(require: str, allow: str, call):
+    """Runs `call` with the Space configured that way, then puts it back."""
+    was = (guard.REQUIRE_SIGN_IN_RAW, guard.ALLOWED_USERS_RAW)
+    guard.REQUIRE_SIGN_IN_RAW, guard.ALLOWED_USERS_RAW = require, allow
+    try:
+        return call()
+    finally:
+        guard.REQUIRE_SIGN_IN_RAW, guard.ALLOWED_USERS_RAW = was
+
+
+check("nothing configured is a public studio",
+      under("", "", guard.sign_in_required) is False)
+check("naming who may generate makes it private",
+      under("", "jamalbalya", guard.sign_in_required) is True)
+check("a public studio can be asked for outright, allowlist or not",
+      under("0", "jamalbalya", guard.sign_in_required) is False)
+check("a private one can be asked for outright too",
+      under("1", "", guard.sign_in_required) is True)
+for word in ("true", "TRUE", "Yes", "on", "1"):
+    check(f"{word!r} means private", under(word, "", guard.sign_in_required) is True)
+for word in ("false", "FALSE", "no", "off", "0"):
+    check(f"{word!r} means public", under(word, "jamalbalya", guard.sign_in_required) is False)
+check("a value that means neither falls back to the allowlist",
+      under("maybe", "jamalbalya", guard.sign_in_required) is True
+      and under("maybe", "", guard.sign_in_required) is False)
+
+# The request that used to be refused with "Sign in with Hugging Face to
+# generate." — no credential of any kind — is the one a public studio serves.
+signed_out = FakeRequest(headers={"x-forwarded-for": "203.0.113.9"})
+check("a public studio serves a request with no credential at all",
+      under("", "", lambda: guard.caller_for(signed_out)) == "ip:203.0.113.9")
+refuses("a private studio still refuses that same request", 401,
+        lambda: under("1", "jamalbalya", lambda: guard.caller_for(signed_out)))
+
+# A public studio never looks at a bearer, so it can never reject one: the
+# 401 that expired tokens and pasted PATs used to produce cannot happen.
+for header in ("Bearer expired", "Bearer forged", "Basic nonsense", "Bearer "):
+    check(f"a public studio ignores {header!r} rather than judging it",
+          under("", "", lambda h=header: guard.caller_for(
+              FakeRequest(headers={"authorization": h, "x-forwarded-for": "203.0.113.9"}),
+          )) == "ip:203.0.113.9")
+
+# A private studio still gets its identity from the network, not the request.
+guard.verify_identity = stub_identity("jamalbalya")
+check("a private studio still answers with the verified username",
+      under("1", "jamalbalya", lambda: guard.caller_for(
+          FakeRequest(headers={"authorization": "Bearer good", "x-forwarded-for": "203.0.113.9"}),
+      )) == "jamalbalya")
+guard.verify_identity = real_verify
+
+
+print("\nwho the brake counts")
+check("the forwarded address is used, the nearest hop first",
+      guard.client_key(FakeRequest(headers={"x-forwarded-for": "203.0.113.9, 10.0.0.1"}))
+      == "ip:203.0.113.9")
+check("whitespace around it does not make a second bucket",
+      guard.client_key(FakeRequest(headers={"x-forwarded-for": "  203.0.113.9 "}))
+      == "ip:203.0.113.9")
+check("x-real-ip is the fallback",
+      guard.client_key(FakeRequest(headers={"x-real-ip": "198.51.100.7"})) == "ip:198.51.100.7")
+check("an empty forwarded header falls through rather than becoming a bucket",
+      guard.client_key(FakeRequest(headers={"x-forwarded-for": "", "x-real-ip": "198.51.100.7"}))
+      == "ip:198.51.100.7")
+check("the socket address is the last resort",
+      guard.client_key(FakeRequest(host="192.0.2.5")) == "ip:192.0.2.5")
+check("with nothing to go on, everyone shares one bucket rather than none",
+      guard.client_key(FakeRequest()) == "ip:unknown")
+check("an address is never mistaken for a username",
+      guard.client_key(FakeRequest(headers={"x-forwarded-for": "203.0.113.9"})).startswith("ip:"))
+
+# The brake is what a public studio has instead of a door, so it has to hold
+# for addresses exactly as it does for accounts.
+public_brake = guard.RateLimiter(limit=2, window=3600)
+first = guard.client_key(FakeRequest(headers={"x-forwarded-for": "203.0.113.9"}))
+second = guard.client_key(FakeRequest(headers={"x-forwarded-for": "198.51.100.7"}))
+allows("a public caller's first song", lambda: public_brake.check(first))
+allows("and their second", lambda: public_brake.check(first))
+refuses("the third is refused", 429, lambda: public_brake.check(first))
+allows("a different address has its own budget", lambda: public_brake.check(second))
+
+# And the checks that protect the GPU rather than the door are untouched by
+# opening it: a public request is still validated before anything runs.
+refuses("a public studio still refuses an oversized lyric sheet", 400,
+        lambda: under("", "", lambda: guard.validate_request(
+            "dangdut koplo", "x" * (guard.MAX_LYRICS_CHARS + 1), "id", "male", False, 271)))
+refuses("a public studio still refuses a length ACE-Step cannot make", 400,
+        lambda: under("", "", lambda: guard.validate_request(
+            "dangdut koplo", "baris satu", "id", "male", False, 9)))
+
+
 # --- paths that cost GPU time are gated --------------------------------------
 
 print("\npath policy")

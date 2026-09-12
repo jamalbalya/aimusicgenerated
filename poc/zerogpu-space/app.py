@@ -324,11 +324,12 @@ LYRICS = (SPACE_ROOT / "fixtures" / "bos-toxic-lyrics.txt").read_text(encoding="
 def generate(style, lyrics, language, vocal_gender, instrumental, duration, request: gr.Request):
     """The generation endpoint, and the second half of the boundary.
 
-    `authorize_request` has already refused unauthenticated callers at the HTTP
-    layer. This checks again anyway, from the same server-derived header, so
-    that the handler is safe even if it is ever reached by a path that was not
-    gated — a security check that only exists in one place is one deployment
-    change away from not existing.
+    `authorize_request` has already run at the HTTP layer: in a private studio
+    it refused anyone it could not place, and in a public one it named the
+    caller by address. This asks the same question again anyway, from the same
+    server-derived request, so the handler is safe even if it is ever reached by
+    a path that was not gated — a check that exists in only one place is one
+    deployment change away from not existing.
 
     `request` is built by Gradio from the actual HTTP request. It is not part of
     the six inputs and cannot be supplied by the caller, which is what makes it
@@ -336,12 +337,11 @@ def generate(style, lyrics, language, vocal_gender, instrumental, duration, requ
     caller is.
     """
     try:
-        token = guard.parse_bearer(request.headers.get("authorization"))
-        identity = guard.authorize(token)
+        caller = guard.caller_for(request)
         checked = guard.validate_request(
             style, lyrics, language, vocal_gender, instrumental, duration
         )
-        RATE_LIMITER.check(identity.username)
+        RATE_LIMITER.check(caller)
     except guard.AuthError as error:
         # Raised before the GPU function is called, so a refusal costs nothing.
         raise _deny(error) from None

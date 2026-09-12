@@ -29,10 +29,11 @@ import { newProjectId, saveProject } from '../../lib/library'
 import { linkProps } from '../../lib/router'
 import { useNeuralEngine } from '../useNeuralEngine'
 import { useAuth } from '../useAuth'
-import { authorizationHeader } from '../../auth/hfOAuth'
+import { authorizationHeader, signOut } from '../../auth/hfOAuth'
 import { decodeWav } from '../../engine/audio/wav'
 import {
-  createNeuralProvider, EngineUnavailableError, GenerationCancelledError, QuotaExceededError,
+  AuthenticationRequiredError, createNeuralProvider, EngineUnavailableError,
+  GenerationCancelledError, QuotaExceededError,
   engineLabel, resolveEngineMode, VERIFIED_ZEROGPU_DURATION,
   type EngineMode, type GenerationStatus, type NeuralBackend,
 } from '../../engine/providers'
@@ -384,6 +385,14 @@ export default function StudioPage() {
           // dead backend three more times.
           if (error instanceof GenerationCancelledError) throw error
           if (error instanceof EngineUnavailableError) throw error
+          // The Space has just refused this sign-in, so the session this page is
+          // holding is worthless: end it, rather than keep saying "Signed in"
+          // above a button that can only fail. The next take would be refused
+          // for the same reason, so the run stops here too.
+          if (error instanceof AuthenticationRequiredError) {
+            signOut()
+            throw error
+          }
           const message = error instanceof Error ? error.message : String(error)
           failures.push(`Take ${index + 1}: ${message}`)
           // A spent allowance is spent for every take after this one too, and
@@ -418,7 +427,12 @@ export default function StudioPage() {
       }
       updateNeural(controller, { status: { state: 'failed' } })
       const message = error instanceof Error ? error.message : String(error)
-      if (error instanceof EngineUnavailableError) setEngineError(message)
+      // Both of these need reading and acting on, so they stay on the page
+      // instead of only passing through a toast that clears itself: the engine
+      // being absent, and the Space refusing the sign-in this page was holding.
+      if (error instanceof EngineUnavailableError || error instanceof AuthenticationRequiredError) {
+        setEngineError(message)
+      }
       notify(message, 'error')
     } finally {
       // Only ends the job if it is still this one.
@@ -495,13 +509,11 @@ export default function StudioPage() {
     inFlight.current = true
     try {
       if (engineMode === 'neural') {
-        // A courtesy, not a control: the Space verifies the bearer itself and
-        // refuses anyone it does not recognise. Stopping here only saves a
-        // signed-out visitor a round trip and a confusing error.
-        if (auth.status !== 'signed-in') {
-          notify('Sign in with Hugging Face to use the neural engine.', 'error')
-          return
-        }
+        // No sign-in is asked for here. Whether one is needed is the Space's
+        // to decide — a public Space needs none, a private one refuses with a
+        // sentence of its own — and this page cannot know which it is talking
+        // to. Refusing a signed-out visitor in advance would lock them out of
+        // a Space that would have served them.
         setTakes([])
         await generateNeural(overrideSeed)
         return
@@ -511,7 +523,7 @@ export default function StudioPage() {
     } finally {
       inFlight.current = false
     }
-  }, [busy, engineMode, generate, generateNeural, clearNeural, auth.status, notify])
+  }, [busy, engineMode, generate, generateNeural, clearNeural])
 
   const cancelGeneration = useCallback(() => {
     if (neuralController) {
@@ -845,7 +857,10 @@ export default function StudioPage() {
               {/* Signing in is only for the neural engine: the offline one runs
                   here and answers to nobody. The Space decides whether an
                   account may generate — this is how you hand it one to ask
-                  about, and what it says here is never the reason it agrees. */}
+                  about, and what it says here is never the reason it agrees.
+                  A public Space asks for nobody, so this offers a sign-in
+                  rather than demanding one: it is worth having only if the
+                  Space this build talks to keeps a guest list. */}
               {engineMode === 'neural' && (
                 <p className="flex flex-wrap items-center gap-2 text-[12px] text-[var(--text-dim)]"
                    data-testid="hf-auth">
@@ -860,8 +875,8 @@ export default function StudioPage() {
                     <>
                       <span>
                         {auth.configured
-                          ? 'The neural engine needs a Hugging Face account that has been approved for this studio.'
-                          : 'Signing in is not configured in this build, so the neural engine cannot be used.'}
+                          ? 'The neural engine is open to everyone. Sign in only if this studio asks you to.'
+                          : 'Signing in is not configured in this build. The neural engine still works unless the studio asks for an account.'}
                       </span>
                       {auth.configured && (
                         <button

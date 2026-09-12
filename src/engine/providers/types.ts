@@ -177,6 +177,23 @@ export class GenerationCancelledError extends Error {
 }
 
 /**
+ * Thrown when the engine refused the sign-in it was given.
+ *
+ * Kept apart from an ordinary refusal because the remedy is a new sign-in, and
+ * because the session this page is holding has just been shown to be worthless:
+ * whoever gets one of these should end it rather than keep offering a token the
+ * engine has already rejected. A request that was never signed at all arrives
+ * here too — the engine cannot tell a caller what it will accept, only that
+ * what it got is not it.
+ */
+export class AuthenticationRequiredError extends Error {
+  constructor(readonly engineId: string, message: string) {
+    super(message)
+    this.name = 'AuthenticationRequiredError'
+  }
+}
+
+/**
  * Thrown when the engine refused because a usage allowance is spent.
  *
  * Kept apart from ordinary failures because the remedy is different: nothing

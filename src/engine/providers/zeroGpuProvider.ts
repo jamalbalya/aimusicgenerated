@@ -37,7 +37,7 @@ import {
 } from './aceStepRequest'
 import { spaceUrlProblem, zeroGpuConfig, type ZeroGpuConfig } from './config'
 import {
-  EngineUnavailableError, GenerationCancelledError, QuotaExceededError,
+  AuthenticationRequiredError, EngineUnavailableError, GenerationCancelledError, QuotaExceededError,
   type GenerateOptions, type GenerationStatus, type MusicGenerationRequest,
   type MusicGenerationResult, type NeuralMusicProvider, type NeuralProviderStatus,
 } from './types'
@@ -522,6 +522,16 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
     if (error instanceof GradioAppError) return this.appFailure(error)
     if (error instanceof GradioUnexpectedError) {
       return new ZeroGpuError('unexpected-error', `The Space's queue failed: ${plain(error.message)}`, { cause: error })
+    }
+    // Checked before the stage branches below, because a refused sign-in means
+    // the same thing wherever it happens: submitting, streaming, or fetching
+    // the finished file with a token that expired while the song was made.
+    // The Space's own sentence is passed on — it is the one that says whether
+    // to sign in for the first time or sign in again — with the status beside
+    // it so a report of this is never guesswork.
+    if (error instanceof GradioHttpError && error.status === 401) {
+      return new AuthenticationRequiredError(this.id,
+        `${plain(error.detail) || 'The Space would not accept this sign-in.'} (HTTP 401 from the Space.)`)
     }
     if (context.stage === 'connect') {
       return new EngineUnavailableError(this.id, `${ZEROGPU_UNAVAILABLE_MESSAGE} (${this.unreachable(error)})`)
