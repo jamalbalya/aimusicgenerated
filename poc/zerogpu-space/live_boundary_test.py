@@ -51,8 +51,34 @@ RESULTS: list[tuple[str, str, str]] = []
 
 def record(name: str, verdict: str, detail: str) -> None:
     RESULTS.append((name, verdict, detail))
-    mark = {"PASS": "ok  ", "FAIL": "FAIL", "UNVERIFIED": "????"}[verdict]
+    mark = {"PASS": "ok  ", "FAIL": "FAIL", "UNVERIFIED": "????", "N/A": "n/a "}[verdict]
     print(f"  {mark} {name}: {detail}")
+
+
+#: The statuses each gated path returned, for the launch-path gate below.
+GATED: dict[str, int] = {}
+
+
+def credential_verdict(status: int) -> tuple[str, str]:
+    """How to read the answer to an invalid credential.
+
+    A 401 or 403 means Hugging Face was asked and said no: the check did what
+    it claims to. A 503 means Hugging Face could not be asked at all, so the
+    request was refused by the fail-closed path instead. Refusing either way is
+    correct behaviour, but only the first proves token verification works — so
+    a 503 is reported UNVERIFIED and never as a pass. Anything below 400 is a
+    credential that was accepted, which is a failure.
+    """
+    if status in (401, 403):
+        return "PASS", f"HTTP {status} — Hugging Face was asked and rejected it"
+    if status == 503:
+        return "UNVERIFIED", (
+            f"HTTP {status} — refused, but by the fail-closed path: Hugging Face "
+            "was unreachable, so token verification itself is NOT proven"
+        )
+    if status >= 400:
+        return "UNVERIFIED", f"HTTP {status} — refused, but not by the expected path"
+    return "FAIL", f"HTTP {status} — an invalid credential was ACCEPTED"
 
 
 def request(
@@ -116,7 +142,6 @@ def run_attacks(base: str, live: bool) -> None:
         ("A  no Authorization header", f"{API}/queue/join", {}, payload()),
         ("B  empty bearer", f"{API}/queue/join", {"Authorization": "Bearer"}, payload()),
         ("B2 bearer with empty token", f"{API}/queue/join", {"Authorization": "Bearer "}, payload()),
-        ("C  malformed token", f"{API}/queue/join", {"Authorization": "Bearer fake"}, payload()),
         ("E  username in payload, no auth", f"{API}/queue/join", {},
          payload({"username": "jamalbalya"})),
         ("F  user_id in payload, no auth", f"{API}/queue/join", {},
@@ -138,18 +163,27 @@ def run_attacks(base: str, live: bool) -> None:
     for name, path, headers, body in cases:
         method = "GET" if body is None else "POST"
         status, text = request(base, path, method, headers, body)
-        verdict = "PASS" if refused(status) else "FAIL"
+        # Unauthenticated access to a gated path must be 401 or 403. Any other
+        # refusal is still a refusal, but not the one being claimed.
+        if status in (401, 403):
+            verdict = "PASS"
+        elif refused(status):
+            verdict = "UNVERIFIED"
+        else:
+            verdict = "FAIL"
         record(name, verdict, f"HTTP {status} {text.strip()[:90]}")
+        for key in ("/queue/join", "/queue/data", "/call/generate_music", "/file="):
+            if key in path and name.strip()[0] in "IJKL":
+                GATED[key] = status
 
-    # D: a well-formed but invalid token. Locally Hugging Face is unreachable, so
-    # this exercises the fail-closed path rather than a genuine 401 from HF.
-    status, text = request(base, f"{API}/queue/join", "POST",
-                           {"Authorization": f"Bearer hf_{fake}"}, payload())
-    if refused(status):
-        note = "refused" if live else "refused (fail-closed: HF unreachable here, so 503 not 401)"
-        record("D  random valid-shaped token", "PASS", f"HTTP {status} — {note}")
-    else:
-        record("D  random valid-shaped token", "FAIL", f"HTTP {status} {text[:90]}")
+    # C and D present credentials that are well formed but not real, so they are
+    # the only two checks that reach Hugging Face. They are judged on whether
+    # verification actually happened, not merely on being refused.
+    for label, token in [("C  malformed token", "fake"), ("D  random valid-shaped token", f"hf_{fake}")]:
+        status, _ = request(base, f"{API}/queue/join", "POST",
+                            {"Authorization": f"Bearer {token}"}, payload())
+        verdict, detail = credential_verdict(status)
+        record(label, verdict, detail)
 
     # Malformed JSON on an unauthenticated request.
     status, _ = request(base, f"{API}/queue/join", "POST", {}, None, raw_body=b"{not json")
@@ -168,10 +202,38 @@ def run_attacks(base: str, live: bool) -> None:
         record(f"   XSS in {label} not reflected", "PASS" if refused(status) and clean else "FAIL",
                f"HTTP {status}, payload {'absent from' if clean else 'ECHOED IN'} response")
 
+    # The launch-path question, answered from behaviour rather than from
+    # convention. `auth_dependency` is passed inside `if __name__ == "__main__"`,
+    # so if Hugging Face imports app.py and launches it itself, the dependency is
+    # never installed and these four paths stop being gated. Nothing about the
+    # source can settle that; four HTTP statuses can.
+    print()
+    expected = ("/queue/join", "/queue/data", "/call/generate_music", "/file=")
+    missing = [k for k in expected if k not in GATED]
+    ungated = {k: v for k, v in GATED.items() if v not in (401, 403)}
+    if missing:
+        record("LAUNCH PATH  auth_dependency is active", "UNVERIFIED",
+               f"no status recorded for {', '.join(missing)}")
+    elif ungated:
+        record("LAUNCH PATH  auth_dependency is active", "FAIL",
+               "NOT installed — "
+               + ", ".join(f"{k} returned {v}" for k, v in ungated.items())
+               + ". The Space is serving these paths without the gate. STOP.")
+    else:
+        record("LAUNCH PATH  auth_dependency is active", "PASS",
+               "all four gated paths answered 401/403, so the dependency is installed")
+
     print(f"\n  GPU function entered: {len(gpu_entries)} time(s)")
-    record("GPU never entered by a refused request",
-           "PASS" if not gpu_entries else "FAIL",
-           f"{len(gpu_entries)} entries recorded")
+    if live:
+        # There is no tripwire inside a deployed Space. Whether a rejected
+        # request started a generation is a question for its logs.
+        record("GPU never entered by a refused request", "UNVERIFIED",
+               "no tripwire exists in a deployed Space; confirm from its logs that "
+               "no generation started during this run")
+    else:
+        record("GPU never entered by a refused request",
+               "PASS" if not gpu_entries else "FAIL",
+               f"{len(gpu_entries)} entries recorded")
 
 
 def run_local() -> None:
@@ -270,12 +332,24 @@ def main() -> None:
         run_local()
 
     failed = [r for r in RESULTS if r[1] == "FAIL"]
-    print(f"\n{len(RESULTS)} checks, {len(failed)} failed")
+    unverified = [r for r in RESULTS if r[1] == "UNVERIFIED"]
+    passed = [r for r in RESULTS if r[1] == "PASS"]
+
+    print(f"\n{len(RESULTS)} checks: {len(passed)} PASS, {len(failed)} FAIL, "
+          f"{len(unverified)} UNVERIFIED")
+    for label, rows in (("FAIL", failed), ("UNVERIFIED", unverified)):
+        for name, _, detail in rows:
+            print(f"  {label} {name}: {detail}")
+
+    # The verdict, stated so it cannot be read as better than it is.
     if failed:
-        for name, _, detail in failed:
-            print(f"  FAIL {name}: {detail}")
+        print("\nVERDICT: FAIL — do not proceed.")
         sys.exit(1)
-    print("every check passed")
+    if unverified:
+        print("\nVERDICT: UNVERIFIED — nothing failed, but at least one check did "
+              "not prove what it is meant to prove. Not a pass.")
+        sys.exit(2)
+    print("\nVERDICT: PASS")
 
 
 if __name__ == "__main__":
