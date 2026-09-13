@@ -1,3 +1,5 @@
+import type { ZeroGpuQuota } from './zeroGpuQuota'
+
 /**
  * The boundary between "make me a song" and whatever actually makes it.
  *
@@ -220,8 +222,18 @@ export class AccountNotAllowedError extends Error {
  * stops at the first one.
  */
 export class QuotaExceededError extends Error {
-  constructor(readonly engineId: string, message: string) {
+  /**
+   * What the refusal said about the allowance, when it said anything.
+   *
+   * Carried on the error rather than pushed into a store from here: this layer
+   * knows how to read the provider's words, and the interface layer decides
+   * what to do with them. Nothing in `engine/` reaches into application state.
+   */
+  readonly quota?: ZeroGpuQuota
+
+  constructor(readonly engineId: string, message: string, quota?: ZeroGpuQuota) {
     super(message)
     this.name = 'QuotaExceededError'
+    this.quota = quota
   }
 }

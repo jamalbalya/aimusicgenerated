@@ -19,7 +19,8 @@ describe('the browser bundle carries the neural settings and nothing else', () =
   it('allows exactly the documented settings — none of them a secret', () => {
     expect([...NEURAL_SETTINGS].sort()).toEqual([
       'API_KEY', 'API_URL', 'BACKEND', 'LM_MODEL', 'MODEL',
-      'SPACE_AUTO_DURATION', 'SPACE_MAX_DURATION', 'SPACE_TIMEOUT_SECONDS', 'SPACE_URL',
+      'SPACE_AUTO_DURATION', 'SPACE_DAILY_QUOTA_SECONDS', 'SPACE_MAX_DURATION',
+      'SPACE_TIMEOUT_SECONDS', 'SPACE_URL',
     ])
     // API_KEY is the local backend's optional key, documented as public by
     // nature once it is in a bundle. Nothing token-, secret- or password-named.

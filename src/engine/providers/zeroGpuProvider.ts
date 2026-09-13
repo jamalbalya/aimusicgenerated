@@ -36,6 +36,7 @@ import {
   lyricLines, normalizeLyrics,
 } from './aceStepRequest'
 import { spaceUrlProblem, zeroGpuConfig, type ZeroGpuConfig } from './config'
+import { parseQuotaNotice } from './zeroGpuQuota'
 import {
   AccountNotAllowedError, AuthenticationRequiredError, EngineUnavailableError,
   GenerationCancelledError, QuotaExceededError,
@@ -579,8 +580,13 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
     switch (error.title) {
       case 'ZeroGPU quota exceeded':
       case 'ZeroGPU pending credits exceeded':
+        // The refusal is the only place a real allowance figure ever appears,
+        // so it is read here and carried out on the error. Whatever the wording
+        // turns out to be, the parser takes what it recognises and leaves the
+        // rest unknown; it never throws and never fills a gap with a guess.
         return new QuotaExceededError(this.id,
-          `The free GPU allowance on Hugging Face is used up for now. ${text || 'Try again later.'}`)
+          `The free GPU allowance on Hugging Face is used up for now. ${text || 'Try again later.'}`,
+          parseQuotaNotice(text, { totalSeconds: this.config.dailyQuotaSeconds ?? null }))
       case 'ZeroGPU illegal duration':
         return new ZeroGpuError('illegal-duration',
           `Hugging Face would not give this request enough GPU time. ${text}`.trim())

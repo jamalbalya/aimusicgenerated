@@ -53,6 +53,7 @@ Actions → Variables:
 | `VITE_HF_ALLOWED_USERS` | yes | who the login page admits, e.g. `jamalbalya`. Unset admits any verified account |
 | `ACE_STEP_BACKEND` | no | overrides `zerogpu` |
 | `ACE_STEP_SPACE_AUTO_DURATION`, `ACE_STEP_SPACE_MAX_DURATION`, `ACE_STEP_SPACE_TIMEOUT_SECONDS` | no | as above |
+| `ACE_STEP_SPACE_DAILY_QUOTA_SECONDS` | no | the account's daily ZeroGPU allowance, for the quota banner only |
 
 Variables, not secrets: every one of them ends up in a public bundle. If
 `ACE_STEP_SPACE_URL` is missing the deploy still runs, puts a warning in the
@@ -133,6 +134,27 @@ rather than a switch: `guard.sign_in_required()` is unconditionally true, so a
 deployment cannot turn the sign-in off — setting it to `0` changes nothing and
 the Space says so in its startup log. Anonymous requests get 401 before any
 handler runs.
+
+### The ZeroGPU quota banner
+
+`ACE_STEP_SPACE_DAILY_QUOTA_SECONDS` exists because Hugging Face does not
+publish the allowance anywhere this application can read it. There is no
+endpoint for it, and a successful generation reports GPU timings without ever
+mentioning the quota. The only moment a real figure appears is a refusal:
+
+    You have exceeded your free ZeroGPU quota. 120s requested vs. 116s left.
+    Try again in 13:21:21.
+
+That gives what is *left* and how long to wait. It does not give the day's
+total, so nothing can be subtracted from it, and the banner says "not published"
+rather than filling in a number. Set this variable — from the figure on your own
+Hugging Face account page — and the banner can also show what has been used and
+draw a bar. Leave it unset and it shows only what Hugging Face actually said.
+
+It is display only. The Space verifies every request and enforces its own
+limits; nothing in the browser is consulted before a generation, and a wrong
+value here changes what is shown and nothing else. A value that is not a
+positive number is ignored rather than blocking the backend.
 
 ### Why there is no separate `VITE_` name to remember
 

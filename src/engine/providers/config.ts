@@ -153,6 +153,14 @@ export interface ZeroGpuConfig {
   /** Models the build expects the Space to run; checked against what it reports. */
   model?: string
   lmModel?: string
+  /**
+   * The account's daily ZeroGPU allowance in seconds, when a deployment states
+   * it. Undefined by default and never guessed: Hugging Face publishes no way
+   * to read it, and a refusal reports only what is *left*. Set it and the quota
+   * banner can also show what has been used and draw a bar; leave it and the
+   * banner says the total is not published, which is the truth.
+   */
+  dailyQuotaSeconds?: number
   /** Why this backend cannot be used as configured, when it cannot. */
   blockedReason?: string
 }
@@ -238,6 +246,17 @@ export function parseZeroGpuConfig(read: EnvReader, protocol: string): ZeroGpuCo
 
   const model = read('VITE_ACE_STEP_MODEL')
   const lmModel = read('VITE_ACE_STEP_LM_MODEL')
+
+  // Optional, and informational only. A bad value is ignored rather than
+  // blocking the backend: nothing depends on it except one line of a banner,
+  // and refusing to generate over a mistyped display figure would be absurd.
+  let dailyQuotaSeconds: number | undefined
+  const rawQuota = read('VITE_ACE_STEP_SPACE_DAILY_QUOTA_SECONDS')
+  if (rawQuota !== undefined && rawQuota.trim() !== '') {
+    const parsed = Number(rawQuota)
+    if (Number.isFinite(parsed) && parsed > 0) dailyQuotaSeconds = Math.round(parsed)
+  }
+
   return {
     spaceUrl,
     ...(auto && !auto.problem ? { autoDuration: auto.value } : {}),
@@ -245,6 +264,7 @@ export function parseZeroGpuConfig(read: EnvReader, protocol: string): ZeroGpuCo
     jobTimeoutMs: timeout.value * 1000,
     ...(model ? { model } : {}),
     ...(lmModel ? { lmModel } : {}),
+    ...(dailyQuotaSeconds !== undefined ? { dailyQuotaSeconds } : {}),
     ...(problems.length > 0 ? { blockedReason: problems.join(' ') } : {}),
   }
 }

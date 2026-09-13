@@ -30,6 +30,7 @@ import { linkProps } from '../../lib/router'
 import { useNeuralEngine } from '../useNeuralEngine'
 import { useAuth } from '../useAuth'
 import { authorizationHeader, signOut } from '../../auth/hfOAuth'
+import { reportQuota } from '../../state/quota'
 import { decodeWav } from '../../engine/audio/wav'
 import {
   AccountNotAllowedError, AuthenticationRequiredError, createNeuralProvider,
@@ -405,7 +406,13 @@ export default function StudioPage() {
           // A spent allowance is spent for every take after this one too, and
           // asking again would only be refused again. Stop, and keep what
           // already worked.
-          if (error instanceof QuotaExceededError) break
+          if (error instanceof QuotaExceededError) {
+            // The refusal is the only moment Hugging Face states a real
+            // allowance figure. Record it so the banner can show it; it is
+            // informational, and the Space still decides what is allowed.
+            if (error.quota) reportQuota(error.quota)
+            break
+          }
         }
       }
 

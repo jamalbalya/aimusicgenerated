@@ -106,6 +106,7 @@ function inlineEverything(directory: string): Plugin {
 export const NEURAL_SETTINGS = [
   'API_URL', 'API_KEY', 'MODEL', 'LM_MODEL',
   'BACKEND', 'SPACE_URL', 'SPACE_AUTO_DURATION', 'SPACE_MAX_DURATION', 'SPACE_TIMEOUT_SECONDS',
+  'SPACE_DAILY_QUOTA_SECONDS',
 ] as const
 
 /**

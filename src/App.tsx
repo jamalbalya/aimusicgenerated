@@ -11,6 +11,7 @@ import { QUALITY_HINTS, QUALITY_LABELS, type RenderQuality } from './workers/pro
 import { useAuth } from './ui/useAuth'
 import { mayEnter } from './auth/hfOAuth'
 import LoginPage from './ui/pages/LoginPage'
+import ZeroGpuQuotaBanner from './ui/components/ZeroGpuQuotaBanner'
 
 const StudioPage = lazy(() => import('./ui/pages/StudioPage'))
 const LyricsPage = lazy(() => import('./ui/pages/LyricsPage'))
@@ -198,6 +199,9 @@ function Shell() {
 
           <main className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-[1180px] px-3 py-4 sm:px-5 sm:py-6">
+              {/* Above the tool, below the header. Informational: it never gates
+                  anything, and the Space remains the authority on the quota. */}
+              <ZeroGpuQuotaBanner />
               <Suspense fallback={<div className="py-16"><Progress value={0} label="Loading tool" /></div>}>
                 {routeElement(path)}
               </Suspense>

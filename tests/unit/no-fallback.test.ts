@@ -22,7 +22,7 @@
  *     ← ProceduralMusicProvider.generate() and ui/useJob.ts
  *
  * `AceStepProvider` imports none of that: its whole transitive closure is
- * aceStepClient, aceStepRequest, config, types and audioCheck.
+ * aceStepClient, aceStepRequest, config, types, audioCheck and zeroGpuQuota.
  */
 
 import { describe, expect, it, vi } from 'vitest'
@@ -245,7 +245,8 @@ describe('a failed neural generation never reaches the procedural engine', () =>
     }
     walk('aceStepProvider')
     expect([...seen].sort()).toEqual(
-      ['aceStepClient', 'aceStepProvider', 'aceStepRequest', 'audioCheck', 'config', 'types'])
+      ['aceStepClient', 'aceStepProvider', 'aceStepRequest', 'audioCheck', 'config',
+        'types', 'zeroGpuQuota'])
   })
 })
 
@@ -353,7 +354,8 @@ describe('a failed ZeroGPU generation never reaches the procedural engine', () =
     }
     walk('zeroGpuProvider')
     expect([...seen].sort()).toEqual(
-      ['aceStepRequest', 'audioCheck', 'config', 'gradioClient', 'types', 'zeroGpuProvider'])
+      ['aceStepRequest', 'audioCheck', 'config', 'gradioClient', 'types',
+        'zeroGpuProvider', 'zeroGpuQuota'])
   })
 
   it('the Gradio transport knows nothing about ACE-Step', async () => {
