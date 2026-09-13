@@ -86,6 +86,26 @@ export function redirectUri(): string {
   return buildRedirectUri(window.location.origin, import.meta.env.BASE_URL || '/')
 }
 
+/**
+ * The same-origin channel the returning window answers on.
+ *
+ * `window.opener` is the obvious way back to the window that started the
+ * sign-in, and it is not dependable. A provider serving
+ * `Cross-Origin-Opener-Policy: same-origin` — Hugging Face does — moves the
+ * popup into another browsing context group the moment it navigates there, and
+ * coming back to our own origin does not undo it: `window.opener` is null in
+ * the popup, and the handle the opener still holds reports `closed` while the
+ * window is plainly on screen. That is the whole of the bug this replaces —
+ * the popup sat there rendering the login page again, and the opener gave up
+ * with "The sign-in window was closed."
+ *
+ * A BroadcastChannel needs no relationship between the windows. It is
+ * same-origin by construction, so only our own pages can hear it; it keeps
+ * nothing, so the no-storage rule is untouched; and it works whether or not the
+ * opener survived.
+ */
+const CALLBACK_CHANNEL = 'resonant-hf-oauth'
+
 /** Least privilege: who you are, and nothing about your repositories. */
 const SCOPES = 'openid profile'
 
@@ -270,69 +290,293 @@ interface Pending {
 /** The live transaction. Memory only, and cleared the moment it is finished. */
 let pending: Pending | null = null
 
-/** What the callback route sends back to this page. */
-export interface CallbackMessage {
-  source: 'resonant-hf-oauth'
-  code: string
-  state: string
-}
+/**
+ * What a returning window passes to the window that started the sign-in.
+ *
+ * Either an authorization code or the provider's refusal, never both. The
+ * `state` travels with it so the receiver can tell its own transaction from
+ * anybody else's, which is the whole job that parameter exists to do.
+ */
+export type CallbackMessage =
+  | { source: 'resonant-hf-oauth'; code: string; state: string }
+  | { source: 'resonant-hf-oauth'; error: string; state: string }
 
 function isCallbackMessage(value: unknown): value is CallbackMessage {
   if (typeof value !== 'object' || value === null) return false
   const message = value as Record<string, unknown>
-  return message.source === 'resonant-hf-oauth'
-    && typeof message.code === 'string'
-    && typeof message.state === 'string'
+  if (message.source !== 'resonant-hf-oauth') return false
+  if (typeof message.state !== 'string') return false
+  return typeof message.code === 'string' || typeof message.error === 'string'
+}
+
+/** What a returning window hands back, whichever door it comes through. */
+export type CallbackOutcome =
+  /** Not a callback at all. Load the application as usual. */
+  | { kind: 'none' }
+  /** Announced to whichever window is waiting. This one renders nothing. */
+  | { kind: 'handed-off' }
+  /** This window started it and is finishing it. Render progress, not a login. */
+  | { kind: 'resuming' }
+  /** Refused, or unfinishable here. Render, and say why. */
+  | { kind: 'failed'; problem: string }
+
+/** Parameters an authorization response may leave behind. */
+const CALLBACK_PARAMS = ['code', 'state', 'error', 'error_description', 'error_uri'] as const
+
+/**
+ * Takes the authorization response out of the address bar.
+ *
+ * An authorization code is single-use and short-lived, but a URL is copied,
+ * bookmarked, put in a screenshot and handed to the next page as a referrer.
+ * It has done its job by the time this runs, so it should stop existing.
+ */
+function stripCallbackParams(): void {
+  const url = new URL(window.location.href)
+  if (!CALLBACK_PARAMS.some((key) => url.searchParams.has(key))) return
+  for (const key of CALLBACK_PARAMS) url.searchParams.delete(key)
+  const query = url.searchParams.toString()
+  window.history.replaceState(null, '', `${url.pathname}${query ? `?${query}` : ''}${url.hash}`)
 }
 
 /**
- * Runs the callback route, inside the popup.
+ * Says the result out loud, through both doors.
  *
- * The popup's only job is to carry the code and the state back to the window
- * that started the sign-in. It holds no verifier and exchanges nothing, so
- * there is nothing here worth stealing, and it closes immediately.
+ * `postMessage` is immediate when the opener survived; the channel is what
+ * works when it did not. Whichever arrives second is ignored, and if nobody is
+ * listening this is simply a message nobody hears.
  */
-export function completeCallbackInPopup(search: string): boolean {
-  if (typeof window === 'undefined' || !window.opener) return false
+function announce(message: CallbackMessage): void {
+  try {
+    window.opener?.postMessage(message, window.location.origin)
+  } catch {
+    // The opener is gone. That is the case the channel below exists for.
+  }
+  try {
+    const channel = new BroadcastChannel(CALLBACK_CHANNEL)
+    channel.postMessage(message)
+    // Not closed here: delivery is asynchronous, and closing the channel — or
+    // the window — before the task runs would throw the message away.
+    window.setTimeout(() => channel.close(), CLOSE_DELAY_MS)
+  } catch {
+    // No BroadcastChannel. The opener was the only way, and was tried above.
+  }
+}
+
+/** Long enough for a queued broadcast to be delivered before the window goes. */
+const CLOSE_DELAY_MS = 150
+
+/** The provider's own refusals, in words that belong to this interface. */
+function describeFailure(code: string, description: string | null): string {
+  if (code === 'access_denied') return 'You did not approve the sign-in, so nothing was shared.'
+  if (code === 'invalid_scope') return 'This application asked Hugging Face for something it is not allowed.'
+  // A description is the provider's text. It is shown because it is the only
+  // thing that explains an unfamiliar code, and it can never contain a token:
+  // this is the error branch, where no token was ever issued.
+  const detail = description && description.trim() ? `: ${description.trim()}` : ''
+  return `Hugging Face refused the sign-in (${code})${detail}`
+}
+
+/**
+ * Deals with an authorization response, wherever it landed.
+ *
+ * Called before React starts, so a valid callback never flashes the login page
+ * on its way through. It recognises the response by what the URL carries, not
+ * by its path: the redirect URI registered for this client is the application
+ * root, so there is no route of our own to match on.
+ */
+export function consumeCallback(
+  search: string = typeof window === 'undefined' ? '' : window.location.search,
+): CallbackOutcome {
+  if (typeof window === 'undefined') return { kind: 'none' }
   const params = new URLSearchParams(search)
   const code = params.get('code')
   const returned = params.get('state')
-  if (code && returned) {
-    const message: CallbackMessage = { source: 'resonant-hf-oauth', code, state: returned }
-    // Addressed to this exact origin, so the code cannot be posted anywhere else.
-    window.opener.postMessage(message, window.location.origin)
+  const failure = params.get('error')
+  if (!code && !failure) return { kind: 'none' }
+
+  if (failure) {
+    const problem = describeFailure(failure, params.get('error_description'))
+    announce({ source: 'resonant-hf-oauth', error: problem, state: returned ?? '' })
+    stripCallbackParams()
+    if (pending && returned && pending.state === returned) pending = null
+    publish({ status: 'signed-out', problem })
+    return { kind: 'failed', problem }
   }
-  window.close()
-  return true
+
+  if (!code || !returned) {
+    stripCallbackParams()
+    const problem = 'That sign-in came back incomplete. Try it again.'
+    publish({ status: 'signed-out', problem })
+    return { kind: 'failed', problem }
+  }
+
+  // Said before anything else, so a waiting window hears it even when this one
+  // turns out to be able to finish the job itself.
+  announce({ source: 'resonant-hf-oauth', code, state: returned })
+  stripCallbackParams()
+
+  // Only the window that started the sign-in can complete it: the verifier
+  // lives in one heap and is written nowhere. When that is this window — a
+  // same-window return, or a popup that was never really separate — finish here.
+  if (pending && pending.state === returned) {
+    void finishHandshake(code)
+    return { kind: 'resuming' }
+  }
+
+  // Otherwise another window owns this sign-in and has just been told. Go away
+  // if allowed to; a severed popup may no longer be allowed to close itself,
+  // and `main.tsx` shows a small notice rather than the login page if so.
+  window.setTimeout(() => {
+    try { window.close() } catch { /* not ours to close */ }
+  }, CLOSE_DELAY_MS)
+  return { kind: 'handed-off' }
 }
 
-/** Waits for the popup to report back, or gives up. */
+/**
+ * Waits for the sign-in to come back, from whichever window it comes back in.
+ *
+ * Three things changed here, and all three are the same bug: the popup that
+ * goes to Hugging Face may no longer be the popup that comes back, as far as
+ * this window can tell.
+ *
+ * It listens on the channel as well as for a message, because a severed
+ * opener can only use the channel. It matches on the transaction rather than
+ * on `event.source`, because the severed window is not the handle we hold —
+ * `state` is the unguessable value that says whose sign-in this is, and it is
+ * checked against exactly this attempt. And a closed window is given a grace
+ * period rather than failing on the spot, because a severed handle reports
+ * `closed` while its window is still open and working.
+ */
 function awaitCallback(popup: Window, expected: string): Promise<string> {
   return new Promise((resolve, reject) => {
+    let settled = false
+    const channel = openChannel()
+
     const finish = (fn: () => void) => {
-      window.removeEventListener('message', onMessage)
-      clearInterval(closedCheck)
+      if (settled) return
+      settled = true
+      window.removeEventListener('message', onWindowMessage)
+      channel?.close()
+      window.clearInterval(closedCheck)
+      window.clearTimeout(graceTimer)
+      window.clearTimeout(overallTimer)
       fn()
     }
 
-    const onMessage = (event: MessageEvent) => {
-      // Only this origin, only this window, only this transaction.
-      if (event.origin !== window.location.origin) return
-      if (event.source !== popup) return
-      if (!isCallbackMessage(event.data)) return
-      if (event.data.state !== expected) {
-        finish(() => reject(new Error('The sign-in did not come back the way it went out.')))
+    const accept = (data: unknown) => {
+      if (!isCallbackMessage(data)) return
+      // Not ours: another tab's sign-in, or a stale one. Keep waiting.
+      if (data.state !== expected) return
+      if ('error' in data) {
+        finish(() => reject(new Error(data.error)))
         return
       }
-      finish(() => resolve(event.data.code))
+      finish(() => resolve(data.code))
     }
 
-    const closedCheck = setInterval(() => {
-      if (popup.closed) finish(() => reject(new Error('The sign-in window was closed.')))
+    const onWindowMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return
+      accept(event.data)
+    }
+
+    let graceTimer = 0
+    // A handle that reports `closed` may mean the window really went, or may
+    // mean the provider's opener policy severed it. Give the answer time to
+    // arrive either way before calling it a failure.
+    const closedCheck = window.setInterval(() => {
+      if (!popup.closed || graceTimer) return
+      graceTimer = window.setTimeout(
+        () => finish(() => reject(new Error('The sign-in window closed before it finished.'))),
+        CLOSED_GRACE_MS,
+      )
     }, 400)
 
-    window.addEventListener('message', onMessage)
+    // A backstop, so a sign-in that is never answered does not wait for ever.
+    const overallTimer = window.setTimeout(
+      () => finish(() => reject(new Error('The sign-in took too long. Try it again.'))),
+      SIGN_IN_TIMEOUT_MS,
+    )
+
+    window.addEventListener('message', onWindowMessage)
+    if (channel) channel.onmessage = (event) => accept(event.data)
   })
+}
+
+/** How long a broadcast gets to arrive after the window handle says it is gone. */
+const CLOSED_GRACE_MS = 3_000
+
+/** How long the whole sign-in gets before it is abandoned. */
+const SIGN_IN_TIMEOUT_MS = 5 * 60_000
+
+function openChannel(): BroadcastChannel | null {
+  try {
+    return new BroadcastChannel(CALLBACK_CHANNEL)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Turns an authorization code into a session.
+ *
+ * Shared by both ways the code can arrive: handed back by another window, or
+ * found in this window's own address bar. It consumes `pending`, so it can run
+ * exactly once per transaction, and the verifier is gone by the time the
+ * exchange is on the wire.
+ */
+async function finishHandshake(code: string): Promise<void> {
+  const transaction = pending
+  if (!transaction) {
+    publish({ status: 'signed-out', problem: 'That sign-in is no longer the one in progress.' })
+    return
+  }
+  pending = null
+  publish({ status: 'signing-in' })
+
+  try {
+    const where = await discover()
+    const body = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      // A public client: there is no secret, which is the whole point of PKCE.
+      client_id: CONFIG.clientId,
+      // Character for character what the authorize request sent, because the
+      // provider compares them.
+      redirect_uri: redirectUri(),
+      code_verifier: transaction.verifier,
+    })
+
+    const response = await fetch(where.token, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: body.toString(),
+    })
+    if (!response.ok) throw new Error('Hugging Face would not complete the sign-in.')
+    const granted = await response.json() as { access_token?: unknown }
+    if (typeof granted.access_token !== 'string' || !granted.access_token) {
+      throw new Error('Hugging Face did not return a usable sign-in.')
+    }
+
+    const who = await fetch(where.userinfo, {
+      headers: { Authorization: `Bearer ${granted.access_token}`, Accept: 'application/json' },
+    })
+    if (!who.ok) throw new Error('Hugging Face would not say who signed in.')
+    const profile = await who.json() as Record<string, unknown>
+    const username = typeof profile.preferred_username === 'string' ? profile.preferred_username
+      : typeof profile.name === 'string' ? profile.name : ''
+    if (!username) throw new Error('Hugging Face did not return a username.')
+
+    accessToken = granted.access_token
+    identity = { username }
+    publish({ status: 'signed-in', identity })
+  } catch (error) {
+    accessToken = null
+    identity = null
+    // Only messages written above reach here, never a response body, so this
+    // can never carry a token.
+    const problem = error instanceof Error && error.message ? error.message : 'Signing in did not work.'
+    publish({ status: 'signed-out', problem })
+  }
 }
 
 /**
@@ -373,49 +617,11 @@ export async function signIn(): Promise<void> {
     popup.location.replace(`${where.authorization}?${query.toString()}`)
 
     const code = await awaitCallback(popup, transaction)
-    if (!pending || pending.state !== transaction) {
-      throw new Error('That sign-in is no longer the one in progress.')
-    }
-
-    const body = new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      // A public client: there is no secret, which is the whole point of PKCE.
-      client_id: CONFIG.clientId,
-      // The same string, byte for byte: the provider compares what the token
-      // request claims against what the authorize request asked for.
-      redirect_uri: redirectUri(),
-      code_verifier: pending.verifier,
-    })
-    // The verifier and the code have both done their job by the time this
-    // resolves; neither is kept.
-    pending = null
-
-    const response = await fetch(where.token, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-      body: body.toString(),
-    })
-    if (!response.ok) {
-      throw new Error('Hugging Face would not complete the sign-in.')
-    }
-    const granted = await response.json() as { access_token?: unknown }
-    if (typeof granted.access_token !== 'string' || !granted.access_token) {
-      throw new Error('Hugging Face did not return a usable sign-in.')
-    }
-
-    const who = await fetch(where.userinfo, {
-      headers: { Authorization: `Bearer ${granted.access_token}`, Accept: 'application/json' },
-    })
-    if (!who.ok) throw new Error('Hugging Face would not say who signed in.')
-    const profile = await who.json() as Record<string, unknown>
-    const username = typeof profile.preferred_username === 'string' ? profile.preferred_username
-      : typeof profile.name === 'string' ? profile.name : ''
-    if (!username) throw new Error('Hugging Face did not return a username.')
-
-    accessToken = granted.access_token
-    identity = { username }
-    publish({ status: 'signed-in', identity })
+    // `finishHandshake` checks that this is still the transaction in progress,
+    // consumes it, and does the exchange. Both ways a code can arrive run
+    // through it, so neither can drift away from the other.
+    if (!popup.closed) popup.close()
+    await finishHandshake(code)
   } catch (error) {
     pending = null
     accessToken = null

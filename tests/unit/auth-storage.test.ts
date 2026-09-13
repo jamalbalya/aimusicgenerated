@@ -238,7 +238,32 @@ describe('the redirect URI is the one Hugging Face has registered', () => {
     expect(code(AUTH_SOURCE)).not.toContain('CALLBACK_PATH')
     const entry = readFileSync(new URL('../../src/main.tsx', import.meta.url), 'utf8')
     expect(entry).not.toContain('CALLBACK_PATH')
-    expect(entry).toContain('completeCallbackInPopup')
+    // The entry point deals with the response before React starts, so a valid
+    // callback never flashes the login page on its way through.
+    expect(entry).toContain('consumeCallback')
+  })
+
+  it('does not depend on the opener surviving the provider', () => {
+    // Hugging Face serves `Cross-Origin-Opener-Policy: same-origin`, which
+    // severs the popup from the window that opened it: `window.opener` is null
+    // on the way back, and the handle the opener holds reports `closed` while
+    // the window is still on screen. Both doors are therefore used, and the
+    // answer is matched on the transaction rather than on the window handle.
+    const executable = code(AUTH_SOURCE)
+    expect(executable).toContain('BroadcastChannel')
+    expect(executable).not.toContain('event.source !== popup')
+    // A broadcast is a message, not storage: it keeps nothing anywhere.
+    expect(executable).not.toContain('localStorage')
+    expect(executable).not.toContain('sessionStorage')
+  })
+
+  it('takes the code out of the address bar once it is used', () => {
+    // A URL is copied, bookmarked, screenshotted and sent on as a referrer.
+    const executable = code(AUTH_SOURCE)
+    expect(executable).toContain('history.replaceState')
+    for (const param of ['code', 'state', 'error', 'error_description', 'error_uri']) {
+      expect(executable).toContain(`'${param}'`)
+    }
   })
 
   it('sends the same URI to the authorize endpoint and to the token endpoint', () => {
