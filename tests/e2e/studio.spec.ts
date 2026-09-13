@@ -197,7 +197,12 @@ test.describe('song studio', () => {
     // receives the click.
     const instrumental = page.getByLabel('Instrumental')
     await expect(instrumental).not.toBeChecked()
-    await instrumental.check({ force: true })
+    // The input is `sr-only`, so it has no box worth clicking and `force` would
+    // fire at whatever coordinates it nominally occupies — off-screen on a
+    // phone as soon as anything above it grows. The label is the real control
+    // and the real target: clicking it scrolls it into view first, the way a
+    // person's finger would arrive there.
+    await page.locator('label').filter({ hasText: /^Instrumental$/ }).click()
     await expect(instrumental).toBeChecked()
 
     await page.getByLabel('Style').fill('30 seconds')

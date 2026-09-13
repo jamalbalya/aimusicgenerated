@@ -52,14 +52,19 @@ export default function ZeroGpuQuotaBanner() {
   return (
     <section
       data-testid="zerogpu-quota-banner"
-      aria-labelledby="zerogpu-quota-heading"
+      // Named, but not a heading. Every page in this application uses level-2
+      // headings for generated songs, and a banner that sits above all of them
+      // would put a permanent entry at the top of that outline — telling a
+      // screen reader there is a result when there is not, and breaking the
+      // reading order of the page it is only annotating.
+      aria-label="ZeroGPU quota"
       className="mb-4 rounded-[10px] border bg-[var(--bg-panel)] px-3.5 py-3"
       style={{ borderColor: tone }}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <h2 id="zerogpu-quota-heading" className="t-label">ZeroGPU quota</h2>
+            <p className="t-label">ZeroGPU quota</p>
             <span
               className="t-num text-[11px] text-[var(--text-dim)]"
               data-testid="zerogpu-quota-status"
