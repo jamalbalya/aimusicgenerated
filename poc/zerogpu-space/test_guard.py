@@ -371,6 +371,35 @@ for banned in ["cookie", "Cookie", "set_cookie", "session_id"]:
     check(f"guard.py never mentions {banned}", banned not in source)
 
 
+print("\ncounting the sung lines")
+# The sheet that exposed the bug. Its last line opens with a section tag,
+# closes with one, and sings four words in between -- the older test treated
+# the whole line as a tag, counted 9, and the studio counted 10, so a finished
+# song was thrown away over the difference. The same sheet is pinned in
+# tests/unit/zerogpu.test.ts, so the two counters cannot drift apart.
+BATAK_SHEET = "\n".join([
+    "[Intro, Soft Acoustic Guitar and Crying Electric Guitar] [Verse 1] Di bagasan rohangku, sai adong do ho",
+    "[Pre-Chorus, Building Vocal] Sai denggan ma rohami",
+    "[Chorus, High Male Vocal] Sai tinggil ma suaram, lao manjou au",
+    "[Verse 2] Hape godang cobaan di dalan cinta",
+    "[Pre-Chorus, Higher Vocal Build] Molo gabe holan mimpi",
+    "[Chorus, Powerful High Notes] Sai tinggil ma suaram, lao manjou au",
+    "[Bridge, Emotional Guitar Solo and Vocal Cry] Ooo\u2026 unang tinggalhon au",
+    "[Final Chorus, Key Lift, Big Drums and Harmony Vocals] Sai tinggil ma suaram",
+    "[Final High Note, Sustained Vocal] Ho do holongki\u2026",
+    "[Outro, Soft Acoustic Guitar] Sai rap hita lao Sahat tu tua [End]",
+])
+check("a line that opens and closes with a tag but sings in between is counted",
+      guard.count_lyric_lines(BATAK_SHEET) == 10)
+check("a line that is only a tag is not counted",
+      guard.count_lyric_lines("[Verse 1]\nsomething sung") == 1)
+check("bare tags alone make an empty sheet",
+      guard.count_lyric_lines("[Intro]\n[Verse 1]\n[End]") == 0)
+check("blank lines and carriage returns change nothing",
+      guard.count_lyric_lines("a\r\n\r\nb\r\n") == 2)
+check("an empty sheet counts nothing",
+      guard.count_lyric_lines("") == 0 and guard.count_lyric_lines("   \n\n") == 0)
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED:")

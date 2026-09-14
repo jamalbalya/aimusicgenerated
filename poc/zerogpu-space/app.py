@@ -248,10 +248,12 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
             caption = f"{caption.rstrip(',; ')}, {vocal_gender} lead vocal"
 
     sheet = lyrics.replace("\r\n", "\n").replace("\r", "\n").rstrip()
-    lyric_lines_sent = sum(
-        1 for line in sheet.split("\n")
-        if line.strip() and not (line.strip().startswith("[") and line.strip().endswith("]"))
-    )
+    # Counted by guard.py, which applies the same rule the studio does. The
+    # test that used to live here — starts with "[", ends with "]" — also
+    # swallowed a line that opens with a tag and closes with one while singing
+    # words in between, and the studio, counting that line, then discarded a
+    # finished song because the two numbers disagreed.
+    lyric_lines_sent = guard.count_lyric_lines(lyrics)
 
     params = GenerationParams(
         task_type="text2music",

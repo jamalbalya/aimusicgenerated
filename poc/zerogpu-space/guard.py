@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -307,6 +308,35 @@ def caller_for(request) -> str:
     as authentication rather than a boundary.
     """
     return authorize(parse_bearer(request.headers.get("authorization"))).username
+
+
+# --- what was sung ------------------------------------------------------------
+
+
+#: A line that is *only* a section tag, and nothing else.
+#:
+#: The distinction matters more than it looks. A cruder test — starts with "["
+#: and ends with "]" — also swallows a line like
+#:
+#:     [Outro, Soft Acoustic Guitar] Sai rap hita lao Sahat tu tua [End]
+#:
+#: which starts with a tag, ends with a tag, and has sung words in between. The
+#: studio counts that line, because it is one; a Space that did not would report
+#: a different number, the studio would see the two disagree, and it would throw
+#: away a finished song over an accounting difference that says nothing about
+#: what was sung. This regular expression is the same rule the studio applies in
+#: `aceStepRequest.ts`, and the same sheet is pinned on both sides so they cannot
+#: drift apart.
+SECTION_TAG_ONLY = re.compile(r"\[[^\]]+\]")
+
+
+def count_lyric_lines(lyrics: str) -> int:
+    """Sung lines in a sheet: everything that is not purely a section tag."""
+    sheet = lyrics.replace("\r\n", "\n").replace("\r", "\n").rstrip()
+    return sum(
+        1 for line in sheet.split("\n")
+        if line.strip() and not SECTION_TAG_ONLY.fullmatch(line.strip())
+    )
 
 
 # --- abuse brake --------------------------------------------------------------

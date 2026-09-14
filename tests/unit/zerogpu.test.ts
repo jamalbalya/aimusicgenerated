@@ -1083,3 +1083,75 @@ describe('the Gradio client, as transport', () => {
     await expect(provider.generate(BOS_TOXIC)).resolves.toMatchObject({ engine: 'ace-step' })
   })
 })
+
+describe('the studio and the Space count sung lines the same way', () => {
+  /**
+   * The sheet that exposed the disagreement.
+   *
+   * Its last line opens with a section tag, closes with one, and sings four
+   * words in between. The Space used to call any line that starts with "[" and
+   * ends with "]" a tag, so it counted 9 where the studio counted 10 — and the
+   * studio, seeing the two disagree, threw away a song that had already cost a
+   * GPU run. The same sheet is pinned in `poc/zerogpu-space/test_guard.py`, so
+   * neither side can drift without the other's test noticing.
+   */
+  const BATAK_SHEET = [
+    '[Intro, Soft Acoustic Guitar and Crying Electric Guitar] [Verse 1] Di bagasan rohangku, sai adong do ho',
+    '[Pre-Chorus, Building Vocal] Sai denggan ma rohami',
+    '[Chorus, High Male Vocal] Sai tinggil ma suaram, lao manjou au',
+    '[Verse 2] Hape godang cobaan di dalan cinta',
+    '[Pre-Chorus, Higher Vocal Build] Molo gabe holan mimpi',
+    '[Chorus, Powerful High Notes] Sai tinggil ma suaram, lao manjou au',
+    '[Bridge, Emotional Guitar Solo and Vocal Cry] Ooo… unang tinggalhon au',
+    '[Final Chorus, Key Lift, Big Drums and Harmony Vocals] Sai tinggil ma suaram',
+    '[Final High Note, Sustained Vocal] Ho do holongki…',
+    '[Outro, Soft Acoustic Guitar] Sai rap hita lao Sahat tu tua [End]',
+  ].join('\n')
+
+  it('counts a line that opens and closes with a tag but sings in between', () => {
+    expect(lyricLines(BATAK_SHEET)).toHaveLength(10)
+  })
+
+  it('does not count a line that is only a tag', () => {
+    expect(lyricLines('[Verse 1]\nsomething sung')).toHaveLength(1)
+    expect(lyricLines('[Intro]\n[Verse 1]\n[End]')).toHaveLength(0)
+  })
+
+  it('generates when the Space counts the way it now does', async () => {
+    // The whole brief, end to end, against a Space reporting the count that
+    // `guard.count_lyric_lines` now produces for this sheet. Before the fix it
+    // reported 9 and this threw `bad-result` *after* the GPU had already run.
+    const { server, provider } = zeroGpu({
+      stream: sse([completed([
+        FILE_DATA,
+        JSON.stringify({
+          ...METADATA, lyric_lines_sent: 10, vocal_language: 'id',
+          instrumental: false, requested_audio_duration_s: ACE_STEP_AUTO_DURATION,
+          audio_duration_s: 238,
+        }),
+      ])]),
+    })
+    const result = await provider.generate({
+      style: 'Original Indonesian Batak romantic pop ballad, high-register male vocal',
+      lyrics: BATAK_SHEET, language: 'id', vocalGender: 'male', instrumental: false,
+    })
+    expect(result.duration).toBeGreaterThan(0)
+    expect(result.engine).toBe('ace-step')
+    // One submission: the song was made once and kept, not made and discarded.
+    expect(server.joins()).toBe(1)
+    // And the sheet reached the Space with every marker intact.
+    expect(server.joinBody()?.data[1]).toBe(BATAK_SHEET)
+  })
+
+  it('keeps every section marker in the sheet that is sent', () => {
+    // The counting rule must never be a reason to alter the words. Whatever is
+    // counted, the sheet itself goes to the Space exactly as it was written.
+    for (const marker of [
+      'Intro', 'Verse 1', 'Pre-Chorus', 'Chorus', 'Verse 2',
+      'Bridge', 'Final Chorus', 'Final High Note', 'Outro',
+    ]) {
+      expect(normalizeLyrics(BATAK_SHEET)).toContain(`[${marker}`)
+    }
+    expect(normalizeLyrics(BATAK_SHEET)).toBe(BATAK_SHEET)
+  })
+})
