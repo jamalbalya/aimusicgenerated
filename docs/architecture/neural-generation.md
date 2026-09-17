@@ -39,7 +39,7 @@ asked for is refused rather than shown.
 
 | | What it is | Where it is set |
 |---|---|---|
-| Song length | how long the song is — 271 s in the validated run | the Length control; Auto becomes `ACE_STEP_SPACE_AUTO_DURATION` (default 271) |
+| Song length | how long the song is — 271 s in the validated run | the Length control. Auto sends `-1`, ACE-Step's own "you choose", and the model picks a length from the lyric sheet. `ACE_STEP_SPACE_AUTO_DURATION` pins a fixed length instead, and is unset by default |
 | ZeroGPU duration | how many seconds of GPU one request may occupy — 80 | `@spaces.GPU(duration=80)` in the Space's `app.py` |
 
 The 271-second song used about 45 of its 80 GPU seconds. Measured on that run,
@@ -318,6 +318,28 @@ Two request flags matter and are set deliberately:
 Vocal gender has no parameter in ACE-Step; a voice is described in the caption.
 The adapter appends `", male lead vocal"` **only** when the style does not
 already mention a gender, so it never overwrites what the user wrote.
+
+### How long a caption and a sheet may be
+
+ACE-Step takes a caption of at most **512** characters and a lyric sheet of at
+most **4096**, from its own `GenerationParams` docstring. The Space enforces
+both in `guard._text` and answers HTTP 400, spending no GPU — but that refusal
+does not reach the browser in readable form, so the studio applies the same rule
+itself in `aceStepTextTooLong()` before anything is sent, and the Style box
+counts down to the limit as it is typed.
+
+Each backend measures the caption **it** sends, and those differ by design:
+
+| Backend | What is measured | Why |
+|---|---|---|
+| `local` | the caption after the studio appends the gender hint | the studio builds the final caption, so the hint is part of what ACE-Step receives |
+| `zerogpu` | the caption before the hint | the Space appends the hint *after* its own length check, so counting it here would refuse requests the Space accepts |
+
+An instrumental request sends `[inst]` in place of the sheet, so the lyric limit
+does not apply to it.
+
+These are not configurable. They are ACE-Step's limits, not a host's, which is
+why they are the same on both backends and are not in `.env.example`.
 
 ## Progress, and why there is no percentage
 
