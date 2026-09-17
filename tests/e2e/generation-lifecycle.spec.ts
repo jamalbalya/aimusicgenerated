@@ -279,6 +279,11 @@ test.describe('a result that finished while the Studio was closed', () => {
     await expect(page.getByText('acestep-v15-turbo').first()).toBeVisible()
     await expect(page.getByText('acestep-5Hz-lm-0.6B')).toBeVisible()
     await expect(page.getByText('101390300')).toBeVisible()
+    // The number is real — ACE-Step reports the seed it drew — but the endpoint
+    // takes none, so the panel must not invite anyone to type it back in. This
+    // is the result half of the disabled Seed control in the form above.
+    await expect(page.getByTestId('neural-seed'))
+      .toContainText('drawn by ACE-Step · cannot be reused')
     // The panel's own Length stat, and the transport's clock, are different
     // elements — both have to have survived the round trip.
     await expect(page.getByText('4:31', { exact: true })).toBeVisible()

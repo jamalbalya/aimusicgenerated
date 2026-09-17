@@ -105,3 +105,16 @@ test.describe('the neural engine does not pretend to take settings it cannot', (
     await expect(page.getByRole('textbox', { name: 'Seed' })).toHaveValue('12345')
   })
 })
+
+test.describe('the result panel agrees with the control above it', () => {
+  test('the About page scopes its seed promise to the engine that keeps it', async ({ page }) => {
+    await answeringSpace(page)
+    await page.goto('/about')
+    await signIn(page)
+    // True of the offline engine, and it may keep saying so — but it has to say
+    // which engine, because Neural mode cannot honour it.
+    await expect(page.getByText('The same seed always gives the same song.')).toBeVisible()
+    await expect(page.getByRole('heading', { name: /Composition — the offline engine/ })).toBeVisible()
+    await expect(page.getByText(/ACE-Step, which draws its own seed for every run/)).toBeVisible()
+  })
+})

@@ -88,7 +88,7 @@ export default function AboutPage() {
       <Panel title="Under the hood">
         <div className="grid gap-5 text-[13px] leading-relaxed sm:grid-cols-2">
           <section className="grid gap-1.5">
-            <h3 className="t-title text-[14px]">Composition</h3>
+            <h3 className="t-title text-[14px]">Composition — the offline engine</h3>
             <p className="text-[var(--text-dim)]">
               Your description is matched against genre and mood vocabularies to pick a tempo,
               a key and a harmonic language. The arranger builds a form that fits the length you
@@ -96,6 +96,8 @@ export default function AboutPage() {
               and melodies are built from short motifs that are repeated and transformed —
               inverted, transposed, retrograded — so the tune develops instead of wandering.
               Strong beats land on chord tones. The same seed always gives the same song.
+              That last part is true of this engine only: Neural mode sends the work to ACE-Step,
+              which draws its own seed for every run, so a neural song cannot be repeated.
             </p>
           </section>
 

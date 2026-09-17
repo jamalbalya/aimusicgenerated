@@ -1305,10 +1305,20 @@ export default function StudioPage() {
                 <dt className="min-w-[7rem]">Language model</dt>
                 <dd className="t-num">{neuralTakes[neuralIndex]!.result.metadata?.lmModel ?? '—'}</dd>
               </div>
+              {/* The number ACE-Step reports it used, which is real — but the
+                  endpoint takes no seed, so it cannot be given back. Saying so
+                  here keeps the result panel agreeing with the disabled Seed
+                  control above it, instead of inviting someone to copy a number
+                  that will not do anything. */}
               {neuralTakes[neuralIndex]!.result.metadata?.seed !== undefined && (
                 <div className="flex gap-2">
                   <dt className="min-w-[7rem]">Seed</dt>
-                  <dd className="t-num">{neuralTakes[neuralIndex]!.result.metadata!.seed}</dd>
+                  <dd className="t-num" data-testid="neural-seed">
+                    {neuralTakes[neuralIndex]!.result.metadata!.seed}
+                    <span className="ml-2 t-label text-[10px] text-[var(--text-faint)]">
+                      drawn by ACE-Step · cannot be reused
+                    </span>
+                  </dd>
                 </div>
               )}
             </dl>
