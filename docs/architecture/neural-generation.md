@@ -341,6 +341,61 @@ does not apply to it.
 These are not configurable. They are ACE-Step's limits, not a host's, which is
 why they are the same on both backends and are not in `.env.example`.
 
+## What can be asked for, and what cannot
+
+The Space declares six inputs and the studio sends exactly those:
+
+```
+style: str, lyrics: str, language: str,
+vocal_gender: "male" | "female" | "mixed", instrumental: bool, duration: int
+  -> (audio file, metadata JSON)
+```
+
+Everything else ACE-Step can take is fixed inside `poc/zerogpu-space/app.py` and
+is not reachable from a request. Verified against that file, not assumed:
+
+| Parameter | Reachable from the studio? | Where it is decided |
+|---|---|---|
+| Style / caption | **yes** | the Style box, capped at 512 characters |
+| Lyrics | **yes** | the Lyrics box, capped at 4096 characters |
+| Language | **yes** | the Pronunciation control |
+| Vocal gender | **yes** | appended to the caption; ACE-Step has no gender parameter |
+| Instrumental | **yes** | the Vocals control; sends `[inst]` as the sheet |
+| Duration | **yes** | the Length control; Auto sends `-1` and ACE-Step chooses |
+| **Seed** | **no** | `GenerationConfig(use_random_seed=True)`; a new one every run |
+| **BPM / tempo** | **no** | no parameter exists; describe it in the caption |
+| **Key** | **no** | no parameter exists; describe it in the caption |
+| **Guidance scale** | **no** | not set; ACE-Step's default |
+| **Inference steps** | **no** | not set; ACE-Step's default |
+| **Sampling parameters** | **no** | not set; ACE-Step's defaults |
+| **Section or arrangement timing** | **no** | inferred by the model from the section tags alone |
+| **Stems** | **no** | one finished mix is returned |
+
+The studio shows a control for every one of these, because the offline
+procedural engine reads all of them. In Neural Mode the ones the endpoint cannot
+carry are **disabled**, with the reason next to them, rather than left live and
+silently ignored — `neuralIgnores` in `StudioPage.tsx`, held to it by
+`tests/e2e/neural-unsupported-controls.spec.ts`.
+
+### Why no song can be reproduced
+
+Seed is the one that was actively misleading. The field said "The same seed and
+settings always produce the same song", accepted what was typed, passed it to
+the provider — and `planZeroGpuRequest` dropped it, because the endpoint has no
+slot for it. The Space then drew its own seed and *that* number was shown back
+in the result panel. Anyone who wrote it down and typed it in again got a
+different song.
+
+**On the ZeroGPU backend a generation cannot be repeated.** Not by this studio
+and not by anything else, until the Space itself exposes a seed. Taking one
+would mean adding a seventh input to `generate_music` and passing
+`use_random_seed=False` with it; the studio would then have to send a seed only
+to a Space that declares it, since the two cannot be deployed at the same
+instant. That work is not done and is not scheduled.
+
+The `local` backend is different: `buildAceStepTask` does set `seed` and
+`use_random_seed: false`, so a seed works there and the control stays live.
+
 ## Progress, and why there is no percentage
 
 The states are `idle`, `initializing`, `queued`, `generating`, `completed`,

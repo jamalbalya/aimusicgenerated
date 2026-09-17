@@ -215,6 +215,25 @@ export default function StudioPage() {
   // control the user can see; it is never a fallback applied to a request.
   const engineMode: EngineMode = resolveEngineMode(engineChoice, neural.hasAnswered)
 
+  /**
+   * Controls the neural request cannot carry.
+   *
+   * ACE-Step 1.5's endpoint takes a caption, a lyric sheet, a language, a
+   * voice, an instrumental flag and a length. Genre, mood, tempo, key, singing
+   * voice, seed and stems are read only by the offline engine — `generateNeural`
+   * never looks at them. Left live in Neural Mode they are controls that do
+   * nothing, and Seed was worse than nothing: it promised that the same seed
+   * reproduces the same song, was accepted, was dropped by `planZeroGpuRequest`,
+   * and a different, randomly drawn seed was then shown back with the result.
+   *
+   * They stay on screen — a control that vanishes teaches nothing, which is the
+   * same reason Takes stays visible when it is capped — but disabled, and
+   * saying why.
+   */
+  const neuralIgnores = engineMode === 'neural'
+  const IGNORED_BY_NEURAL =
+    'The neural engine takes its direction from the Style text. Write the tempo, key or mood there.'
+
   const chooseEngine = useCallback((mode: EngineMode) => {
     setEngineChoice(mode)
     setEngineError(null)
@@ -1013,8 +1032,19 @@ export default function StudioPage() {
 
           {advanced && (
             <div className="grid gap-4 border-t border-[var(--line)] pt-4 sm:grid-cols-2 lg:grid-cols-3">
+              {/* Said once, above the controls it applies to, rather than
+                  repeated under each of them. */}
+              {neuralIgnores && (
+                <p
+                  className="text-[11.5px] leading-snug text-[var(--text-faint)] sm:col-span-2 lg:col-span-3"
+                  data-testid="neural-ignores-note"
+                >
+                  {IGNORED_BY_NEURAL}
+                </p>
+              )}
               <Field label="Genre">
-                <select className="select" value={genreId} onChange={(e) => setGenreId(e.target.value)}>
+                <select className="select" value={genreId} disabled={neuralIgnores}
+                  onChange={(e) => setGenreId(e.target.value)}>
                   <option value="">Detect from the description</option>
                   {GENRES.map((genre) => (
                     <option key={genre.id} value={genre.id}>{genre.label}</option>
@@ -1023,7 +1053,8 @@ export default function StudioPage() {
               </Field>
 
               <Field label="Mood">
-                <select className="select" value={mood} onChange={(e) => setMood(e.target.value as Mood | '')}>
+                <select className="select" value={mood} disabled={neuralIgnores}
+                  onChange={(e) => setMood(e.target.value as Mood | '')}>
                   <option value="">Detect from the description</option>
                   {MOODS.map((option) => (
                     <option key={option.id} value={option.id}>{option.label}</option>
@@ -1061,7 +1092,8 @@ export default function StudioPage() {
               )}
 
               <Field label="Tempo" value={bpm > 0 ? `${bpm} BPM` : 'Auto'}>
-                <Slider min={0} max={220} value={bpm} onChange={setBpm} ariaLabel="Tempo in beats per minute" />
+                <Slider min={0} max={220} value={bpm} onChange={setBpm} disabled={neuralIgnores}
+                  ariaLabel="Tempo in beats per minute" />
               </Field>
 
               {/* Auto on the neural engine is ACE-Step reading the lyric sheet
@@ -1093,6 +1125,7 @@ export default function StudioPage() {
                     className="select"
                     value={tonic}
                     aria-label="Root note"
+                    disabled={neuralIgnores}
                     onChange={(e) => setTonic(Number(e.target.value))}
                   >
                     <option value={-1}>Auto</option>
@@ -1104,6 +1137,7 @@ export default function StudioPage() {
                     className="select"
                     value={scale}
                     aria-label="Scale"
+                    disabled={neuralIgnores}
                     onChange={(e) => setScale(e.target.value as ScaleName | '')}
                   >
                     <option value="">Auto</option>
@@ -1114,8 +1148,12 @@ export default function StudioPage() {
                 </div>
               </Field>
 
-              <Field label="Singing voice">
-                <select className="select" value={singStyle} onChange={(e) => setSingStyle(e.target.value)}>
+              <Field label="Singing voice"
+                {...(neuralIgnores
+                  ? { hint: 'ACE-Step sings in the voice the Style text describes. Use Vocal gender, or say it in the Style.' }
+                  : {})}>
+                <select className="select" value={singStyle} disabled={neuralIgnores}
+                  onChange={(e) => setSingStyle(e.target.value)}>
                   <option value="">Match the genre</option>
                   {SING_PRESET_NAMES.map((name) => (
                     <option key={name} value={name}>{name.charAt(0).toUpperCase() + name.slice(1)}</option>
@@ -1123,11 +1161,19 @@ export default function StudioPage() {
                 </select>
               </Field>
 
-              <Field label="Seed" hint="The same seed and settings always produce the same song.">
+              <Field
+                label="Seed"
+                hint={neuralIgnores
+                  ? 'Not available on the neural engine: ACE-Step draws its own seed for every run and the '
+                    + 'endpoint takes none, so a song cannot be repeated from one. The seed it used is shown '
+                    + 'with the result.'
+                  : 'The same seed and settings always produce the same song.'}
+              >
                 <input
                   className="input t-num"
                   value={seed}
-                  placeholder="random"
+                  disabled={neuralIgnores}
+                  placeholder={neuralIgnores ? 'drawn by ACE-Step' : 'random'}
                   onChange={(event) => setSeed(event.target.value)}
                 />
               </Field>
@@ -1159,10 +1205,16 @@ export default function StudioPage() {
                 />
               </Field>
 
-              <Field label="Stems" hint="Render every instrument separately so you can export them.">
+              <Field
+                label="Stems"
+                hint={neuralIgnores
+                  ? 'ACE-Step returns one finished mix. Separate it afterwards with the Stem Splitter.'
+                  : 'Render every instrument separately so you can export them.'}
+              >
                 <Segmented
                   ariaLabel="Render stems"
                   value={keepStems ? 'on' : 'off'}
+                  disabled={neuralIgnores}
                   onChange={(value) => setKeepStems(value === 'on')}
                   options={[{ value: 'on', label: 'Render stems' }, { value: 'off', label: 'Mix only' }]}
                 />
