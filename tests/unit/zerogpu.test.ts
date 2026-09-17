@@ -18,7 +18,7 @@ import {
   GradioClient, GradioProtocolError,
   MisconfiguredNeuralProvider, ProceduralMusicProvider, QuotaExceededError, SseParser,
   ZeroGpuError, ZeroGpuProvider, ENGINE_UNAVAILABLE_MESSAGE, ZEROGPU_UNAVAILABLE_MESSAGE,
-  ACE_STEP_AUTO_DURATION, DEFAULT_ZEROGPU_TIMEOUT_SECONDS,
+  ACE_STEP_AUTO_DURATION, ACE_STEP_TEXT_LIMITS, DEFAULT_ZEROGPU_TIMEOUT_SECONDS,
   createNeuralProvider, createProvider, lyricLines, normalizeLyrics, parseNeuralBackend,
   parseZeroGpuConfig, planZeroGpuRequest, resolveEngineMode, resolveProvider, resolveZeroGpuDuration,
   spaceUrlProblem, structureTags, verifyLyricsPreserved, zeroGpuStyle, zeroGpuVocalGender,
@@ -1153,5 +1153,134 @@ describe('the studio and the Space count sung lines the same way', () => {
       expect(normalizeLyrics(BATAK_SHEET)).toContain(`[${marker}`)
     }
     expect(normalizeLyrics(BATAK_SHEET)).toBe(BATAK_SHEET)
+  })
+})
+
+describe('a caption or a sheet ACE-Step cannot take is refused before it is sent', () => {
+  /**
+   * The Space answers HTTP 400 for these — `guard._text`, against
+   * `MAX_STYLE_CHARS` and `MAX_LYRICS_CHARS`. Catching them here costs no queue
+   * wait and no GPU, and names the field and the overshoot, which the Space's
+   * refusal does not reach the studio to do.
+   */
+  const longStyle = (length: number) => 'a'.repeat(length)
+
+  it('takes a style of exactly the limit', () => {
+    const plan = planZeroGpuRequest(
+      { ...BOS_TOXIC, style: longStyle(ACE_STEP_TEXT_LIMITS.style) }, TEST_CONFIG)
+    expect((plan.data[0] as string).length).toBe(ACE_STEP_TEXT_LIMITS.style)
+  })
+
+  it('refuses one character more, and says by how much', () => {
+    const over = longStyle(ACE_STEP_TEXT_LIMITS.style + 945)
+    expect(() => planZeroGpuRequest({ ...BOS_TOXIC, style: over }, TEST_CONFIG))
+      .toThrow(/style is 1457 characters; ACE-Step takes at most 512\. Shorten it by 945\./)
+    try {
+      planZeroGpuRequest({ ...BOS_TOXIC, style: over }, TEST_CONFIG)
+    } catch (error) {
+      expect((error as ZeroGpuError).code satisfies ZeroGpuErrorCode).toBe('oversized-request')
+    }
+  })
+
+  it('measures the caption that travels, gender hint included', () => {
+    // `zeroGpuStyle` appends ", male lead vocal" — 17 characters — when the word
+    // is present only inside another one. A style that fits before that and not
+    // after would be refused by the Space, so it is refused here.
+    const style = `${longStyle(ACE_STEP_TEXT_LIMITS.style - 11)} malevolent`
+    expect(style.length).toBeLessThanOrEqual(ACE_STEP_TEXT_LIMITS.style)
+    expect(() => planZeroGpuRequest({ ...BOS_TOXIC, style, vocalGender: 'male' }, TEST_CONFIG))
+      .toThrow(/ACE-Step takes at most 512/)
+  })
+
+  it('refuses a sheet past the lyric limit, and skips the check for an instrumental', () => {
+    const sheet = 'Perlawanan akan menyala\n'.repeat(200)
+    expect(sheet.length).toBeGreaterThan(ACE_STEP_TEXT_LIMITS.lyrics)
+    expect(() => planZeroGpuRequest({ ...BOS_TOXIC, lyrics: sheet }, TEST_CONFIG))
+      .toThrow(/lyrics is \d+ characters; ACE-Step takes at most 4096/)
+    // An instrumental sends `[inst]`, so the sheet's length is not its business.
+    expect(() => planZeroGpuRequest({ ...BOS_TOXIC, lyrics: sheet, instrumental: true }, TEST_CONFIG))
+      .not.toThrow()
+  })
+
+  it('costs no request: nothing reaches the Space', async () => {
+    const { server, provider } = zeroGpu()
+    await expect(provider.generate({ ...BOS_TOXIC, style: longStyle(1457) }))
+      .rejects.toThrow(/ACE-Step takes at most 512/)
+    expect(server.joins()).toBe(0)
+  })
+})
+
+describe('the Indonesian protest sheet, parsed the way the Space parses it', () => {
+  /**
+   * The sheet from the 2026-09-17 investigation, pinned verbatim.
+   *
+   * Twelve section markers, four of them carrying an en-dash qualifier, two
+   * choruses repeated word for word and a third marked "Final". Every marker is
+   * on its own line, which is the shape ACE-Step reads best — and the shape the
+   * counting rule on both sides agrees about.
+   */
+  const PROTEST_SHEET = [
+    '[Intro – Cold Piano and Distant Ambient]',
+    '[Verse 1]',
+    'Di balik meja mereka bicara',
+    'Tentang rakyat yang harus mengerti',
+    '[Pre-Chorus]',
+    'Kami diam bukan berarti lemah',
+    '[Chorus]',
+    'Kau bicara tentang perubahan',
+    'Perlawanan akan menyala',
+    '[Chorus 2]',
+    'Kau bicara tentang perubahan',
+    'Perlawanan akan menyala',
+    '[Bridge – Emotional Breakdown]',
+    'Kami melihat',
+    '[Final Chorus – Explosive Orchestral Rock]',
+    'Kau bicara tentang perubahan',
+    'Perlawanan akan menyala',
+    '[Outro – Piano and Fading Strings]',
+    'Perlawanan akan menyala',
+  ].join('\n')
+
+  it('counts only the sung lines, markers on their own lines excluded', () => {
+    expect(lyricLines(PROTEST_SHEET)).toHaveLength(11)
+    expect(structureTags(PROTEST_SHEET)).toHaveLength(8)
+  })
+
+  it('keeps an en-dash qualifier inside the marker', () => {
+    expect(structureTags(PROTEST_SHEET)).toContain('Bridge – Emotional Breakdown')
+    expect(structureTags(PROTEST_SHEET)).toContain('Final Chorus – Explosive Orchestral Rock')
+  })
+
+  it('counts a repeated chorus every time it appears', () => {
+    // Three choruses, identical words. A parser that de-duplicated would send
+    // the model one chorus and the studio would then disagree with the Space.
+    const menyala = lyricLines(PROTEST_SHEET).filter((line) => line === 'Perlawanan akan menyala')
+    expect(menyala).toHaveLength(4)
+  })
+
+  it('sends the sheet to the Space byte for byte', () => {
+    const plan = planZeroGpuRequest(
+      { ...BOS_TOXIC, lyrics: PROTEST_SHEET, language: 'id' }, TEST_CONFIG)
+    expect(plan.data[1]).toBe(PROTEST_SHEET)
+    expect(plan.lyricLineCount).toBe(11)
+    expect(verifyLyricsPreserved(PROTEST_SHEET, plan.data[1] as string).preserved).toBe(true)
+  })
+
+  it('treats a malformed marker as a sung line, and says so consistently', () => {
+    // Unclosed, empty and nested brackets are not markers. Both sides apply the
+    // same rule — `\[[^\]]+\]` over the whole trimmed line — so a sheet with one
+    // still generates: the model is asked to sing the odd line rather than the
+    // studio and the Space disagreeing about how many lines there were.
+    expect(lyricLines('[Chorus\nsatu')).toEqual(['[Chorus', 'satu'])
+    expect(lyricLines('[]\nsatu')).toEqual(['[]', 'satu'])
+    expect(lyricLines('[Chorus [loud]]\nsatu')).toEqual(['[Chorus [loud]]', 'satu'])
+    expect(structureTags('[Chorus\nsatu')).toEqual([])
+  })
+
+  it('keeps a long line whole', () => {
+    const long = `[Verse 1]\n${'Perlawanan akan menyala '.repeat(30).trim()}`
+    expect(lyricLines(long)).toHaveLength(1)
+    expect(lyricLines(long)[0]).toHaveLength(719)
+    expect(planZeroGpuRequest({ ...BOS_TOXIC, lyrics: long }, TEST_CONFIG).data[1]).toBe(long)
   })
 })

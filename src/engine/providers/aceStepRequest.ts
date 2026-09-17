@@ -121,6 +121,21 @@ export const DEFAULT_MODELS: AceStepModelChoice = {
 export const DEFAULT_VOCAL_LANGUAGE = 'en'
 
 /**
+ * The longest caption and lyric sheet ACE-Step 1.5 accepts, in characters.
+ *
+ * From ACE-Step's own `GenerationParams` docstring, and enforced a second time
+ * by the Space's `guard.MAX_STYLE_CHARS` / `guard.MAX_LYRICS_CHARS`, which
+ * answer HTTP 400 and spend no GPU. Stated here so the studio can tell someone
+ * their style is too long while they are still writing it, instead of letting
+ * them press Generate, wait for the queue, and be refused by the Space for a
+ * reason the studio already knew.
+ *
+ * Measured in characters before any normalisation, exactly as the Space
+ * measures them, so the two cannot disagree about whether a sheet fits.
+ */
+export const ACE_STEP_TEXT_LIMITS = { style: 512, lyrics: 4096 } as const
+
+/**
  * The song lengths ACE-Step 1.5 accepts in one request, in seconds.
  *
  * From ACE-Step's own `docs/en/API.md`: `audio_duration`, "range 10-600". What

@@ -32,8 +32,8 @@ import {
 } from './gradioClient'
 import { describeAudio } from './audioCheck'
 import {
-  ACE_STEP_AUTO_DURATION, ACE_STEP_DURATION_RANGE, DEFAULT_MODELS, DEFAULT_VOCAL_LANGUAGE,
-  lyricLines, normalizeLyrics,
+  ACE_STEP_AUTO_DURATION, ACE_STEP_DURATION_RANGE, ACE_STEP_TEXT_LIMITS,
+  DEFAULT_MODELS, DEFAULT_VOCAL_LANGUAGE, lyricLines, normalizeLyrics,
 } from './aceStepRequest'
 import { spaceUrlProblem, zeroGpuConfig, type ZeroGpuConfig } from './config'
 import { parseQuotaNotice } from './zeroGpuQuota'
@@ -60,6 +60,7 @@ export const ZEROGPU_UNAVAILABLE_MESSAGE =
  */
 export type ZeroGpuErrorCode =
   | 'illegal-duration'
+  | 'oversized-request'
   | 'generation-failed'
   | 'unexpected-error'
   | 'http-error'
@@ -172,6 +173,24 @@ export function zeroGpuStyle(style: string, gender: ZeroGpuVocalGender, instrume
   return `${style.trim().replace(/[,; ]+$/, '')}, ${gender} lead vocal`
 }
 
+/**
+ * Refuses a caption or a sheet ACE-Step cannot take, before anything is sent.
+ *
+ * The Space already refuses these — `guard._text` answers HTTP 400 — so this
+ * changes no rule and weakens none. What it changes is when the person hears
+ * about it: here, the moment the request is planned, naming the field, the
+ * length written and the length allowed, instead of after a queue wait and a
+ * refusal whose text they never see. The count is characters before
+ * normalisation, which is what the Space counts.
+ */
+function checkZeroGpuTextLength(field: 'style' | 'lyrics', text: string): void {
+  const limit = ACE_STEP_TEXT_LIMITS[field]
+  if (text.length <= limit) return
+  throw new ZeroGpuError('oversized-request',
+    `The ${field} is ${text.length} characters; ACE-Step takes at most ${limit}. `
+    + `Shorten it by ${text.length - limit}.`)
+}
+
 /** Builds the six inputs, and the record of them the result is checked against. */
 export function planZeroGpuRequest(
   request: MusicGenerationRequest,
@@ -185,8 +204,14 @@ export function planZeroGpuRequest(
   const language = request.language ?? DEFAULT_VOCAL_LANGUAGE
   const instrumental = request.instrumental === true
   const vocalGender = zeroGpuVocalGender(request.vocalGender)
+  // Measured on the values that actually travel, not on what was typed: the
+  // caption may have gained the Space's own gender hint just above, and the
+  // Space measures what arrives.
+  const style = zeroGpuStyle(request.style, vocalGender, instrumental)
+  checkZeroGpuTextLength('style', style)
+  if (!instrumental) checkZeroGpuTextLength('lyrics', lyrics)
   return {
-    data: [zeroGpuStyle(request.style, vocalGender, instrumental), lyrics, language, vocalGender, instrumental, duration],
+    data: [style, lyrics, language, vocalGender, instrumental, duration],
     duration,
     language,
     instrumental,

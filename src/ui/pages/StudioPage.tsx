@@ -35,7 +35,7 @@ import { decodeWav } from '../../engine/audio/wav'
 import {
   AccountNotAllowedError, AuthenticationRequiredError, createNeuralProvider,
   EngineUnavailableError, GenerationCancelledError, QuotaExceededError,
-  engineLabel, resolveEngineMode, VERIFIED_ZEROGPU_DURATION,
+  engineLabel, resolveEngineMode, VERIFIED_ZEROGPU_DURATION, ACE_STEP_TEXT_LIMITS,
   type EngineMode, type GenerationStatus, type NeuralBackend,
 } from '../../engine/providers'
 
@@ -712,11 +712,32 @@ export default function StudioPage() {
                 htmlFor="prompt"
                 hint="Genre, instruments, tempo, mood — whatever matters."
                 action={
-                  <Toggle
-                    label="Instrumental"
-                    checked={vocals === 'none'}
-                    onChange={(on) => setVocals(on ? 'none' : 'auto')}
-                  />
+                  <div className="flex items-center gap-3">
+                    {/*
+                      ACE-Step takes a caption of at most 512 characters and the
+                      Space refuses a longer one outright. Showing the count here
+                      means a style that will be refused says so while it is being
+                      written, rather than after the queue. The offline engine has
+                      no such limit, so the count only appears in Neural Mode, and
+                      only once it is close enough to matter.
+                    */}
+                    {engineMode === 'neural' && prompt.length > ACE_STEP_TEXT_LIMITS.style - 96 && (
+                      <span
+                        className={`t-num text-[11px] ${
+                          prompt.length > ACE_STEP_TEXT_LIMITS.style
+                            ? 'text-[var(--danger)]'
+                            : 'text-[var(--text-dim)]'}`}
+                        data-testid="style-length"
+                      >
+                        {prompt.length}/{ACE_STEP_TEXT_LIMITS.style}
+                      </span>
+                    )}
+                    <Toggle
+                      label="Instrumental"
+                      checked={vocals === 'none'}
+                      onChange={(on) => setVocals(on ? 'none' : 'auto')}
+                    />
+                  </div>
                 }
               >
                 <textarea

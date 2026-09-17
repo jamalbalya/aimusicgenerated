@@ -20,7 +20,7 @@ export {
 export {
   buildAceStepTask, normalizeLyrics, structureTags, lyricLines,
   verifyLyricsPreserved, DEFAULT_MODELS, INSTRUMENTAL_MARKER, DEFAULT_VOCAL_LANGUAGE,
-  ACE_STEP_DURATION_RANGE, ACE_STEP_AUTO_DURATION,
+  ACE_STEP_DURATION_RANGE, ACE_STEP_AUTO_DURATION, ACE_STEP_TEXT_LIMITS,
   type AceStepTaskBody, type AceStepModelChoice, type LyricPreservation,
 } from './aceStepRequest'
 export { AceStepClient, parseResultItems, ACE_STATUS, AceStepApiError } from './aceStepClient'
