@@ -32,7 +32,7 @@ import {
 } from './gradioClient'
 import { describeAudio } from './audioCheck'
 import {
-  ACE_STEP_AUTO_DURATION, ACE_STEP_DURATION_RANGE, ACE_STEP_TEXT_LIMITS,
+  ACE_STEP_AUTO_DURATION, ACE_STEP_DURATION_RANGE, aceStepTextTooLong,
   DEFAULT_MODELS, DEFAULT_VOCAL_LANGUAGE, lyricLines, normalizeLyrics,
 } from './aceStepRequest'
 import { spaceUrlProblem, zeroGpuConfig, type ZeroGpuConfig } from './config'
@@ -184,11 +184,8 @@ export function zeroGpuStyle(style: string, gender: ZeroGpuVocalGender, instrume
  * normalisation, which is what the Space counts.
  */
 function checkZeroGpuTextLength(field: 'style' | 'lyrics', text: string): void {
-  const limit = ACE_STEP_TEXT_LIMITS[field]
-  if (text.length <= limit) return
-  throw new ZeroGpuError('oversized-request',
-    `The ${field} is ${text.length} characters; ACE-Step takes at most ${limit}. `
-    + `Shorten it by ${text.length - limit}.`)
+  const problem = aceStepTextTooLong(field, text)
+  if (problem) throw new ZeroGpuError('oversized-request', problem)
 }
 
 /** Builds the six inputs, and the record of them the result is checked against. */

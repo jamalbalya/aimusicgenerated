@@ -21,7 +21,7 @@ import {
   AceStepProvider, ProceduralMusicProvider, EngineUnavailableError, GenerationCancelledError,
   ENGINE_UNAVAILABLE_MESSAGE, resolveProvider, engineLabel,
   buildAceStepTask, verifyLyricsPreserved, structureTags, lyricLines,
-  parseResultItems, DEFAULT_MODELS, INSTRUMENTAL_MARKER, checkWavBuffer,
+  parseResultItems, DEFAULT_MODELS, INSTRUMENTAL_MARKER, checkWavBuffer, planZeroGpuRequest,
   type MusicGenerationProvider, type MusicGenerationRequest,
 } from '../../src/engine/providers'
 import { BOS_TOXIC_LYRICS, BOS_TOXIC_STYLE } from './fixtures/bos-toxic'
@@ -496,5 +496,63 @@ describe('a dropped connection does not throw away a running job', () => {
   it('gives up once the backend has really gone, and says the job may continue', async () => {
     const { instance } = provider({ poll: ['succeeded'], pollFailures: 99 })
     await expect(instance.generate(BOS_TOXIC)).rejects.toThrow(/may still be running on the backend/)
+  })
+})
+
+describe('both backends refuse a caption ACE-Step cannot take', () => {
+  /**
+   * The limit is ACE-Step's own, from its `GenerationParams` docstring, so it
+   * binds wherever ACE-Step runs. The ZeroGPU Space enforces it in `guard._text`
+   * and the studio mirrors that; the local backend would otherwise send the
+   * caption to ACE-Step and be refused by it, far from the person who wrote it.
+   *
+   * `vocalGender: 'mixed'` in most of these, because it is the one value that
+   * appends nothing: it keeps the arithmetic about the limit rather than about
+   * the hint, which has a test of its own below.
+   */
+  const plain = { ...BOS_TOXIC, vocalGender: 'mixed' as const }
+
+  it('refuses an over-long style on the local backend too', () => {
+    expect(() => buildAceStepTask({ ...plain, style: 'a'.repeat(1457) }))
+      .toThrow('The style is 1457 characters; ACE-Step takes at most 512. Shorten it by 945.')
+  })
+
+  it('takes a style of exactly the limit', () => {
+    expect(buildAceStepTask({ ...plain, style: 'a'.repeat(512) }).prompt).toHaveLength(512)
+  })
+
+  it('counts the gender hint it appends, because that is what is sent', () => {
+    // `withVocalGender` adds ", male lead vocal" — 17 characters — when the
+    // caption names no gender. A caption that fits before that and not after is
+    // still refused, because the longer one is the one ACE-Step receives.
+    const fits = 'b'.repeat(512 - 17)
+    expect(buildAceStepTask({ ...BOS_TOXIC, style: fits, vocalGender: 'male' }).prompt)
+      .toHaveLength(512)
+    expect(() => buildAceStepTask({ ...BOS_TOXIC, style: `${fits}c`, vocalGender: 'male' }))
+      .toThrow('The style is 513 characters; ACE-Step takes at most 512. Shorten it by 1.')
+  })
+
+  it('refuses an over-long sheet, and exempts an instrumental', () => {
+    const sheet = 'Perlawanan akan menyala\n'.repeat(200)
+    expect(() => buildAceStepTask({ ...plain, lyrics: sheet }))
+      .toThrow(/lyrics is \d+ characters; ACE-Step takes at most 4096/)
+    expect(() => buildAceStepTask({ ...plain, lyrics: sheet, instrumental: true })).not.toThrow()
+  })
+
+  it('each backend measures the caption it actually sends, which is not the same caption', () => {
+    // Not an inconsistency to iron out. On the local backend the studio builds
+    // the final caption, hint included, so the hint counts. On ZeroGPU the
+    // *Space* appends the hint after its own length check, so counting it here
+    // would refuse requests the Space accepts. Both measure what they send.
+    const style = 'a'.repeat(600)
+    const message = (run: () => unknown) => {
+      try { run(); return '' } catch (error) { return (error as Error).message }
+    }
+    const local = message(() => buildAceStepTask({ ...BOS_TOXIC, style }))
+    const space = message(() => planZeroGpuRequest({ ...BOS_TOXIC, style }, {}))
+    expect(local).toBe('The style is 617 characters; ACE-Step takes at most 512. Shorten it by 105.')
+    expect(space).toBe('The style is 600 characters; ACE-Step takes at most 512. Shorten it by 88.')
+    // 617 - 600 is exactly ", male lead vocal".
+    expect(617 - 600).toBe(', male lead vocal'.length)
   })
 })

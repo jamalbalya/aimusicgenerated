@@ -402,7 +402,10 @@ export default function StudioPage() {
           // take would be refused for the same reason, so the run ends here.
           if (error instanceof AccountNotAllowedError) throw error
           const message = error instanceof Error ? error.message : String(error)
-          failures.push(`Take ${index + 1}: ${message}`)
+          // Numbering one take "Take 1" says there were others. On the free GPU
+          // there is only ever one, so the prefix is added only when it names
+          // something — which of several takes this was.
+          failures.push(effectiveTakes > 1 ? `Take ${index + 1}: ${message}` : message)
           // A spent allowance is spent for every take after this one too, and
           // asking again would only be refused again. Stop, and keep what
           // already worked.
@@ -722,14 +725,34 @@ export default function StudioPage() {
                       only once it is close enough to matter.
                     */}
                     {engineMode === 'neural' && prompt.length > ACE_STEP_TEXT_LIMITS.style - 96 && (
-                      <span
-                        className={`t-num text-[11px] ${
-                          prompt.length > ACE_STEP_TEXT_LIMITS.style
-                            ? 'text-[var(--danger)]'
-                            : 'text-[var(--text-dim)]'}`}
-                        data-testid="style-length"
-                      >
-                        {prompt.length}/{ACE_STEP_TEXT_LIMITS.style}
+                      <span className="flex items-center">
+                        <span
+                          className={`t-num text-[11px] ${
+                            prompt.length > ACE_STEP_TEXT_LIMITS.style
+                              ? 'text-[var(--danger)]'
+                              : 'text-[var(--text-dim)]'}`}
+                          data-testid="style-length"
+                          // "1457 slash 512" is not a sentence. The digits are
+                          // for the eye; the span below says the same thing in
+                          // words, and is the one a screen reader reads.
+                          aria-hidden="true"
+                        >
+                          {prompt.length}/{ACE_STEP_TEXT_LIMITS.style}
+                        </span>
+                        {/*
+                          Deliberately not an aria-label on the element above:
+                          that would make a second thing on this row answer to
+                          the name "Style", which is both a worse reading order
+                          and an ambiguity for anything selecting by label.
+                        */}
+                        <span className="sr-only" role="status" aria-live="polite"
+                          data-testid="style-length-detail">
+                          {prompt.length > ACE_STEP_TEXT_LIMITS.style
+                            ? `${prompt.length} characters, `
+                              + `${prompt.length - ACE_STEP_TEXT_LIMITS.style} over the `
+                              + `${ACE_STEP_TEXT_LIMITS.style} ACE-Step allows`
+                            : `${prompt.length} of ${ACE_STEP_TEXT_LIMITS.style} characters`}
+                        </span>
                       </span>
                     )}
                     <Toggle
@@ -851,7 +874,7 @@ export default function StudioPage() {
                 label="Pronunciation"
                 htmlFor="lyric-language"
                 value={language === 'auto' ? detectedName : undefined}
-                hint="The singer uses this language\u2019s own vowels and consonants, not English ones."
+                hint="The singer uses this language’s own vowels and consonants, not English ones."
               >
                 <select
                   id="lyric-language"
@@ -1116,7 +1139,7 @@ export default function StudioPage() {
                 label="Takes"
                 hint={takesCapped
                   ? 'One song per run on the free GPU — each take is a separate generation, '
-                    + 'and a visitor\u2019s daily allowance covers about one.'
+                    + 'and a visitor’s daily allowance covers about one.'
                   : engineMode === 'neural'
                     ? 'Each take is a different song from the same brief.'
                     : takeCount > 1

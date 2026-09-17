@@ -136,6 +136,21 @@ export const DEFAULT_VOCAL_LANGUAGE = 'en'
 export const ACE_STEP_TEXT_LIMITS = { style: 512, lyrics: 4096 } as const
 
 /**
+ * Why this caption or sheet is too long for ACE-Step, or nothing when it fits.
+ *
+ * One sentence, in one place, so both backends refuse the same text for the
+ * same stated reason. The local backend would otherwise reach ACE-Step and be
+ * refused by it in ACE-Step's own words; the ZeroGPU backend would be refused
+ * by the Space with an HTTP 400 the studio never gets to read.
+ */
+export function aceStepTextTooLong(field: 'style' | 'lyrics', text: string): string | undefined {
+  const limit = ACE_STEP_TEXT_LIMITS[field]
+  if (text.length <= limit) return undefined
+  return `The ${field} is ${text.length} characters; ACE-Step takes at most ${limit}. `
+    + `Shorten it by ${text.length - limit}.`
+}
+
+/**
  * The song lengths ACE-Step 1.5 accepts in one request, in seconds.
  *
  * From ACE-Step's own `docs/en/API.md`: `audio_duration`, "range 10-600". What
@@ -173,9 +188,16 @@ export function buildAceStepTask(
 ): AceStepTaskBody {
   const instrumental = request.instrumental === true
   const lyrics = instrumental ? INSTRUMENTAL_MARKER : normalizeLyrics(request.lyrics)
+  // The same ceiling the ZeroGPU backend checks, for the same reason: it is
+  // ACE-Step's, not a host's, so a caption too long for one is too long for
+  // both. Checked on the caption that is actually sent, gender hint included.
+  const prompt = instrumental ? request.style : withVocalGender(request.style, request.vocalGender)
+  const tooLong = aceStepTextTooLong('style', prompt)
+    ?? (instrumental ? undefined : aceStepTextTooLong('lyrics', lyrics))
+  if (tooLong) throw new Error(tooLong)
 
   const body: AceStepTaskBody = {
-    prompt: instrumental ? request.style : withVocalGender(request.style, request.vocalGender),
+    prompt,
     lyrics,
     vocal_language: request.language ?? DEFAULT_VOCAL_LANGUAGE,
     audio_format: 'wav',
