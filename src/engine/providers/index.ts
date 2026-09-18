@@ -3,6 +3,7 @@ export * from './registry'
 export { AceStepProvider, ACE_STEP_PROVIDER_ID } from './aceStepProvider'
 export {
   ZeroGpuProvider, ZeroGpuError, ZEROGPU_PROVIDER_ID, ZEROGPU_API_NAME, ZEROGPU_UNAVAILABLE_MESSAGE,
+  LIVE_GENERATION_DISABLED,
   planZeroGpuRequest, resolveZeroGpuDuration, zeroGpuStyle, zeroGpuVocalGender,
   type ZeroGpuErrorCode, type ZeroGpuInputs, type ZeroGpuProviderOptions, type ZeroGpuRequestPlan,
   type ZeroGpuVocalGender,
@@ -27,7 +28,8 @@ export { AceStepClient, parseResultItems, ACE_STATUS, AceStepApiError } from './
 export {
   neuralEngineConfig, DEFAULT_ACE_STEP_URL, mixedContentReason, type NeuralEngineConfig,
   neuralBackendChoice, parseNeuralBackend, type NeuralBackendChoice,
-  zeroGpuConfig, parseZeroGpuConfig, spaceUrlProblem, type ZeroGpuConfig, type EnvReader,
+  zeroGpuConfig, parseZeroGpuConfig, spaceUrlProblem, parseLiveGeneration,
+  type ZeroGpuConfig, type EnvReader,
   DEFAULT_ZEROGPU_TIMEOUT_SECONDS, VERIFIED_ZEROGPU_DURATION,
 } from './config'
 export { checkWavBuffer, describeAudio, type AudioCheck } from './audioCheck'

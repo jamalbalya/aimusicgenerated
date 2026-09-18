@@ -20,7 +20,7 @@ import {
   ZeroGpuError, ZeroGpuProvider, ENGINE_UNAVAILABLE_MESSAGE, ZEROGPU_UNAVAILABLE_MESSAGE,
   ACE_STEP_AUTO_DURATION, ACE_STEP_TEXT_LIMITS, DEFAULT_ZEROGPU_TIMEOUT_SECONDS,
   createNeuralProvider, createProvider, lyricLines, normalizeLyrics, parseNeuralBackend,
-  parseZeroGpuConfig, planZeroGpuRequest, resolveEngineMode, resolveProvider, resolveZeroGpuDuration,
+  parseLiveGeneration, parseZeroGpuConfig, planZeroGpuRequest, resolveEngineMode, resolveProvider, resolveZeroGpuDuration,
   spaceUrlProblem, structureTags, verifyLyricsPreserved, zeroGpuStyle, zeroGpuVocalGender,
   type GenerationStatus, type MusicGenerationProvider, type MusicGenerationRequest, type ZeroGpuErrorCode,
 } from '../../src/engine/providers'
@@ -335,6 +335,11 @@ describe('the ZeroGPU settings are read strictly', () => {
     const config = parseZeroGpuConfig(read({ VITE_ACE_STEP_SPACE_URL: `${SPACE}/` }), 'https:')
     expect(config).toEqual({
       spaceUrl: SPACE, jobTimeoutMs: DEFAULT_ZEROGPU_TIMEOUT_SECONDS * 1000,
+      // Off. A build that was not told it may generate does not generate, and
+      // that has to be what an unset variable means: an unset one, a typo and a
+      // deliberate `false` are all cases where nobody decided to spend someone
+      // else's GPU allowance.
+      liveGeneration: false,
     })
     // No number: unset means ACE-Step chooses, not a default length.
     expect(config.autoDuration).toBeUndefined()
@@ -1289,5 +1294,51 @@ describe('the Indonesian protest sheet, parsed the way the Space parses it', () 
     expect(lyricLines(long)).toHaveLength(1)
     expect(lyricLines(long)[0]).toHaveLength(719)
     expect(planZeroGpuRequest({ ...BOS_TOXIC, lyrics: long }, TEST_CONFIG).data[1]).toBe(long)
+  })
+})
+
+describe('live generation is off unless a build says otherwise', () => {
+  const read = (env: Record<string, string>) => (key: string) => env[key]
+
+  it('is off when the variable is unset', () => {
+    expect(parseZeroGpuConfig(read({ VITE_ACE_STEP_SPACE_URL: SPACE }), 'https:').liveGeneration)
+      .toBe(false)
+  })
+
+  it('takes only an explicit yes', () => {
+    for (const value of ['true', 'TRUE', ' True ', '1', 'yes', 'on']) {
+      expect(parseLiveGeneration(value)).toBe(true)
+    }
+  })
+
+  it('treats everything else as no, including a typo', () => {
+    // A typo, a CI job that forgot to pass the variable through, and a
+    // deliberate `false` all have to mean the same thing: nobody decided to
+    // spend the allowance. Anything clever here spends it on a misspelling.
+    for (const value of [undefined, '', 'false', 'no', 'off', '0', 'ture', 'enabled', 'YES please']) {
+      expect(parseLiveGeneration(value)).toBe(false)
+    }
+  })
+
+  it('refuses to generate, before anything reaches the network', async () => {
+    const calls: string[] = []
+    const provider = new ZeroGpuProvider({
+      config: { ...TEST_CONFIG, liveGeneration: false },
+      fetchImpl: ((input: RequestInfo | URL) => {
+        calls.push(String(input))
+        return Promise.reject(new Error('nothing should have been sent'))
+      }) as typeof fetch,
+    })
+    await expect(provider.generate({ style: 's', lyrics: 'l' })).rejects.toThrow(/switched off/i)
+    // The point of the switch: no request, not a request that failed.
+    expect(calls).toEqual([])
+  })
+
+  it('says how to turn it on, and that nothing was spent', async () => {
+    const provider = new ZeroGpuProvider({ config: { ...TEST_CONFIG, liveGeneration: false } })
+    await expect(provider.generate({ style: 's', lyrics: 'l' }))
+      .rejects.toThrow(/ACE_STEP_LIVE_GENERATION_ENABLED=true/)
+    await expect(provider.generate({ style: 's', lyrics: 'l' }))
+      .rejects.toThrow(/no GPU time was spent/i)
   })
 })

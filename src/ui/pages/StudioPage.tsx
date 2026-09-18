@@ -425,16 +425,17 @@ export default function StudioPage() {
           const decoded = decodeWav(buffer)
           collected.push({ result, audio: decoded })
           updateNeural(controller, { takes: [...collected] })
+          // Judged, and found unjudgeable — every take, not only the first.
+          // A neural take is one mixed file, and nothing in a browser can
+          // separate the voice from the band well enough to ask whether the
+          // melody fits the chords. The panel carries the reason and where a
+          // real verdict comes from, so an unverified song is never left
+          // looking like a verified one.
+          setQualityReport(gateNeuralTake())
+          setAttemptLog([])
           if (collected.length === 1) {
             updateNeural(controller, { index: 0 })
             openNeuralTake(collected[0]!)
-            // Judged, and found unjudgeable. Saying so is the point: a neural
-            // take is one mixed file, and nothing in a browser can separate the
-            // voice from the band well enough to ask whether the melody fits
-            // the chords. The panel carries the reason and where to get a real
-            // verdict, rather than leaving an unverified song looking verified.
-            setQualityReport(gateNeuralTake())
-            setAttemptLog([])
           }
         } catch (error) {
           // A cancellation or a backend that has gone away applies to the whole
@@ -1227,8 +1228,9 @@ export default function StudioPage() {
                 <span className="t-num text-[11.5px] font-medium" data-testid="quality-verdict">
                   {qualityReport.verdict === 'PASS' ? 'Quality gate passed'
                     : qualityReport.verdict === 'REGENERATION_REQUIRED' ? 'Regeneration required'
-                      : qualityReport.verdict === 'ANALYSIS_UNAVAILABLE' ? 'Analysis unavailable'
-                        : 'Review required'}
+                      : qualityReport.verdict === 'ANALYSIS_UNAVAILABLE'
+                        ? 'Not verified — analysis unavailable'
+                        : 'Not verified — review required'}
                 </span>
               </div>
               {qualityReport.reasons.map((reason) => (

@@ -170,6 +170,13 @@ jobs:
           # overridden with a repository variable of the same name.
           ACE_STEP_BACKEND: ${{ vars.ACE_STEP_BACKEND || 'zerogpu' }}
           ACE_STEP_SPACE_URL: ${{ vars.ACE_STEP_SPACE_URL }}
+          # The deployed site is the only build that may spend GPU time. Every
+          # other build — a checkout on a laptop, a preview, a test run — leaves
+          # this unset and refuses to generate rather than spending an allowance
+          # nobody decided to spend. Set the repository variable to anything but
+          # `true` to deploy a site that cannot generate, which is the safe way
+          # to put the studio up while the Space is down or the quota is spent.
+          ACE_STEP_LIVE_GENERATION_ENABLED: ${{ vars.ACE_STEP_LIVE_GENERATION_ENABLED || 'true' }}
           # Optional; each falls back to the default documented in
           # docs/architecture/environment.md when its variable is unset.
           ACE_STEP_SPACE_AUTO_DURATION: ${{ vars.ACE_STEP_SPACE_AUTO_DURATION }}

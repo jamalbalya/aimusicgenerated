@@ -161,8 +161,36 @@ export interface ZeroGpuConfig {
    * banner says the total is not published, which is the truth.
    */
   dailyQuotaSeconds?: number
+  /**
+   * Whether this build may actually ask the Space to generate.
+   *
+   * Off unless a build turns it on. A real generation costs GPU seconds out of
+   * an allowance that belongs to whoever deployed the Space and resets on
+   * Hugging Face's schedule, so a checkout running on a developer's machine, a
+   * test run, or a preview build must not be able to spend it by pressing a
+   * button. The deployed site sets it on; nothing else does.
+   *
+   * This gates the request, not the configuration: everything else about the
+   * backend is still read, reported and shown, so a build with it off says
+   * plainly that live generation is disabled rather than pretending the Space
+   * is missing.
+   */
+  liveGeneration: boolean
   /** Why this backend cannot be used as configured, when it cannot. */
   blockedReason?: string
+}
+
+/**
+ * Reads the live-generation switch. Anything but an explicit yes is no.
+ *
+ * Deliberately not a "false disables it" flag: an unset variable, a typo, a CI
+ * job that forgot to pass it through, and a deliberate `false` all have to mean
+ * the same thing, because all four are cases where nobody decided to spend the
+ * allowance.
+ */
+export function parseLiveGeneration(value: string | undefined): boolean {
+  const normalised = value?.trim().toLowerCase()
+  return normalised === 'true' || normalised === '1' || normalised === 'yes' || normalised === 'on'
 }
 
 /** A whole number of seconds, or the reason it is not one. */
@@ -246,6 +274,7 @@ export function parseZeroGpuConfig(read: EnvReader, protocol: string): ZeroGpuCo
 
   const model = read('VITE_ACE_STEP_MODEL')
   const lmModel = read('VITE_ACE_STEP_LM_MODEL')
+  const liveGeneration = parseLiveGeneration(read('VITE_ACE_STEP_LIVE_GENERATION_ENABLED'))
 
   // Optional, and informational only. A bad value is ignored rather than
   // blocking the backend: nothing depends on it except one line of a banner,
@@ -259,6 +288,7 @@ export function parseZeroGpuConfig(read: EnvReader, protocol: string): ZeroGpuCo
 
   return {
     spaceUrl,
+    liveGeneration,
     ...(auto && !auto.problem ? { autoDuration: auto.value } : {}),
     ...(maxDuration !== undefined ? { maxDuration } : {}),
     jobTimeoutMs: timeout.value * 1000,

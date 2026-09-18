@@ -200,6 +200,27 @@ That leaves step 1, which is what the generate → analyse → reject → regene
 loop is. Because the Space draws a fresh random seed on every request, each
 attempt is genuinely a new take without the studio having to ask for one.
 
+## The live-generation switch
+
+A build only calls the Space when it has been told it may:
+
+```
+ACE_STEP_LIVE_GENERATION_ENABLED=true
+```
+
+Off unless set to an explicit `true`, `1`, `yes` or `on`. An unset variable, a
+typo and a deliberate `false` all mean off, because each is a case where nobody
+decided to spend the allowance. With it off the provider refuses **before the
+request is planned and before a byte reaches the network** — no request, not a
+request that failed — and says so in words that cannot be mistaken for a backend
+that is down, since the remedies are nothing alike.
+
+| Build | Switch | Why |
+| --- | --- | --- |
+| Deployed site (`deploy.yml`) | **on** | The normal workflow: open the site, sign in, generate |
+| CI end-to-end (`ci.yml`) | **on** | Points at a fake Space the suite answers itself; nothing reaches Hugging Face |
+| Local checkout, `npm run dev` | **off** | Running this repo cannot spend a GPU allowance by accident |
+
 ## Where each engine is judged
 
 | Engine | Evidence | Confidence | Can reach PASS? |

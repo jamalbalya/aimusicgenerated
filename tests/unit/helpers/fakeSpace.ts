@@ -30,8 +30,17 @@ export const SPACE = SPACE_CONFIG.root
 export const EVENT_ID = 'event-1'
 export const SESSION = 'session-1'
 
-/** No pinned Auto length, which is the production default: ACE-Step chooses. */
-export const TEST_CONFIG: ZeroGpuConfig = { spaceUrl: SPACE, jobTimeoutMs: 60_000 }
+/**
+ * No pinned Auto length, which is the production default: ACE-Step chooses.
+ *
+ * `liveGeneration` is on here because every one of these tests answers the
+ * request itself — nothing in this file reaches Hugging Face or spends a second
+ * of anyone's GPU. A suite that left it off would test the refusal over and
+ * over and never test the provider.
+ */
+export const TEST_CONFIG: ZeroGpuConfig = {
+  spaceUrl: SPACE, jobTimeoutMs: 60_000, liveGeneration: true,
+}
 
 /**
  * A real, playable, non-silent 16-bit mono WAV.

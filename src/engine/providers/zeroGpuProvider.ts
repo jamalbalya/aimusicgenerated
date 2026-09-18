@@ -101,6 +101,19 @@ export class ZeroGpuError extends Error {
 /** The Space's `vocal_gender` values, from its `gr.Dropdown` choices. */
 export type ZeroGpuVocalGender = 'male' | 'female' | 'mixed'
 
+/**
+ * What a build says when it has not been told it may generate.
+ *
+ * Named rather than inlined so the studio can recognise this one refusal and
+ * explain it as configuration rather than as a backend that is down — they look
+ * identical from the outside and the remedies are nothing alike.
+ */
+export const LIVE_GENERATION_DISABLED =
+  'Live generation is switched off in this build, so nothing was sent to the Space and no GPU '
+  + 'time was spent. Builds have it off unless they are told otherwise, so that running this '
+  + 'project locally cannot spend a Hugging Face allowance by accident. The deployed site has it '
+  + 'on; to turn it on in a build of your own, set ACE_STEP_LIVE_GENERATION_ENABLED=true.'
+
 /** `/generate_music`'s inputs, in the order the Space declares them. */
 export type ZeroGpuInputs = [
   style: string,
@@ -347,6 +360,16 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
       throw new EngineUnavailableError(this.id, `Neural music engine is unavailable. ${this.blockedReason ?? ''}`.trim())
     }
     if (signal?.aborted) throw new GenerationCancelledError()
+
+    // Before anything else, and before any byte reaches the network: a build
+    // that was not told it may generate does not generate. A real request costs
+    // GPU seconds out of an allowance belonging to whoever deployed the Space,
+    // and a checkout running on a laptop, a preview build or an automated run
+    // must not be able to spend it by pressing a button. The deployed site
+    // turns this on; nothing else does.
+    if (!this.config.liveGeneration) {
+      throw new EngineUnavailableError(this.id, LIVE_GENERATION_DISABLED)
+    }
 
     // Everything that can be wrong with the request is found here, before a
     // single byte goes to the Space or a second of anyone's GPU quota is spent.

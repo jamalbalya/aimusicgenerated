@@ -45,6 +45,11 @@ jobs:
         env:
           ACE_STEP_BACKEND: zerogpu
           ACE_STEP_SPACE_URL: https://fake-space.hf.space
+          # On, because the Space above is a fixture the suite answers itself.
+          # Nothing here reaches Hugging Face or spends a second of GPU; a build
+          # with the switch off would test the refusal over and over and never
+          # test the provider.
+          ACE_STEP_LIVE_GENERATION_ENABLED: 'true'
           # A stand-in client id, for the same reason as the stand-in Space
           # above. The sign-in control only renders when a build carries one,
           # and every spec that drives a neural generation has to get past it;

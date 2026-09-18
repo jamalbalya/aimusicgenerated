@@ -107,6 +107,9 @@ export const NEURAL_SETTINGS = [
   'API_URL', 'API_KEY', 'MODEL', 'LM_MODEL',
   'BACKEND', 'SPACE_URL', 'SPACE_AUTO_DURATION', 'SPACE_MAX_DURATION', 'SPACE_TIMEOUT_SECONDS',
   'SPACE_DAILY_QUOTA_SECONDS',
+  // The live-generation switch. Off unless a build says otherwise, so that
+  // running this repo locally cannot spend someone's GPU allowance by accident.
+  'LIVE_GENERATION_ENABLED',
 ] as const
 
 /**
