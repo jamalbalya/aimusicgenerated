@@ -228,6 +228,18 @@ _mix = _i.measure(_times, _hz, _voiced, 10.0, isolated_vocal=False)
 check("a mix report is marked contaminated and says so",
       _mix.contaminated and "mix" in _mix.contamination_note.lower())
 
+print("\nunvoiced frames never become a pitch class")
+_t = np.arange(400) * 0.01
+_hz = np.full(400, 220.0)
+_hz[::3] = np.nan              # unvoiced, as a tracker reports them
+_voiced = np.isfinite(_hz)
+_acc = band([0, 4, 7], SR * 4)
+_report = hm.compatibility(_t, _hz, _voiced, _acc, SR, HOP, isolated=True)
+check("a NaN-laden pitch track produces no warning and no verdict change",
+      _report.sufficient and _report.z is not None, str(_report.limitations))
+check("and the unvoiced frames are excluded rather than cast to something",
+      _report.frames == int(_voiced.sum()), f"{_report.frames} vs {int(_voiced.sum())}")
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED:")

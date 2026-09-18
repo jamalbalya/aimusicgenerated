@@ -147,7 +147,15 @@ def compatibility(
     tuning = librosa.estimate_tuning(y=accompaniment, sr=sample_rate)
 
     midi = librosa.hz_to_midi(vocal_hz) - tuning
-    classes = np.mod(np.round(midi), 12).astype(int)
+    # Unvoiced frames carry NaN, and casting NaN to int is undefined — it
+    # produces a platform-dependent value, not an error. Those frames are masked
+    # out a few lines below and their pitch classes are never read, so nothing
+    # was wrong with the result; but a garbage value sitting in an array waiting
+    # for someone to widen a mask is a defect regardless of whether it has bitten
+    # yet. Zero where there is no pitch, and the mask still decides what counts.
+    usable = np.isfinite(midi)
+    classes = np.zeros(len(midi), dtype=int)
+    classes[usable] = np.mod(np.round(midi[usable]), 12).astype(int)
     frames = np.clip(librosa.time_to_frames(times, sr=sample_rate, hop_length=hop_length),
                      0, normalised.shape[1] - 1)
 
