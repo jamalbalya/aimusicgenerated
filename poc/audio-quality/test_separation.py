@@ -215,6 +215,19 @@ status, why = it.verdict(clean_intonation(), None, None)
 check("with no harmony measured at all, intonation alone still passes",
       status == "PASS", f"{status} {why}")
 
+print("\nan isolated measurement does not carry a mix's warning")
+import intonation as _i
+_times = np.arange(400) * 0.01
+_hz = np.full(400, 220.0)
+_voiced = np.ones(400, dtype=bool)
+_iso = _i.measure(_times, _hz, _voiced, 10.0, isolated_vocal=True)
+check("an isolated report is not marked contaminated", not _iso.contaminated)
+check("and says nothing about measuring a mix",
+      "mix" not in _iso.contamination_note.lower(), repr(_iso.contamination_note))
+_mix = _i.measure(_times, _hz, _voiced, 10.0, isolated_vocal=False)
+check("a mix report is marked contaminated and says so",
+      _mix.contaminated and "mix" in _mix.contamination_note.lower())
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED:")

@@ -550,6 +550,9 @@ def _intonation(report: Report, mono, f0, sung, leak_caveat: str,
         isolated_vocal=isolated,
         analysis_window_seconds=INTONATION_WINDOW / SR,
         contamination_note=leak_caveat or (
+            "Measured on a separated vocal stem, so these figures are about the singing "
+            "rather than about whichever instrument happened to be loudest."
+            if isolated else
             "Measured on a mix. A pitch tracker follows the loudest harmonic source, and "
             "piano, upright bass and saxophone share a male singer's register."),
     )
