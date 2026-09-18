@@ -201,11 +201,41 @@ The interface also shows the original sheet and the compiled payload side by
 side, labelled *Your input — kept exactly* and *Sent to ACE-Step*, so the two are
 never confused for one another.
 
-The tempo the person wrote is kept as the target. After generation the measured
-tempo is reported **as a signed deviation** — "78 BPM asked for, 84.2 measured,
-off by +6.2 BPM (+7.9%)" — rather than as a pass or a fail, because ACE-Step has
-no tempo input and a song that ignored a description has not malfunctioned. The
-report says whether the number was the person's or the planner's.
+A tempo the person writes is kept as the target and is never overridden by a
+genre default, however far apart the two are: "drum and bass 72 BPM" plans 72,
+not the genre's range. In Neural Mode the tempo *slider* is disabled, with the
+reason on screen — "the neural engine takes its direction from the Style text" —
+so the Style is the one place a tempo is stated, and a stated one always wins.
+
+After generation the measured tempo is reported **as a signed deviation** rather
+than as a pass or a fail, because ACE-Step has no tempo input and a song that
+ignored a description has not malfunctioned. The report says whether the number
+was the person's or the planner's, so a deviation from one nobody asked for is
+never presented as a missed requirement.
+
+The format is `<requested> BPM asked for, <measured> measured, off by <±d> BPM
+(<±p>%)`. **No such measurement exists yet in this repository** — see §H; the
+one real figure on record is a song requested at 72 BPM that came back at 89.8,
+measured by the Python analyser on a downloaded file rather than by this
+pipeline.
+
+### Three categories, not two
+
+"Planned", "sent" and "enforced" are three different claims and the interface
+states all three:
+
+| | What it means |
+| --- | --- |
+| **Internally planned** | The planner decided it. It may not have fitted the caption. |
+| **Transmitted** | It reached the model, in the caption or the lyric sheet. |
+| **Actually enforced** | The API binds it. |
+
+Only four things are in the third column: **the lyric text, the language, the
+instrumental flag, and the length** (as a token budget the decoder must end at).
+Tempo, key, chord movement, melody, arrangement, section directions, mix and
+master are all in the second column at best. Section directions are description,
+not control — there is no per-section parameter for them to control anything
+with.
 
 ## D. What is measured afterwards
 

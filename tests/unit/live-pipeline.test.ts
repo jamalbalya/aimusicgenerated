@@ -266,11 +266,29 @@ notes to self that are not part of the song`
     expect(plan.lyrics.text).toContain('[slow down here]')
   })
 
-  it('keeps the requested tempo as the target, and says it was requested', () => {
-    const stated = planLiveGeneration(input({ style: 'soft ballad at 78 bpm' }))
-    expect(stated.music.targetBpm).toBe(78)
-    expect(stated.music.bpmStated).toBe(true)
+  it('never lets a genre default override a tempo the person wrote', () => {
+    // The genre tables carry a BPM range each, and the planner falls back to
+    // them when nobody says otherwise. A stated tempo must beat that fallback
+    // every time — including, especially, when it fights the genre: 72 BPM
+    // drum and bass is far outside that genre's range and is still exactly
+    // what was asked for.
+    for (const [style, want] of [
+      ['heavy metal double kick at 72 bpm', 72],
+      ['drum and bass 72 BPM', 72],
+      ['dangdut koplo, 72 bpm', 72],
+      ['ambient drone at 72 bpm', 72],
+      ['punk rock fast, 72 beats per minute', 72],
+      ['melancholic Indonesian ballad at 72 BPM', 72],
+      ['lofi 200 bpm', 200],
+      ['ballad 40 bpm', 40],
+    ] as const) {
+      const plan = planLiveGeneration(input({ style }))
+      expect(`${style}: ${plan.music.targetBpm}`).toBe(`${style}: ${want}`)
+      expect(plan.music.bpmStated).toBe(true)
+    }
 
+    // And an unstated one is marked as the planner's, so a deviation from a
+    // number nobody asked for is never reported as a missed requirement.
     const inferred = planLiveGeneration(input({ style: 'soft ballad' }))
     expect(inferred.music.bpmStated).toBe(false)
   })

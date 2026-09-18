@@ -1430,9 +1430,31 @@ export default function StudioPage() {
                       Section directions travel inside the lyric sheet and were all sent:{' '}
                       {livePlan.lyrics.script.directions
                         .map((entry) => `${entry.section} — ${entry.direction}`).join(' · ')}.
-                      ACE-Step has no per-section parameter, so these are description, not control.
                     </p>
                   )}
+
+                  {/* The third category, and the one most easily assumed. "Sent"
+                      and "enforced" are not the same thing: ACE-Step's endpoint
+                      binds six inputs and every musical direction above rides
+                      in a caption or a lyric sheet, which the model reads and
+                      may ignore. Saying so here, next to the counts, is the
+                      difference between a report and a sales pitch. */}
+                  <div className="mt-2 grid gap-0.5 text-[11px]" data-testid="live-enforcement">
+                    <span className="t-label text-[10px] text-[var(--text-faint)]">
+                      Actually enforced by the API
+                    </span>
+                    <p className="text-[var(--text-faint)]">
+                      Binding: the lyric text, the language, the instrumental flag, and the length
+                      (as a token budget the decoder must end at). That is the whole list — the
+                      endpoint takes six inputs.
+                    </p>
+                    <p className="text-[var(--text-faint)]">
+                      Description only, and not enforced: tempo, key, chord movement, melody,
+                      arrangement, section directions, mix and master. There is no parameter for
+                      any of them, so each is a request the model may follow or ignore. Whether it
+                      did is measured afterwards, not guaranteed beforehand.
+                    </p>
+                  </div>
                 </details>
               )}
 
