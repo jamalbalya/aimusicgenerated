@@ -38,6 +38,30 @@ Two rules are absolute and are covered by tests:
   the last failure would deliver exactly the songs the gate was built to catch,
   while appearing to have checked them.
 
+### An instrumental is a song with no singer
+
+A score with nothing sung reaches the gate two ways, and they are not the same
+thing. `score.lyrics` tells them apart.
+
+| The score | What it means | Verdict |
+| --- | --- | --- |
+| No lyrics, nothing sung | Written without a voice, because that is what was asked for | Judged on everything that is not the voice |
+| Lyrics, nothing sung | The singing is missing and cannot be judged | `ANALYSIS_UNAVAILABLE` |
+
+The gate exists to ask whether the singing fits the chords. For an instrumental
+that question has no subject, which is not the same as having no answer —
+refusing to deliver an instrumental for having no vocal would be the gate
+failing a song for meeting its brief.
+
+This is not a bypass. Every per-note measurement would read zero for a song with
+no notes, `harmonicCompatibility` included, so running the melody checks
+unchanged would fail a song for the absence of the thing it was ordered without.
+What can still be wrong about an instrumental is its speed, so the tempo check
+still runs and an instrumental at the wrong tempo is still
+`REGENERATION_REQUIRED`. The report carries `measurements: null` and states in
+its own `limitations` that no vocal was judged, rather than implying one was and
+passed.
+
 ## What is judged, per note
 
 Each sung note is placed against the harmonic region active at its start, and
