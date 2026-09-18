@@ -47,7 +47,15 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
+sys.path.insert(0, str(Path(__file__).parent))
+import intonation  # noqa: E402
+
 PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+#: Window for the intonation pass. Long, because a cent of precision on a held
+#: note needs it; the cost is that vibrato faster than ~1.3 Hz is averaged away,
+#: which `intonation` reports rather than hides.
+INTONATION_WINDOW = 16384
 
 #: Krumhansl-Schmuckler key profiles.
 MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
@@ -301,6 +309,7 @@ def vocals(report: Report, mono, require_demucs: bool) -> None:
 
     _melody_versus_harmony(report, music, f0, sung, confidence, leak_caveat)
     _timing(report, mono, voice, report_confidence=confidence)
+    _intonation(report, mono, f0, sung, leak_caveat)
 
 
 def _melody_versus_harmony(report, music, f0, sung, confidence, leak_caveat) -> None:
@@ -372,6 +381,105 @@ def _timing(report, mono, voice, report_confidence: str) -> None:
                "what randomly placed onsets would score against the same grid",
                "If the real figure is not clearly below this, the test has no power here and says "
                "nothing about whether the phrasing sits with the beat.")
+
+
+def _refine_f0(signal, centre_sample: int, guess_hz: float, sample_rate: int):
+    """Sub-bin frequency of the strongest harmonic near a guess.
+
+    `pyin` quantises to a tenth of a semitone by default — ten cents, which is
+    coarser than the thing being measured, and produces a median that lands on
+    the same lattice point in every region of a song. That artefact is what this
+    exists to avoid: a long window and a quadratic fit around the peak give
+    roughly a cent, and the harmonic is divided back down to the fundamental.
+    """
+    import numpy as np
+
+    n = INTONATION_WINDOW
+    start = centre_sample - n // 2
+    if start < 0 or start + n > len(signal):
+        return float("nan")
+    spectrum = np.abs(np.fft.rfft(signal[start:start + n] * np.hanning(n)))
+    best_magnitude, best_f0 = 0.0, float("nan")
+    for harmonic in (1, 2, 3):
+        target = guess_hz * harmonic
+        if target >= sample_rate / 2 - 50:
+            break
+        bin_index = int(round(target / (sample_rate / n)))
+        low, high = max(1, bin_index - 4), min(len(spectrum) - 2, bin_index + 5)
+        peak = low + int(np.argmax(spectrum[low:high]))
+        if peak < 1 or peak >= len(spectrum) - 1:
+            continue
+        a, b, c = (math.log(spectrum[peak - 1] + 1e-12), math.log(spectrum[peak] + 1e-12),
+                   math.log(spectrum[peak + 1] + 1e-12))
+        delta = 0.5 * (a - c) / (a - 2 * b + c + 1e-12)
+        if abs(delta) > 1:
+            continue
+        if spectrum[peak] > best_magnitude:
+            best_magnitude = float(spectrum[peak])
+            best_f0 = (peak + delta) * sample_rate / n / harmonic
+    return best_f0
+
+
+def _intonation(report: Report, mono, f0, sung, leak_caveat: str) -> None:
+    """Is it in tune, is it the right note, and how much of the song was heard."""
+    import librosa
+    import numpy as np
+
+    times = librosa.times_like(f0, sr=SR, hop_length=HOP)
+    refined = np.full(len(f0), np.nan)
+    for i in np.where(sung)[0]:
+        refined[i] = _refine_f0(mono, int(times[i] * SR), float(f0[i]), SR)
+    # A refinement that disagrees with the tracker by more than a semitone has
+    # locked onto something else; drop it rather than average it in.
+    usable = sung & np.isfinite(refined) & (np.abs(1200 * np.log2(refined / f0)) < 120)
+
+    result = intonation.measure(
+        times, refined, usable, len(mono) / SR,
+        isolated_vocal=False,
+        analysis_window_seconds=INTONATION_WINDOW / SR,
+        contamination_note=leak_caveat or (
+            "Measured on a mix. A pitch tracker follows the loudest harmonic source, and "
+            "piano, upright bass and saxophone share a male singer's register."),
+    )
+
+    report.add("intonation_frames", result.frames, "measured", "frames the intonation pass used")
+    report.add("intonation_seconds", round(result.analysed_seconds, 1), "measured",
+               "how much audio those frames cover")
+    report.add("intonation_coverage_percent", round(result.coverage_percent, 1), "measured",
+               "that duration as a share of the whole track",
+               "A figure drawn from a small share of a song is not a statement about the song.")
+    report.add("intonation_confidence", result.confidence, "measured",
+               "how much weight these numbers will bear")
+
+    if not result.sufficient:
+        report.add("intonation", None, "unavailable", "intonation pass",
+                   " ".join(result.limitations))
+        return
+
+    report.add("grid_median_cents", round(result.grid_median_cents, 1), "estimated",
+               "median distance to the nearest twelve-tone semitone",
+               "Bounded to +/-50 by construction. It says whether notes landed on the grid, "
+               "never whether they were the right notes. A wrong note sung perfectly scores 0.")
+    report.add("grid_bias_cents", round(result.grid_bias_cents, 1), "estimated",
+               "mean signed deviation; a bias means the whole take sits flat or sharp")
+    report.add("grid_worse_than", result.grid_worse_than, "estimated",
+               "per cent of frames past 15, 25 and 35 cents")
+    if result.notes:
+        report.add("note_count", len(result.notes), "measured", "held notes found")
+        report.add("note_centre_median_cents", round(result.note_centre_median_cents, 1),
+                   "estimated", "how far each held note's own centre sits from the grid")
+        report.add("note_drift_median_cents", round(result.note_drift_median_cents, 1),
+                   "estimated", "median slide from the start of a note to its end",
+                   "Fitted as a trend, so an even wobble is not counted as a slide.")
+        report.add("note_spread_median_cents", round(result.note_spread_median_cents, 1),
+                   "estimated", "median spread within a held note: vibrato and wobble together")
+        report.add("notes_drifting_over_50c", round(result.notes_drifting_over_50c, 1),
+                   "estimated", "per cent of held notes that slide more than half a semitone")
+    report.add("intonation_limitations", result.limitations, "measured",
+               "what these figures cannot support")
+    report.add("intonation_contaminated", result.contaminated, "measured",
+               "whether the measured signal is an isolated vocal",
+               result.contamination_note)
 
 
 def section_map(report: Report, mono) -> None:

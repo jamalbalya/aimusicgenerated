@@ -34,3 +34,7 @@ dist-single
 # pattern would silently hide a fixture someone adds later.
 *.safetensors
 *.ckpt
+
+# Python bytecode from the POC analysis tools.
+__pycache__/
+*.pyc
