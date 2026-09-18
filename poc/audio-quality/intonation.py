@@ -685,6 +685,9 @@ def transitions(notes, minimum_semitones: float = LARGE_INTERVAL_SEMITONES) -> l
 #: note; 50 cents is half a semitone, where the note is closer to its neighbour
 #: than to itself. A take is judged on its worst register rather than its
 #: average, because that is the one that will be heard.
+#: Quoted in the verdict's own wording; kept beside the thresholds it belongs to.
+Z_UNRELATED_NOTE = 2.0
+
 VERDICT_THRESHOLDS = {
     "median_centre_cents_warn": 20.0,
     "median_centre_cents_fail": 30.0,
@@ -693,7 +696,7 @@ VERDICT_THRESHOLDS = {
 }
 
 
-def verdict(report: IntonationReport, registers=None) -> tuple:
+def verdict(report: IntonationReport, registers=None, harmony=None) -> tuple:
     """A status for the generate-analyse-regenerate loop, and why.
 
     Returns `(status, reasons)`. The statuses are the ones the workflow uses:
@@ -705,6 +708,14 @@ def verdict(report: IntonationReport, registers=None) -> tuple:
     It never returns PASS on a contaminated measurement. A figure that cannot be
     attributed to the voice cannot clear the voice, and a loop that regenerated
     on the strength of one would be burning GPU time on noise.
+
+    Two conditions, and a take has to clear both. Intonation says the singer hit
+    the notes they aimed at; `harmony` says those were the notes the chords
+    wanted. They fail independently and they fail differently: a take can be
+    accurate to five cents and still be unusable because the line does not belong
+    over the accompaniment, which is not a tuning problem and cannot be tuned
+    away. Passing on intonation alone is how a song gets accepted and then sounds
+    wrong.
     """
     reasons: list = []
     if not report.sufficient:
@@ -741,6 +752,24 @@ def verdict(report: IntonationReport, registers=None) -> tuple:
     elif drift_share >= VERDICT_THRESHOLDS["drift_share_warn"] and status == "PASS":
         status = "PASS_WITH_WARNING"
         reasons.append(f"{drift_share:.0f}% of held notes slide more than half a semitone")
+
+    # Condition B: does the line belong over these chords at all?
+    if harmony is not None:
+        if not getattr(harmony, "isolated", False) or not harmony.sufficient:
+            return "ANALYSIS_UNAVAILABLE", reasons + [
+                "Harmonic compatibility could not be measured on isolated stems, so "
+                "whether the melody fits the accompaniment is unknown."
+            ]
+        if harmony.compatible is False:
+            status = "REGENERATION_REQUIRED"
+            reasons.append(
+                f"the melody is not demonstrably related to the accompaniment "
+                f"(z = {harmony.z:+.2f}; anything under {Z_UNRELATED_NOTE} is "
+                "indistinguishable from singing over the wrong bars). Pitch correction "
+                "cannot fix this: the notes are in tune and simply do not fit."
+            )
+        else:
+            reasons.append(f"melody follows the harmony (z = {harmony.z:+.2f})")
 
     if status == "PASS":
         reasons.append("within every threshold this module checks")

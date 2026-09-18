@@ -48,7 +48,9 @@ from pathlib import Path
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).parent))
+import harmony  # noqa: E402
 import intonation  # noqa: E402
+import separate_vocals  # noqa: E402
 
 PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
@@ -85,6 +87,8 @@ class Measurement:
 @dataclass
 class Report:
     path: str
+    #: Set by the harmonic pass so the verdict can require both conditions.
+    harmony_result: object = None
     measurements: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
 
@@ -183,7 +187,7 @@ def _key_of(chroma):
     return best
 
 
-def harmony(report: Report, mono):
+def harmony_of_mix(report: Report, mono):
     import librosa
     import numpy as np
 
@@ -223,6 +227,29 @@ def harmony(report: Report, mono):
     return chroma
 
 
+def isolate(stereo, sample_rate: int):
+    """The real split, when this machine can do it. (vocals, accompaniment, note).
+
+    Returns `(None, None, why)` when it cannot, and the caller reports
+    ANALYSIS_UNAVAILABLE rather than measuring the mix and calling it a verdict.
+    """
+    state = separate_vocals.availability()
+    if not state.ready:
+        return None, None, state.reason
+    try:
+        voice, rest, rate = separate_vocals.separate(stereo, sample_rate)
+    except separate_vocals.SeparatorUnavailable as error:
+        return None, None, str(error)
+    ratio, good, why = separate_vocals.separation_quality(voice, rest, rate)
+    if not good:
+        return None, None, why
+    import librosa
+    if rate != SR:
+        voice = librosa.resample(voice, orig_sr=rate, target_sr=SR)
+        rest = librosa.resample(rest, orig_sr=rate, target_sr=SR)
+    return voice, rest, why
+
+
 def separate(mono, require_demucs: bool):
     """Voice and accompaniment. Returns (voice, accompaniment, method, trustworthy)."""
     import librosa
@@ -258,11 +285,23 @@ def separate(mono, require_demucs: bool):
     return voice, music, "librosa REPET-SIM softmask", False
 
 
-def vocals(report: Report, mono, require_demucs: bool) -> None:
+def vocals(report: Report, mono, require_demucs: bool, stereo=None, native_sr: int = 0) -> None:
     import librosa
     import numpy as np
 
-    voice, music, method, trustworthy = separate(mono, require_demucs)
+    # A trained separator if this machine has one; the classical fallback only
+    # for the figures that never claimed to be about the voice alone.
+    isolated_voice = isolated_rest = None
+    isolation_note = "Not attempted."
+    if stereo is not None and native_sr:
+        isolated_voice, isolated_rest, isolation_note = isolate(stereo, native_sr)
+    report.add("vocal_isolation", isolated_voice is not None, "measured",
+               "whether a trained separator produced the vocal stem", isolation_note)
+
+    if isolated_voice is not None:
+        voice, music, method, trustworthy = isolated_voice, isolated_rest, "spleeter 2stems", True
+    else:
+        voice, music, method, trustworthy = separate(mono, require_demucs)
     confidence = "estimated" if trustworthy else "estimated"
     leak_caveat = "" if trustworthy else (
         "REPET-SIM is not a source separator. Piano and sustained bass leak into the voice and "
@@ -309,8 +348,79 @@ def vocals(report: Report, mono, require_demucs: bool) -> None:
 
     _melody_versus_harmony(report, music, f0, sung, confidence, leak_caveat)
     _timing(report, mono, voice, report_confidence=confidence)
-    _intonation(report, mono, f0, sung, leak_caveat)
-    _vibrato_pass(report, voice, leak_caveat)
+    # Before the intonation pass, which needs the harmonic result to decide a
+    # verdict: both conditions have to hold, and in tune is only one of them.
+    _harmonic_compatibility(report, times, f0, sung, music, trustworthy)
+    _intonation(report, voice if trustworthy else mono, f0, sung,
+                "" if trustworthy else leak_caveat, isolated=trustworthy)
+    _vibrato_pass(report, voice, "" if trustworthy else leak_caveat, isolated=trustworthy)
+
+
+def _harmonic_compatibility(report: Report, times, f0, sung, music, isolated: bool) -> None:
+    """Does the melody fit the chords — a separate question from being in tune.
+
+    These two are routinely confused, and the confusion is expensive: a take can
+    be in tune to a cent and still be singing over the wrong bars. Intonation
+    asks whether a note landed on the twelve-tone grid; this asks whether the
+    note it landed on was the one the accompaniment is playing under. A melody
+    can pass the first and fail the second, and no amount of pitch correction
+    repairs that, because pitch correction moves notes to the nearest grid
+    position and they are already there.
+
+    The score is only meaningful on separated stems. On a mix the accompaniment
+    is inside the "vocal" too, so the melody correlates with itself and the
+    figure looks excellent whatever was sung. `HarmonyReport.isolated` carries
+    that distinction into the verdict, which refuses to pass on a mix.
+    """
+    result = harmony.compatibility(
+        times, f0, sung, music, SR, HOP, isolated=isolated)
+    report.harmony_result = result
+
+    confidence = "estimated" if result.sufficient else "unavailable"
+    report.add("harmony_frames", result.frames, "measured",
+               "sung frames scored against the accompaniment")
+    report.add("harmony_seconds", round(result.analysed_seconds, 1), "measured",
+               "how much singing that covers")
+    report.add("harmony_isolated", result.isolated, "measured",
+               "whether both sides came from a trained separator",
+               "" if result.isolated else
+               "Not isolated. The accompaniment leaks into the vocal track and correlates with "
+               "itself, which inflates this score badly. No verdict can rest on it.")
+
+    if not result.sufficient:
+        report.add("harmonic_compatibility", None, "unavailable",
+                   "melody against the accompaniment's chroma, versus a null",
+                   " ".join(result.limitations))
+        return
+
+    report.add("harmony_key", result.key, "estimated",
+               "key of the accompaniment, by profile correlation",
+               "Confuses a key with its relative minor. Context, not transcription.")
+    report.add("harmony_in_key_percent", round(result.in_key_percent, 1), "estimated",
+               "per cent of sung frames whose pitch class is in that key",
+               "High is necessary and nowhere near sufficient: the right scale played over "
+               "the wrong chord is still the wrong note.")
+    report.add("harmony_mean_support", round(result.mean_support, 3), "estimated",
+               "how present the sung pitch class is in the accompaniment's chroma")
+    report.add("harmony_mean_support_null", round(result.null_mean_support, 3), "estimated",
+               f"the same melody scored at {harmony.NULL_SHIFTS} wrong moments")
+    report.add("harmony_top3_percent", round(result.top3_percent, 1), "estimated",
+               "sung pitch class among the accompaniment's three strongest, per cent")
+    report.add("harmony_top3_percent_null", round(result.null_top3_percent, 1), "estimated",
+               "the same figure at the wrong moments")
+    report.add("harmony_weakest4_percent", round(result.weakest4_percent, 1), "estimated",
+               "per cent of sung frames whose pitch class is among the four weakest")
+    report.add("harmony_z", round(result.z, 2), "estimated",
+               "null standard deviations the real alignment beats chance by",
+               f"This is the figure to read. Below {harmony.Z_UNRELATED} the melody is "
+               "statistically indistinguishable from the same line sung over the wrong bars.")
+    report.add("harmonic_compatibility", result.compatible, confidence,
+               "whether the melody demonstrably follows the accompaniment")
+    report.add("harmony_clashes", [list(span) for span in result.clashes[:12]], "estimated",
+               "stretches where the sung pitch class sat among the accompaniment's weakest",
+               "Longest first. These are where a listener hears the song go wrong.")
+    report.add("harmony_limitations", result.limitations, "measured",
+               "what this pass cannot support")
 
 
 def _melody_versus_harmony(report, music, f0, sung, confidence, leak_caveat) -> None:
@@ -421,7 +531,8 @@ def _refine_f0(signal, centre_sample: int, guess_hz: float, sample_rate: int):
     return best_f0
 
 
-def _intonation(report: Report, mono, f0, sung, leak_caveat: str) -> None:
+def _intonation(report: Report, mono, f0, sung, leak_caveat: str,
+                isolated: bool = False) -> None:
     """Is it in tune, is it the right note, and how much of the song was heard."""
     import librosa
     import numpy as np
@@ -436,7 +547,7 @@ def _intonation(report: Report, mono, f0, sung, leak_caveat: str) -> None:
 
     result = intonation.measure(
         times, refined, usable, len(mono) / SR,
-        isolated_vocal=False,
+        isolated_vocal=isolated,
         analysis_window_seconds=INTONATION_WINDOW / SR,
         contamination_note=leak_caveat or (
             "Measured on a mix. A pitch tracker follows the loudest harmonic source, and "
@@ -504,7 +615,7 @@ def _intonation(report: Report, mono, f0, sung, leak_caveat: str) -> None:
         "Listed, not judged. A wide leap can be the line or can be the tracker "
         "catching a harmonic; the numbers alone cannot tell them apart.")
 
-    status, reasons = intonation.verdict(result, registers)
+    status, reasons = intonation.verdict(result, registers, report.harmony_result)
     report.add("verdict", status, "measured", "generate-analyse-regenerate status",
                " ".join(reasons))
 
@@ -515,7 +626,7 @@ def _intonation(report: Report, mono, f0, sung, leak_caveat: str) -> None:
                result.contamination_note)
 
 
-def _vibrato_pass(report: Report, voice, leak_caveat: str) -> None:
+def _vibrato_pass(report: Report, voice, leak_caveat: str, isolated: bool = False) -> None:
     """A second, much shorter window, for the wobble the first one averages away.
 
     Its own `pyin` run rather than a reuse of the main one: the window length is
@@ -538,7 +649,7 @@ def _vibrato_pass(report: Report, voice, leak_caveat: str) -> None:
 
     result = intonation.measure_vibrato(
         times, f0, voiced, len(voice) / SR,
-        window_seconds=window / SR, hop_seconds=hop / SR, isolated_vocal=False)
+        window_seconds=window / SR, hop_seconds=hop / SR, isolated_vocal=isolated)
 
     report.add("vibrato_window_ms", round(1000 * window / SR, 1), "measured",
                "the vibrato pass's own analysis window")
@@ -594,9 +705,9 @@ def analyse(path: Path, require_demucs: bool) -> Report:
     loudness_and_clipping(report, stereo, native_sr)
     frequency_balance(report, mono)
     tempo(report, mono)
-    harmony(report, mono)
+    harmony_of_mix(report, mono)
     section_map(report, mono)
-    vocals(report, mono, require_demucs)
+    vocals(report, mono, require_demucs, stereo=stereo, native_sr=native_sr)
     return report
 
 
