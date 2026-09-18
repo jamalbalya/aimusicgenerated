@@ -384,6 +384,40 @@ export function evaluate(evidence: MusicalEvidence, options: GateOptions = {}): 
   if (evidence.regions.length === 0) {
     return unavailable('No chord progression was available, so there is nothing to judge the melody against.')
   }
+
+  // An instrumental, judged on what it has. Every check below this point reads
+  // a melody against the chords, and there is no melody — so the numbers they
+  // would produce are all zero, and `harmonicCompatibility` of 0 would fail a
+  // song for the absence of the thing it was asked not to have. What can still
+  // be wrong about an instrumental is its speed, so that is what is checked.
+  //
+  // This is deliberately not ANALYSIS_UNAVAILABLE. Refusing to deliver an
+  // instrumental because it has no singing would be the gate failing a song
+  // for meeting its brief.
+  if (evidence.notes.length === 0 && evidence.instrumental) {
+    const noVocal = 'This take is an instrumental: it has no sung line, so nothing was judged '
+      + 'against the chords. The harmonic gate says nothing about this song either way.'
+    if (tempo && !tempo.passed) {
+      return {
+        verdict: 'REGENERATION_REQUIRED', accepted: false, deliveryAllowed: false,
+        rejectionReasons: [tempo.reason === 'detection-failed' || tempo.reason === 'unstable-tempo'
+          ? 'TEMPO_UNMEASURABLE' : 'TEMPO_MISMATCH'],
+        tempo, reasons: [tempo.detail], failedChecks: ['tempo'], measurements: null,
+        worstMoments: [], evidence: evidenceSummary,
+        limitations: [...evidence.limitations, noVocal],
+      }
+    }
+    return {
+      verdict: 'PASS', accepted: true, deliveryAllowed: true, rejectionReasons: [],
+      ...(tempo ? { tempo } : {}),
+      reasons: [tempo?.passed
+        ? `An instrumental at the tempo that was asked for. ${noVocal}`
+        : noVocal],
+      failedChecks: [], measurements: null, worstMoments: [],
+      evidence: evidenceSummary, limitations: [...evidence.limitations, noVocal],
+    }
+  }
+
   if (evidence.notes.length < MIN_NOTES_FOR_A_VERDICT) {
     return unavailable(
       `Only ${evidence.notes.length} sung notes were found; at least ${MIN_NOTES_FOR_A_VERDICT} `

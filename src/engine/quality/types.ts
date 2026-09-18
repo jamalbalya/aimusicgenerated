@@ -80,6 +80,15 @@ export interface MusicalEvidence {
   key: { tonic: PitchClass; scale: ScaleName; pitchClasses: PitchClass[]; name: string }
   regions: HarmonicRegion[]
   notes: VocalNote[]
+  /**
+   * The song was written without a voice at all.
+   *
+   * Distinct from "no notes were found", which is a failure to measure. An
+   * instrumental has no vocal line, so the question this gate exists to ask —
+   * does the singing fit the chords — has no subject rather than no answer.
+   * Everything that is not about the voice, the tempo above all, still applies.
+   */
+  instrumental?: boolean
   /** The range the voice was asked for, when one was asked for. */
   vocalRange?: { lowMidi: number; highMidi: number }
   /** Per-note tuning error in cents, when it was measured. Symbolic scores have none. */

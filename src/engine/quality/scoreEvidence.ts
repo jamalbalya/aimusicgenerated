@@ -76,7 +76,15 @@ export function sungNotes(score: Score): VocalNote[] {
  */
 export function evidenceFromScore(score: Score): EvidenceResult {
   const notes = sungNotes(score)
-  if (notes.length === 0) {
+  // `score.lyrics` is set exactly when the song was written to be sung, so it
+  // separates the two ways a score arrives here with no notes. An instrumental
+  // was asked for without a voice and is judged on everything else. A score
+  // that carries lyrics and still has nothing sung is a score whose vocal
+  // cannot be judged, and that stays unavailable — the one is a song with no
+  // singer, the other is a missing measurement, and calling them the same
+  // thing is how an unjudged vocal reaches a listener.
+  const instrumental = !score.lyrics
+  if (notes.length === 0 && !instrumental) {
     return {
       available: false,
       reason: 'This take has no sung notes, so there is no vocal line to judge against the chords.',
@@ -109,6 +117,7 @@ export function evidenceFromScore(score: Score): EvidenceResult {
     // no estimation anywhere in this path, so there is nothing to discount.
     confidence: 1,
     isolated: true,
+    instrumental,
     bpm: score.bpm,
     beatsPerBar: score.beatsPerBar,
     key: {

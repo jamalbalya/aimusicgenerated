@@ -75,6 +75,47 @@ describe('one press, one render, one song', () => {
     }
   })
 
+  it('delivers an instrumental, and still holds it to the tempo that was asked for', () => {
+    // The gate exists to ask whether the singing fits the chords. An
+    // instrumental has no singing, and that is what was ordered — refusing to
+    // open it would be failing a song for meeting its brief. What can still be
+    // wrong about it is its speed, so that is still checked.
+    for (const prompt of ['lofi chill study music', 'epic cinematic trailer', 'bossa nova']) {
+      const score = composeSong(buildSpec(prompt, { seed: 'inst', vocals: 'none', bpm: 96 }))
+      expect(score.lyrics).toBeUndefined()
+      expect(score.tracks.some((track) => track.role === 'vocal' && track.notes.length > 0))
+        .toBe(false)
+
+      const report = gateScoreTake(score, { tempo: tempoRequirement(96) })
+      expect(`${prompt}: ${report.verdict}`).toBe(`${prompt}: PASS`)
+      expect(report.deliveryAllowed).toBe(true)
+      // And it says plainly that no vocal was judged, rather than implying one
+      // was and passed.
+      expect(report.limitations.join(' ')).toContain('instrumental')
+      expect(report.measurements).toBeNull()
+
+      // Asked for a tempo it was not written at, the same instrumental is refused.
+      const wrongSpeed = gateScoreTake(score, { tempo: tempoRequirement(score.bpm + 30) })
+      expect(wrongSpeed.verdict).toBe('REGENERATION_REQUIRED')
+      expect(wrongSpeed.deliveryAllowed).toBe(false)
+      expect(wrongSpeed.rejectionReasons).toContain('TEMPO_MISMATCH')
+    }
+  })
+
+  it('still refuses a sung song whose vocal cannot be judged', () => {
+    // The other way a score reaches the gate with no notes: it was written to
+    // be sung and the singing is missing. That is a measurement that failed,
+    // not a song with no singer, and it must not be delivered.
+    const score = composeSong(buildSpec('upbeat pop love song', { seed: 'silent' }))
+    expect(score.lyrics).toBeDefined()
+    for (const track of score.tracks) {
+      if (track.role === 'vocal' || track.role === 'vocalHarmony') track.notes = []
+    }
+    const report = gateScoreTake(score)
+    expect(report.verdict).toBe('ANALYSIS_UNAVAILABLE')
+    expect(report.deliveryAllowed).toBe(false)
+  })
+
   it('repairs a deliberately broken plan rather than asking for a new one', () => {
     const score = composeSong(buildSpec('upbeat pop love song', { seed: 'broken' }))
     const vocal = score.tracks.find((track) => track.role === 'vocal')!
