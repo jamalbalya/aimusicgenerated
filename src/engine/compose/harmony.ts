@@ -57,7 +57,7 @@ export function harmonicScaleFor(scale: ScaleName): ScaleName {
   }
 }
 
-function resolveProgressionPool(genre: GenreDef, scale: ScaleName): string[] {
+export function resolveProgressionPool(genre: GenreDef, scale: ScaleName): string[] {
   // Asked of the scale the chords are built from. `isMinorScale` reads the
   // third step, and the minor pentatonic's third step is a fourth, so asking it
   // directly reports a minor key as major and hands it major templates.

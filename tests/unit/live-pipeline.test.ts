@@ -280,6 +280,52 @@ describe('the caption compiler works inside ACE-Step 512 characters', () => {
     expect(second.caption).toBe(first.caption)
   })
 
+  it('never states a genre it only guessed, nor that guess\'s instruments', () => {
+    // Found by running the report script on real inputs. "melancholic
+    // Indonesian ballad, soft piano and warm upright bass" matches Dangdut
+    // Koplo on the single word "indonesian", and the compiled caption was
+    // telling the model "Dangdut Koplo, organ, electric bass, flute" over the
+    // top of somebody's piano ballad. The planner may guess — something has to
+    // choose a tempo — but the caption is the one channel the model reads, and
+    // a guess in it argues with the request.
+    const weak = 'melancholic Indonesian ballad, soft piano and warm upright bass'
+    const weakPlan = planLiveGeneration(input({ style: weak }))
+    expect(weakPlan.music.genreConfident).toBe(false)
+    const weakCaption = compilePrompt(weakPlan, weak)
+    expect(weakCaption.included).not.toContain('genre')
+    expect(weakCaption.included).not.toContain('instruments')
+    expect(weakCaption.caption.toLowerCase()).not.toContain('koplo')
+
+    // Named outright, it is stated — the rule is about confidence, not about
+    // refusing to describe the genre at all.
+    const strong = 'Indonesian dangdut koplo, powerful kendang and suling, dramatic male vocal'
+    const strongPlan = planLiveGeneration(input({ style: strong }))
+    expect(strongPlan.music.genreConfident).toBe(true)
+    expect(compilePrompt(strongPlan, strong).included).toContain('genre')
+  })
+
+  it('does not ask for a vocal to be mixed forward in an instrumental', () => {
+    const style = 'cinematic piano'
+    const plan = planLiveGeneration(input({ style, instrumental: true, lyrics: '' }))
+    expect(plan.music.mixDirection).not.toMatch(/vocal/i)
+  })
+
+  it('names a chord direction in the same mode as the key it planned', () => {
+    // The caption was saying "A major" and "i-bVI-bIII-bVII" in adjacent
+    // clauses, because the chord direction took the genre's first listed
+    // progression without asking which mode the key had ended up in.
+    for (const style of [
+      'epic cinematic orchestral trailer', 'upbeat pop love song',
+      'heavy metal guitar', 'bossa nova', 'lofi chill study music',
+    ]) {
+      const { music } = planLiveGeneration(input({ style }))
+      const minorKey = /minor|dorian|phrygian|locrian|blues/.test(music.scale.toLowerCase())
+      const saysMinor = music.chordDirection.includes('minor-key')
+      expect(`${style}: key minor=${minorKey}, direction minor=${saysMinor}`)
+        .toBe(`${style}: key minor=${minorKey}, direction minor=${minorKey}`)
+    }
+  })
+
   it('does not repeat a direction the user already wrote', () => {
     const style = 'lo-fi hip hop at 84 BPM'
     const compiled = compilePrompt(planLiveGeneration(input({ style })), style)

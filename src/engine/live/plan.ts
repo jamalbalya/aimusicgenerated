@@ -27,8 +27,11 @@
  * than from the clock for exactly that reason.
  */
 
-import { buildSpec, type SongSpec } from '../compose/prompt'
+import {
+  buildSpec, detectGenreDetailed, genreIsConfident, type SongSpec,
+} from '../compose/prompt'
 import { getProgression } from '../theory/progressions'
+import { resolveProgressionPool } from '../compose/harmony'
 import { NOTE_NAMES, SCALES } from '../theory/pitch'
 import { detectLanguage } from '../lang'
 import type { LanguageId } from '../lang/types'
@@ -80,6 +83,15 @@ export interface MusicalPlan {
   masterDirection: string
   instrumental: boolean
   language: LanguageId
+  /**
+   * Whether the genre was detected confidently enough to state it to the model.
+   *
+   * When false the genre still drives the plan's own defaults, because
+   * something has to, but the caption says nothing about it and names no
+   * instruments — asserting a guessed genre in the one channel the model reads
+   * is how a piano ballad gets told it is dangdut koplo.
+   */
+  genreConfident: boolean
 }
 
 export interface LivePlan {
@@ -144,11 +156,22 @@ function emotionOf(spec: SongSpec): string {
  * a roman-numeral sequence is not.
  */
 function chordDirectionOf(spec: SongSpec): string {
-  const template = spec.genre.progressions
+  // The same mode-filtered pool the composer draws from, rather than the
+  // genre's raw list. Taking the raw first entry described a song planned in A
+  // major as "i-bVI-bIII-bVII", a minor progression, because the genre happens
+  // to list a minor idiom first. The caption then asked for two different keys
+  // in one clause.
+  const template = resolveProgressionPool(spec.genre, spec.key.scale)
     .map((id) => getProgression(id))
     .find((found) => found !== undefined)
-  const minor = spec.key.scale.toLowerCase().includes('minor')
+  // Read from the progression's own declared mode where there is one, rather
+  // than from the melodic scale's name. D dorian is not spelled "minor" and was
+  // being described as a major-key lift while the progression underneath it was
+  // i-bVII-bVI-V — the caption contradicting itself in two adjacent clauses.
+  const minorScale = spec.key.scale.toLowerCase().includes('minor')
     || spec.key.scale === 'phrygian' || spec.key.scale === 'locrian'
+    || spec.key.scale === 'dorian' || spec.key.scale === 'blues'
+  const minor = template && template.mode !== 'either' ? template.mode === 'minor' : minorScale
   const colour = minor ? 'minor-key tension resolving home' : 'major-key lift with a clear resolution'
   return template ? `${template.label}, ${colour}` : colour
 }
@@ -223,6 +246,12 @@ function instrumentsOf(spec: SongSpec): string[] {
 
 /** Mix direction: what should sit where, given how busy the arrangement is. */
 function mixDirectionOf(spec: SongSpec): string {
+  // An instrumental has no vocal to put in front of anything. Saying "lead
+  // vocal forward" in the caption of a request whose own `instrumental` flag is
+  // true is the caption arguing with the payload.
+  if (spec.instrumental) {
+    return 'clear balanced instrumental mix, each part audible, nothing masking the lead line'
+  }
   const dense = spec.genre.density >= 0.7
   return dense
     ? 'lead vocal forward and clear above a busy arrangement, instruments carved around the voice'
@@ -314,6 +343,9 @@ export function planLiveGeneration(input: LiveGenerationInput): LivePlan {
     }
   }
 
+  const genreConfident = genreIsConfident(detectGenreDetailed(
+    ` ${input.style.toLowerCase().replace(/[^\p{L}\p{N}#&'\s.,;-]/gu, ' ').replace(/\s+/g, ' ')} `))
+
   const music: MusicalPlan = {
     genre: spec.genre.label,
     genreFamily: spec.genre.family,
@@ -336,6 +368,7 @@ export function planLiveGeneration(input: LiveGenerationInput): LivePlan {
     masterDirection: masterDirectionOf(spec),
     instrumental: input.instrumental,
     language,
+    genreConfident,
   }
 
   return {

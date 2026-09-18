@@ -200,6 +200,40 @@ test.describe('one press, one ZeroGPU request', () => {
     await expect(page.getByTestId('live-measurements')).toBeVisible()
   })
 
+  test('leaves a countable trail: one ticket, one spend, one join, one result',
+    async ({ page }) => {
+      // The evidence a report can quote. Every number below is counted by the
+      // fake Space or read off the page, not asserted from the code's intent.
+      const space = await fakeSpace(page)
+      await openNeuralStudio(page)
+
+      await page.getByLabel('Style').fill(STYLE)
+      await page.getByLabel('Lyrics').fill(LYRICS)
+      await generateButton(page).click()
+      await expect(generateButton(page)).toBeEnabled({ timeout: 120_000 })
+
+      // One ticket, visible on the page, and it is the first of this session.
+      await expect(page.getByTestId('live-ticket')).toHaveText('gen-1')
+      // One /queue/join.
+      expect(space.joins()).toBe(1)
+      // One result, carrying the ticket that authorised it.
+      await expect(page.getByTestId('live-verification')).toBeVisible()
+      // One song in the player: no second candidate to choose between.
+      await expect(page.getByText(/takes from one brief/i)).toHaveCount(0)
+
+      // Nothing more arrives afterwards. A retry or a regeneration triggered by
+      // the verification would land in this window.
+      await page.waitForTimeout(3000)
+      expect(space.joins(), 'no retry, no regeneration, no second candidate').toBe(1)
+
+      // A second press is a second ticket, not a reuse of the first — which is
+      // what makes "one press, one request" a count rather than a cap.
+      await generateButton(page).click()
+      await expect(generateButton(page)).toBeEnabled({ timeout: 120_000 })
+      await expect(page.getByTestId('live-ticket')).toHaveText('gen-2')
+      expect(space.joins(), 'two presses, two requests').toBe(2)
+    })
+
   test('a rapid double-click still sends exactly one request', async ({ page }) => {
     const space = await fakeSpace(page)
     await openNeuralStudio(page)

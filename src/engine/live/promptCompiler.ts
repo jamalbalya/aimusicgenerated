@@ -99,12 +99,28 @@ function densityPhrase(music: MusicalPlan): string {
  */
 export function directionsFor(plan: LivePlan): Direction[] {
   const { music } = plan
-  const directions: Direction[] = [
-    { id: 'genre', text: joinParts([music.genre, music.genreFamily !== music.genre ? music.genreFamily.toLowerCase() : '']) },
-    { id: 'mood', text: music.emotion },
-    { id: 'tempo', text: `${music.targetBpm} BPM` },
-    { id: 'groove', text: music.groove },
-  ]
+  const directions: Direction[] = []
+
+  // A guessed genre is not stated, and neither are its instruments. The
+  // planner still uses both for its own defaults, because a tempo and a key
+  // have to come from somewhere — but the caption is the one channel the model
+  // reads, and filling it with a guess that contradicts the request is worse
+  // than saying nothing. Measured: "melancholic Indonesian ballad, soft piano
+  // and warm upright bass" matched Dangdut Koplo on the single word
+  // "indonesian", and the compiled caption told the model "Dangdut Koplo,
+  // organ, electric bass, flute" over the top of the person's piano ballad.
+  if (music.genreConfident) {
+    directions.push({
+      id: 'genre',
+      text: joinParts([
+        music.genre,
+        music.genreFamily !== music.genre ? music.genreFamily.toLowerCase() : '',
+      ]),
+    })
+  }
+  directions.push({ id: 'mood', text: music.emotion })
+  directions.push({ id: 'tempo', text: `${music.targetBpm} BPM` })
+  directions.push({ id: 'groove', text: music.groove })
 
   if (music.instrumental) {
     directions.push({ id: 'vocal', text: 'instrumental, no vocals' })
@@ -124,7 +140,7 @@ export function directionsFor(plan: LivePlan): Direction[] {
     directions.push({ id: 'melody', text: 'memorable singable melody with a clear contour' })
   }
 
-  if (music.instruments.length > 0) {
+  if (music.genreConfident && music.instruments.length > 0) {
     directions.push({ id: 'instruments', text: music.instruments.join(', ') })
   }
 

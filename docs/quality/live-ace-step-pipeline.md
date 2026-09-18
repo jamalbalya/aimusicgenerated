@@ -194,7 +194,75 @@ A tempo that came back wrong is a **note**, not a failure. ACE-Step has no tempo
 input, so a BPM in the caption is prose; calling the audio defective because the
 model did not follow prose would be blaming the file for the API.
 
-## E. Guaranteed, asked for, and neither
+## E. Three categories, and nothing between them
+
+Read this section before any other. Every claim this project makes about the
+live path belongs in exactly one of these three, and the difference between the
+first and the third is the difference between a guarantee and a hope.
+
+### Guaranteed by code
+
+Enforced by a mechanism, covered by a test, and true whatever the model does.
+
+| | Mechanism | Test |
+| --- | --- | --- |
+| Pre-flight validation | `planLiveGeneration` refuses before the network | `live-pipeline.test.ts`, `live-pipeline.spec.ts` |
+| One-use request ticket | `spend()` throws on the second call; spent before any socket opens | `live-pipeline.test.ts` |
+| No automatic retry | No retry in the provider or in `GradioClient.submit` | `live-pipeline.spec.ts` counts joins after a failure |
+| No automatic regeneration | No path from verification back to the provider; no ticket left | `live-pipeline.spec.ts` |
+| No multiple candidates | The take loop is gone; one ticket cannot serve two calls | `live-pipeline.spec.ts`, `neural-takes.spec.ts` |
+| No offline fallback | A neural failure is reported, never substituted | `no-fallback.test.ts` |
+| Structured failure reporting | Every refusal and failure carries a stage, a code, details and a retryability flag | `failure-reporting.spec.ts`, `style-too-long.spec.ts` |
+| Lyrics and style reach the model unedited | `verifyLyricsPreserved`; the compiler never truncates user words | `zerogpu.test.ts` |
+
+### Measured after generation
+
+Numbers taken from the audio that came back. Reported, never acted on by
+generating again.
+
+duration · tempo estimate and its confidence · peak · RMS · LUFS · crest factor
+· clipping share and longest run · silence share and longest gap · dead channel
+· dual mono · voice-band energy · spectral balance.
+
+Two cautions that belong with these numbers:
+
+- **Voice-band energy is presence, not identity.** Energy between 1.5 and 4 kHz
+  says something is there. A saxophone, a lead guitar and a synth line all sit
+  in that band. It does not prove a human-sounding vocal, and it says nothing
+  at all about whether the written words were sung.
+- **A tempo estimate is an estimate.** It carries a confidence figure, and a low
+  one is reported as unmeasured rather than as a number.
+
+### Not deterministically controlled by ACE-Step
+
+The endpoint takes six inputs — `style, lyrics, language, vocal_gender,
+instrumental, duration`. Everything in this list is therefore a description in a
+caption at best, and several are not even that.
+
+exact BPM · key · chord progression · melody · section timing · lyric adherence
+· vocal naturalness · vocal intelligibility · mixing quality · mastering quality
+· any claim of parity with a commercial music service.
+
+Nothing in this repository makes these deterministic, and no amount of prompt
+engineering converts a description into a parameter.
+
+### And a fourth thing, which is easy to miss
+
+**Not every planned direction is even transmitted.** The caption is 512
+characters and the plan routinely wants more. Measured with
+`node scripts/live-plan-report.mjs`:
+
+| Request | Caption | Planned | Transmitted | Dropped |
+| --- | --- | --- | --- | --- |
+| short style, vocals, 4 min | 488/512 | 14 | 11 | integration, mix, master |
+| short style, instrumental, 4 min | 445/512 | 10 | 9 | master |
+| detailed style, vocals, 5 min | 479/512 | 16 | 10 | instruments, form, density, integration, mix, master |
+| long style (566 chars) | — | 16 | 0 | refused before sending |
+
+So "the mix direction was planned" and "the model was told the mix direction"
+are different statements, and the interface shows which is which.
+
+## F. Guaranteed, asked for, and neither
 
 | Requirement | Status | Evidence |
 | --- | --- | --- |
@@ -222,7 +290,7 @@ model did not follow prose would be blaming the file for the API.
 The machine-readable version of this table is `src/engine/live/constraints.ts`,
 which the tests read so the document and the code cannot drift apart.
 
-## F. What ACE-Step cannot do, stated plainly
+## G. What ACE-Step cannot do, stated plainly
 
 The ZeroGPU endpoint declares six inputs:
 
@@ -250,7 +318,86 @@ There is no seventh. So:
   inverted: on one real song the mix reported +6.46 where the separated stems
   reported −2.49.
 
-## G. What improves the odds, since enforcement is unavailable
+## H. Real-generation validation: PENDING
+
+**No real ACE-Step generation has been run against this pipeline.** Everything
+above is proved against unit tests and a fake Space that counts requests. The
+one-request guarantee, the validation, the caption budget and the measurement
+code are all exercised; what is *not* exercised is a real ZeroGPU round trip.
+
+### The blocker, exactly
+
+The environment this was built in cannot reach Hugging Face. Attempted
+2026-09-18:
+
+```
+$ curl https://<owner>-<space>.hf.space/config
+curl: (56) CONNECT tunnel failed, response 403
+
+$ curl https://huggingface.co/api/whoami-v2
+curl: (56) CONNECT tunnel failed, response 403
+```
+
+The agent proxy names the denial itself:
+
+```json
+"recentRelayFailures": [
+  { "kind": "connect_rejected",
+    "detail": "gateway answered 403 to CONNECT (policy denial or upstream failure)",
+    "host": "<owner>-<space>.hf.space:443" },
+  { "kind": "connect_rejected",
+    "detail": "gateway answered 403 to CONNECT (policy denial or upstream failure)",
+    "host": "huggingface.co:443" }
+]
+```
+
+Bypassing the proxy returns HTTP 403 directly. This is a **network policy
+denial**, not an authentication failure, not a quota exhaustion, and not a Space
+that is asleep — none of those were reached. No credentials were used and no GPU
+time was spent.
+
+### What remains unproven until someone runs it
+
+- That a real Space accepts the compiled caption and returns audio.
+- Every measurement in section D on real ACE-Step output rather than on
+  synthesised fixtures.
+- Whether the model follows any of the caption's musical directions.
+- The `PASS_WITH_LIMITATIONS` verdict on a real 3–5 minute song.
+
+### How to run it
+
+On a machine that can reach the Space:
+
+```bash
+ACE_STEP_BACKEND=zerogpu \
+ACE_STEP_SPACE_URL=https://<owner>-<space>.hf.space \
+ACE_STEP_LIVE_GENERATION_ENABLED=true \
+VITE_HF_CLIENT_ID=<client id> \
+VITE_HF_ALLOWED_USERS=<user> \
+npm run build && npm run preview
+```
+
+Then, in the browser: sign in, choose Neural, enter a Style and Lyrics, set the
+length to 3–5 minutes, and press Generate **once**. The pipeline panel shows the
+ticket id, the compiled caption with its character count, the directions the
+budget dropped, and the verification report. `docs/quality/manual-live-test.md`
+has the full procedure and the exact log lines to expect.
+
+The evidence to capture, matching section E:
+
+| Evidence | Where to read it |
+| --- | --- |
+| One ticket | the panel's ticket id, `gen-1` |
+| One spend | a second request under it throws; the id never repeats |
+| One `/queue/join` | browser devtools, Network, filter `queue/join` |
+| One result | one song in the player, no take switcher |
+| Zero retry / regeneration / candidates | the join count stays at 1 after the verdict |
+| Audio measurements | the verification panel |
+
+Run `node scripts/live-plan-report.mjs --style "..." --duration 240` first to
+see what the caption will contain before spending anything.
+
+## I. What improves the odds, since enforcement is unavailable
 
 Everything in section C. The lever a caption-driven model gives you is the
 quality of the request, so the pipeline spends its effort there: a planned

@@ -147,6 +147,39 @@ function scoreTags(text: string, tags: readonly string[]): number {
   return score
 }
 
+/**
+ * How strongly a genre was detected, alongside which one.
+ *
+ * `matches` counts distinct tags of that genre found in the text, and
+ * `namedDirectly` is true when the genre's own label appears. One incidental
+ * tag is not a genre detection: "melancholic Indonesian ballad, soft piano"
+ * matches Dangdut Koplo on the single word "indonesian", and a caption that
+ * then tells the model "Dangdut Koplo, organ, electric bass, flute" is
+ * contradicting the person who asked for a piano ballad.
+ *
+ * The composer has always been free to guess here — a guess only chose a
+ * chord table. The live pipeline writes its guess into the caption, where a
+ * wrong one actively fights the request, so it needs to know how sure it is.
+ */
+export interface GenreDetection {
+  genre: GenreDef
+  matches: number
+  namedDirectly: boolean
+}
+
+/** True when the detection is worth putting in words the model will read. */
+export function genreIsConfident(detection: GenreDetection | null): boolean {
+  if (!detection) return false
+  return detection.namedDirectly || detection.matches >= 2
+}
+
+export function detectGenreDetailed(text: string): GenreDetection | null {
+  const genre = detectGenre(text)
+  if (!genre) return null
+  const matches = genre.tags.filter((tag) => text.includes(tag)).length
+  return { genre, matches, namedDirectly: text.includes(genre.label.toLowerCase()) }
+}
+
 export function detectGenre(text: string): GenreDef | null {
   let best: GenreDef | null = null
   let bestScore = 0
