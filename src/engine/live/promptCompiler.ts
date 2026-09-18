@@ -37,7 +37,7 @@
  * ACE-Step has no parameter for, which is nearly all of them.
  */
 
-import { ACE_STEP_TEXT_LIMITS } from '../providers/aceStepRequest'
+import { ACE_STEP_TEXT_LIMITS, aceStepTextTooLong } from '../providers/aceStepRequest'
 import type { LivePlan, MusicalPlan } from './plan'
 
 /** One direction competing for caption space. */
@@ -153,15 +153,18 @@ export function compilePrompt(plan: LivePlan, userStyle: string): CompiledPrompt
   const limit = ACE_STEP_TEXT_LIMITS.style
   const base = userStyle.trim().replace(/[,;\s]+$/, '')
 
-  if (base.length > limit) {
+  // One sentence for this in the whole codebase, borrowed from the provider
+  // that used to be the only place it was said. Two wordings for one refusal is
+  // how the interface ends up contradicting itself about the same number.
+  const tooLong = aceStepTextTooLong('style', base)
+  if (tooLong) {
     return {
       caption: base,
       included: [],
       dropped: directionsFor(plan).map((direction) => direction.id),
       characters: base.length,
       limit,
-      refusal: `The Style text alone is ${base.length} characters and ACE-Step takes ${limit}. `
-        + `Shorten it by ${base.length - limit}. Nothing was sent.`,
+      refusal: tooLong,
     }
   }
 

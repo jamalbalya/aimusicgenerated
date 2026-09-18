@@ -34,7 +34,7 @@ import { detectLanguage } from '../lang'
 import type { LanguageId } from '../lang/types'
 import type { SectionKind } from '../compose/types'
 import { planLyrics, type LyricPlan, type LyricProblem } from './lyricPlan'
-import { ACE_STEP_DURATION_RANGE } from '../providers/aceStepRequest'
+import { ACE_STEP_DURATION_RANGE, aceStepTextTooLong } from '../providers/aceStepRequest'
 
 export interface LiveGenerationInput {
   style: string
@@ -284,6 +284,22 @@ export function planLiveGeneration(input: LiveGenerationInput): LivePlan {
       code: 'EMPTY', severity: 'error',
       message: 'Describe the song you want. The Style text is ACE-Step\'s only description of the music.',
     })
+  }
+
+  // The sheet's own character limit, which is not the same question as whether
+  // it can be sung in the time asked for: a sheet can be perfectly singable at
+  // the length requested and still be more characters than ACE-Step accepts.
+  // Found by an end-to-end test whose 80-line sheet passed every musical check
+  // and was then refused by the provider — the planner had claimed the request
+  // was fine and the GPU was never going to see it.
+  //
+  // Checked on the sheet as it will be sent, and phrased by the same function
+  // the provider uses, so the two cannot disagree about the same number.
+  if (!input.instrumental) {
+    const tooLong = aceStepTextTooLong('lyrics', lyrics.text)
+    if (tooLong) {
+      problems.unshift({ code: 'TOO_LONG_FOR_DURATION', severity: 'error', message: tooLong })
+    }
   }
 
   if (input.durationSeconds !== undefined) {

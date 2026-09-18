@@ -139,6 +139,38 @@ export const LIVE_STAGE_LABELS: Record<LiveStage, string> = {
   cancelled: 'Stopped waiting.',
 }
 
+/**
+ * A validation refusal, in the same shape as a failure from the Space.
+ *
+ * The person does not care which side of the network caught it; they care what
+ * is wrong and whether pressing the button again could help. So this carries
+ * the same stage, code, details and retryability as everything else that
+ * reaches the failure panel — and `retryable: false`, always, because a request
+ * the planner refused is refused identically every time it is sent.
+ */
+export function planFailure(plan: LivePlan): GenerationFailure {
+  const errors = plan.problems.filter((problem) => problem.severity === 'error')
+  const first = errors[0]
+  const code: GenerationFailure['code'] =
+    first?.code === 'TOO_LONG_FOR_DURATION' ? 'UNSUPPORTED_DURATION'
+      : first?.code === 'EMPTY' || first?.code === 'NO_SUNG_LINES' ? 'LYRICS_TOO_LONG'
+        : 'UNKNOWN'
+  return {
+    stage: 'request',
+    code,
+    message: errors.map((problem) => problem.message).join(' '),
+    details: {
+      checks: errors.map((problem) => problem.code).join(', '),
+      syllables: plan.lyrics.syllables,
+      ...(plan.lyrics.density > 0
+        ? { syllablesPerSecond: Number(plan.lyrics.density.toFixed(2)) } : {}),
+      ...(plan.lyrics.minimumDurationSeconds > 0
+        ? { minimumSeconds: Math.ceil(plan.lyrics.minimumDurationSeconds) } : {}),
+    },
+    retryable: false,
+  }
+}
+
 /** The host of an address, for display; the address itself when it is not one. */
 function hostOf(url: string): string {
   try {
@@ -465,11 +497,17 @@ export default function StudioPage() {
     setLivePlan(plan)
 
     if (!plan.valid) {
-      // Refused before the network. Nothing was sent, no GPU was spent, and
-      // the panel says which checks failed and what to change.
+      // Refused before the network. Nothing was sent and no GPU was spent.
+      //
+      // Reported through the same panel as a failure from the Space rather than
+      // as a toast, and for the same reason the Space's failures are: a toast
+      // clears itself and takes the stage, the code and the numbers with it,
+      // and it floats over the buttons someone needs to act. The stage is
+      // `request`, because that is where this was caught, and nothing here is
+      // retryable — a sheet too long for its length is too long however many
+      // times it is sent.
       setLiveStage('rejected')
-      const first = plan.problems.find((problem) => problem.severity === 'error')
-      notify(first?.message ?? 'The request did not pass pre-generation validation.', 'error')
+      setEngineError(planFailure(plan))
       return
     }
 
@@ -478,7 +516,13 @@ export default function StudioPage() {
     setCompiledPrompt(compiled)
     if (compiled.refusal) {
       setLiveStage('rejected')
-      notify(compiled.refusal, 'error')
+      setEngineError({
+        stage: 'request',
+        code: 'STYLE_TOO_LONG',
+        message: compiled.refusal,
+        details: { field: 'style', characters: compiled.characters, limit: compiled.limit },
+        retryable: false,
+      })
       return
     }
 

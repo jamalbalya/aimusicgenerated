@@ -257,41 +257,27 @@ test.describe('one press, one ZeroGPU request', () => {
 })
 
 test.describe('validation happens before the GPU, not after it', () => {
-  test('lyrics that cannot fit the requested length are refused without a request',
-    async ({ page }) => {
-      const space = await fakeSpace(page)
-      await openNeuralStudio(page)
-      await page.getByRole('button', { name: /Show controls|Hide controls/ }).click()
+  test('a lyric sheet longer than ACE-Step takes is refused without a request', async ({ page }) => {
+    const space = await fakeSpace(page)
+    await openNeuralStudio(page)
 
-      await page.getByLabel('Style').fill(STYLE)
-      // Far more words than could be sung in the shortest length on offer.
-      await page.getByLabel('Lyrics').fill(
-        Array.from({ length: 80 }, (_, index) =>
-          `Baris nomor ${index} penuh dengan kata kata yang sangat panjang sekali`).join('\n'))
+    await page.getByLabel('Style').fill(STYLE)
+    // Past ACE-Step's 4096-character sheet limit. The planner has to catch this
+    // rather than let the provider catch it: by the time the provider does, the
+    // interface has already told the person their request was fine.
+    await page.getByLabel('Lyrics').fill(
+      Array.from({ length: 200 }, (_, index) =>
+        `Baris ${index} dengan kata kata panjang sekali untuk mengisi ruang`).join('\n'))
 
-      // The shortest duration the control offers.
-      const durations = page.getByRole('group', { name: /Length|Duration/ })
-      if (await durations.count() > 0) {
-        const first = durations.getByRole('button').first()
-        await first.click()
-      }
+    await generateButton(page).click()
+    await expect(generateButton(page)).toBeEnabled({ timeout: 30_000 })
 
-      await generateButton(page).click()
-      await expect(generateButton(page)).toBeEnabled({ timeout: 30_000 })
-
-      // Whatever length was selected, the outcome must never be a request that
-      // the planner already knew could not be served. Either it fitted and one
-      // request went out, or it did not and none did — and if none did, the
-      // page says so rather than going quiet.
-      if (space.joins() === 0) {
-        await expect(page.getByTestId('live-validation'))
-          .toHaveText(/Pre-generation validation failed/)
-        await expect(page.getByTestId('live-stage'))
-          .toHaveText(/No request was sent and no GPU time was used/)
-      } else {
-        expect(space.joins()).toBe(1)
-      }
-    })
+    await expect(page.getByTestId('live-validation'))
+      .toHaveText(/Pre-generation validation failed/)
+    await expect(page.getByTestId('live-stage'))
+      .toHaveText(/No request was sent and no GPU time was used/)
+    expect(space.joins(), 'a request the planner refused must not reach the Space').toBe(0)
+  })
 
   test('an empty lyric sheet is refused before anything is sent', async ({ page }) => {
     const space = await fakeSpace(page)

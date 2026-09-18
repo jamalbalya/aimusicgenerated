@@ -93,6 +93,25 @@ describe('nothing reaches the GPU until the request is worth sending', () => {
     expect(problem?.message).toMatch(/at least \d+ seconds/)
   })
 
+  it('refuses a sheet longer than ACE-Step takes, whatever the duration', () => {
+    // Not the same question as whether it fits the time. A sheet can be
+    // perfectly singable at the length requested and still be more characters
+    // than the endpoint accepts — found by an end-to-end test whose sheet
+    // passed every musical check and was then refused by the provider, after
+    // the planner had said the request was fine.
+    const huge = Array.from({ length: 200 }, (_, index) =>
+      `Baris ${index} dengan kata kata panjang sekali untuk mengisi ruang`).join('\n')
+    expect(huge.length).toBeGreaterThan(4096)
+    const plan = planLiveGeneration(input({ lyrics: `[Verse 1]\n${huge}` }))
+    expect(plan.valid).toBe(false)
+    expect(plan.problems.some((problem) => /at most 4096/.test(problem.message))).toBe(true)
+
+    // And an instrumental, whose sheet is replaced by [inst], is not refused
+    // for the contents of a box it does not send.
+    expect(planLiveGeneration(input({ lyrics: `[Verse 1]\n${huge}`, instrumental: true })).valid)
+      .toBe(true)
+  })
+
   it('warns rather than refuses when the sheet is sparse for its length', () => {
     const plan = planLiveGeneration(input({
       lyrics: '[Verse 1]\nSatu baris saja', durationSeconds: 300,
