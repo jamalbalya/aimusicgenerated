@@ -523,10 +523,15 @@ export default function StudioPage() {
    * The loop is here rather than inside the worker because the decision it
    * makes is a product decision: what reaches the player. Each attempt writes
    * its takes, every take is judged against the chords the engine itself wrote,
-   * and only a take whose verdict is PASS is opened. When the attempts run out
+   * and only takes whose verdict is PASS are kept. When the attempts run out
    * nothing is opened at all — falling back to the last rejected take would
    * deliver exactly the songs the gate exists to catch, while appearing to have
    * checked them.
+   *
+   * Rejected takes are dropped rather than left unopened. The take chooser is a
+   * list of things a person can press play on, so a rejected take sitting in it
+   * is a rejected take that gets played. Opening the right one and leaving the
+   * wrong one one click away is not a gate.
    *
    * A fixed seed is honoured for one attempt only: asking for a specific seed
    * and then being handed a different one would make the field a lie, but so
@@ -546,6 +551,8 @@ export default function StudioPage() {
     setQualityReport(null)
     setAttemptLog([])
     let held: { take: SongTake; takes: SongTake[]; report: QualityReport } | null = null
+    /** Only takes that passed. Nothing else is ever put in front of a person. */
+    const passed: { take: SongTake; report: QualityReport }[] = []
 
     try {
       for (let attempt = 1; attempt <= OFFLINE_MAX_ATTEMPTS; attempt++) {
@@ -575,40 +582,60 @@ export default function StudioPage() {
         })
 
         // Every take in the run is judged, not only the first: a run that
-        // writes four candidates has already paid for four, and picking the one
-        // that passes is free.
+        // writes four candidates has already paid for four, and keeping the
+        // ones that pass is free.
+        //
+        // The ones that fail are *dropped*, not merely left unopened. The take
+        // chooser is a list of things a person can press play on, so a rejected
+        // take sitting in it is a rejected take that gets played — which is the
+        // one thing this whole loop exists to prevent. Opening the right take
+        // and leaving the wrong one one click away is not a gate.
         const reports = output.takes.map((take) => gateScoreTake(take.score))
-        const passing = reports.findIndex((report) => report.verdict === 'PASS')
-        const chosen = passing >= 0 ? passing : 0
-        const report = reports[chosen]!
+        const passedHere = output.takes
+          .map((take, index) => ({ take, report: reports[index]! }))
+          .filter((candidate) => candidate.report.verdict === 'PASS')
+
+        const worst = reports.find((report) => report.verdict !== 'PASS') ?? reports[0]!
         log.push(describeAttempt({
-          attempt, verdict: report.verdict, report, durationMs: 0,
+          attempt,
+          verdict: passedHere.length > 0 ? 'PASS' : worst.verdict,
+          report: passedHere[0]?.report ?? worst,
+          durationMs: 0,
         }))
         setAttemptLog([...log])
+        passed.push(...passedHere)
 
-        if (passing >= 0) {
-          const take = output.takes[chosen]!
-          setTakes(output.takes)
-          setTakeIndex(chosen)
-          setRenderedAt(quality)
-          setSeed(take.score.seed)
-          setQualityReport(report)
-          reportResult(take.validation)
-          openTake(take)
-          setTab(take.score.lyrics ? 'lyrics' : 'chords')
-          if (attempt > 1) {
-            notify(`Quality gate passed on attempt ${attempt}. `
-              + `${attempt - 1} take(s) were rejected and never opened.`, 'success')
-          }
-          return
-        }
+        // Asked for several takes to compare, so keep going until there are
+        // several that passed — the offline engine's takes cost nothing but a
+        // few seconds, and handing back one when two were asked for would make
+        // the gate look like it broke the feature.
+        if (passed.length >= takeCount) break
 
-        // Kept only if it is not a hard failure. A REGENERATION_REQUIRED take is
-        // never offered, on any path.
-        if (report.verdict !== 'REGENERATION_REQUIRED' && !held) {
-          held = { take: output.takes[chosen]!, takes: output.takes, report }
+        // Nothing regeneration can help with. Held only if it is not a hard
+        // failure: a REGENERATION_REQUIRED take is never offered, on any path.
+        if (passed.length === 0 && worst.verdict !== 'REGENERATION_REQUIRED') {
+          held = { take: output.takes[0]!, takes: output.takes, report: worst }
           break
         }
+      }
+
+      if (passed.length > 0) {
+        const kept = passed.slice(0, Math.max(1, takeCount))
+        const first = kept[0]!
+        setTakes(kept.map((candidate) => candidate.take))
+        setTakeIndex(0)
+        setRenderedAt(quality)
+        setSeed(first.take.score.seed)
+        setQualityReport(first.report)
+        reportResult(first.take.validation)
+        openTake(first.take)
+        setTab(first.take.score.lyrics ? 'lyrics' : 'chords')
+        const attempts = log.length
+        if (attempts > 1) {
+          notify(`Quality gate passed after ${attempts} attempts. `
+            + 'Rejected takes were never opened.', 'success')
+        }
+        return
       }
 
       if (held) {

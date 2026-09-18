@@ -50,6 +50,32 @@ describe('the loop the studio runs', () => {
     expect(delivered / (delivered + refused)).toBeGreaterThan(0.9)
   })
 
+  it('can fill a several-take run with takes that all passed', () => {
+    // Asking for two takes to compare must not come back with one, or with one
+    // that passed beside one that did not. The chooser is a list of things a
+    // person can press play on: a rejected take sitting in it is a rejected
+    // take that gets played, which is the single thing the gate exists to stop.
+    const WANTED = 2
+    let runsFilled = 0
+    const runs = 12
+    for (let run = 0; run < runs; run++) {
+      const prompt = PROMPTS[run % PROMPTS.length]!
+      const passed: string[] = []
+      for (let attempt = 1; attempt <= OFFLINE_MAX_ATTEMPTS && passed.length < WANTED; attempt++) {
+        for (const take of [0, 1]) {
+          const score = composeSong(buildSpec(prompt, { seed: `${prompt}|fill${run}|${attempt}|${take}` }))
+          const report = gateScoreTake(score)
+          // Whatever lands in the list has passed. There is no other branch.
+          if (report.verdict === 'PASS') passed.push(report.verdict)
+        }
+      }
+      expect(passed.every((verdict) => verdict === 'PASS')).toBe(true)
+      if (passed.length >= WANTED) runsFilled++
+    }
+    // Not every run has to fill, but the feature has to work most of the time.
+    expect(runsFilled / runs).toBeGreaterThan(0.8)
+  })
+
   it('gives a free engine more attempts than one that costs an allowance', () => {
     // Offline takes cost local CPU time and nothing else, so spending ten is
     // cheap. A neural take spends a share of a free GPU allowance that resets on
