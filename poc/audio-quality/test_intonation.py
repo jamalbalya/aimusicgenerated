@@ -190,6 +190,166 @@ check("a perfectly tuned wrong note scores 0 on the grid and 0 on membership",
       abs(it.grid_deviation_cents(70.0)) < 1e-9
       and abs(it.scale_membership([70.0], g_major)) < 1e-9)
 
+print("\nvibrato, on a short-window contour")
+VIB_WINDOW = 2048          # 46 ms at 44.1 kHz — the pass's documented window
+VIB_HOP = 441              # 10 ms
+
+
+def vib_track(signal):
+    return track(signal, hop=VIB_HOP, n=VIB_WINDOW)
+
+
+def vib(signal, seconds, **kw):
+    times, freqs, voiced = vib_track(signal)
+    return it.measure_vibrato(times, freqs, voiced, seconds, isolated_vocal=True,
+                              window_seconds=VIB_WINDOW / SR, hop_seconds=VIB_HOP / SR, **kw)
+
+steady = vib(tone(A4, 2.0), 2.0)
+check("a perfectly steady note reports no vibrato",
+      steady.notes_with_vibrato == 0, f"got {steady.notes_with_vibrato}")
+check("and says so rather than reporting a rate",
+      steady.median_rate_hz is None and steady.confidence == "no vibrato detected")
+
+six = vib(tone(A4, 2.0, vibrato_hz=6.0, vibrato_cents=30.0), 2.0)
+check("6 Hz vibrato is found", six.notes_with_vibrato >= 1)
+check("its rate measures about 6 Hz",
+      six.median_rate_hz is not None and abs(six.median_rate_hz - 6.0) < 1.0,
+      f"got {six.median_rate_hz}")
+check("its extent measures about 30 cents, corrected for the window",
+      six.median_extent_cents is not None and abs(six.median_extent_cents - 30) < 8,
+      f"got {six.median_extent_cents}")
+
+for depth in (15, 45, 60):
+    r = vib(tone(A4, 2.0, vibrato_hz=5.5, vibrato_cents=float(depth)), 2.0)
+    check(f"a {depth}-cent vibrato measures about {depth}",
+          r.median_extent_cents is not None and abs(r.median_extent_cents - depth) < depth * 0.35,
+          f"got {r.median_extent_cents}")
+
+both = vib(tone(A4, 2.5, cents_per_second=20.0, vibrato_hz=6.0, vibrato_cents=30.0), 2.5)
+check("vibrato riding on a drift is still measured at its own depth",
+      both.median_extent_cents is not None and abs(both.median_extent_cents - 30) < 12,
+      f"got {both.median_extent_cents}")
+check("and at its own rate, not the drift",
+      both.median_rate_hz is not None and abs(both.median_rate_hz - 6.0) < 1.0,
+      f"got {both.median_rate_hz}")
+times, freqs, voiced = track(tone(A4, 2.5, cents_per_second=20.0, vibrato_hz=6.0,
+                                  vibrato_cents=30.0))
+drifting = it.measure(times, freqs, voiced, 2.5, isolated_vocal=True,
+                      analysis_window_seconds=LONG_WINDOW / SR)
+check("the long-window pass still sees the drift underneath it",
+      drifting.note_drift_median_cents is not None
+      and abs(drifting.note_drift_median_cents - 50) < 20,
+      f"got {drifting.note_drift_median_cents}")
+
+short = vib(tone(A4, 0.4, vibrato_hz=6.0, vibrato_cents=30.0), 0.4)
+check("a note too short to carry three cycles is not examined",
+      short.notes_with_vibrato == 0 and short.median_extent_cents is None)
+check("and the reason is given", "insufficient" in short.confidence or
+      any("modulation" in line for line in short.limitations))
+
+rng = np.random.default_rng(7)
+wander = tone(A4, 2.0)
+noisy_times, noisy_freqs, noisy_voiced = vib_track(wander)
+noisy_freqs = noisy_freqs * (2.0 ** (rng.normal(0, 40, len(noisy_freqs)) / 1200.0))
+noisy = it.measure_vibrato(noisy_times, noisy_freqs, noisy_voiced, 2.0, isolated_vocal=True,
+                           window_seconds=VIB_WINDOW / SR, hop_seconds=VIB_HOP / SR)
+check("random pitch noise is not reported as vibrato",
+      noisy.notes_with_vibrato == 0, f"got {noisy.notes_with_vibrato} at "
+      f"{noisy.median_rate_hz} Hz")
+
+times, freqs, voiced = track(tone(A4, 2.0, vibrato_hz=6.0, vibrato_cents=30.0), n=LONG_WINDOW)
+long_pass = it.measure_vibrato(times, freqs, voiced, 2.0, isolated_vocal=True,
+                               window_seconds=LONG_WINDOW / SR, hop_seconds=512 / SR)
+check("with the long window the vibrato is withheld, not guessed at",
+      long_pass.median_extent_cents is None, f"got {long_pass.median_extent_cents}")
+check("and the window is stated in the limitations",
+      any("cannot be resolved" in line for line in long_pass.limitations))
+
+check("window and hop are reported explicitly",
+      abs(six.window_seconds - VIB_WINDOW / SR) < 1e-9
+      and abs(six.hop_seconds - VIB_HOP / SR) < 1e-9)
+check("coverage and window count are reported",
+      six.windows > 0 and six.coverage_percent > 0 and six.analysed_seconds > 0)
+mix = it.measure_vibrato(*vib_track(tone(A4, 2.0, vibrato_hz=6.0, vibrato_cents=30.0)),
+                         2.0, window_seconds=VIB_WINDOW / SR, hop_seconds=VIB_HOP / SR)
+check("a mix measurement is marked contaminated", mix.contaminated)
+check("and names the saxophone specifically",
+      "saxophone" in mix.contamination_note.lower())
+check("and says piano can be excluded but sax cannot",
+      "piano" in mix.contamination_note.lower())
+
+print("\nthe whole range, not just the loudest part of it")
+
+
+def note_at(midi_value, centre_error=0.0, drift=0.0, start=0.0):
+    return it.Note(start_s=start, end_s=start + 0.5, frames=30, median_midi=midi_value,
+                   centre_error_cents=centre_error, drift_cents=drift, spread_cents=5.0,
+                   vibrato_rate_hz=None, vibrato_extent_cents=None)
+
+
+spread = [note_at(48, 5), note_at(50, 6), note_at(55, 8), note_at(57, 7),
+          note_at(64, 34), note_at(67, 38)]
+registers = it.by_register(spread)
+names = {r.name: r for r in registers}
+check("every register is reported, even an empty one",
+      {r.name for r in registers} == {"low", "mid", "high"})
+check("low notes are summarised on their own",
+      names["low"].notes == 2 and abs(names["low"].median_centre_error_cents - 5.5) < 0.1)
+check("high notes are summarised on their own",
+      names["high"].notes == 2 and abs(names["high"].median_centre_error_cents - 36) < 0.1)
+check("a good average cannot hide a bad register",
+      names["high"].median_centre_error_cents > 3 * names["low"].median_centre_error_cents)
+check("the worst note in a register is kept, not just the median",
+      abs(names["high"].worst_centre_error_cents - 38) < 0.1)
+empty = it.by_register([note_at(48, 5)])
+check("a register with no notes reports none rather than zero",
+      {r.name: r.median_centre_error_cents for r in empty}["high"] is None)
+
+print("\nregister transitions, reported and not scored")
+jumps = it.transitions([note_at(48, start=0), note_at(60, start=1), note_at(61, start=2)])
+check("a twelve-semitone leap is reported", len(jumps) == 1 and abs(jumps[0].semitones - 12) < 1e-9)
+check("a one-semitone step is not", all(abs(j.semitones) >= 7 for j in jumps))
+check("the leap carries where it happened and the gap before it",
+      jumps[0].at_s == 1 and jumps[0].gap_s >= 0)
+
+print("\nthe verdict that drives regenerate-or-keep")
+
+
+def fake_report(median, drift_share, *, contaminated=False, frames=500):
+    r = it.IntonationReport(frames=frames, analysed_seconds=50.0, coverage_percent=40.0,
+                            track_seconds=120.0, contaminated=contaminated)
+    r.grid_median_cents = median
+    r.notes_drifting_over_50c = drift_share
+    return r
+
+
+status, why = it.verdict(fake_report(6.0, 2.0))
+check("a clean take passes", status == "PASS", f"{status} {why}")
+status, why = it.verdict(fake_report(22.0, 2.0))
+check("a marginal take warns rather than failing", status == "PASS_WITH_WARNING", status)
+status, why = it.verdict(fake_report(35.0, 2.0))
+check("a take well off centre asks for regeneration", status == "REGENERATION_REQUIRED", status)
+status, why = it.verdict(fake_report(6.0, 30.0))
+check("so does one where a quarter of the notes slide",
+      status == "REGENERATION_REQUIRED", status)
+status, why = it.verdict(fake_report(6.0, 15.0))
+check("and a tenth of them warns", status == "PASS_WITH_WARNING", status)
+
+status, why = it.verdict(fake_report(6.0, 2.0, contaminated=True))
+check("a contaminated measurement never returns PASS",
+      status == "ANALYSIS_UNAVAILABLE", f"{status} {why}")
+check("and says the environment is the reason, not the take",
+      any("limit of the environment" in reason for reason in why))
+status, why = it.verdict(fake_report(6.0, 2.0, frames=5))
+check("too little data returns ANALYSIS_UNAVAILABLE, not PASS",
+      status == "ANALYSIS_UNAVAILABLE", status)
+
+status, why = it.verdict(fake_report(6.0, 2.0), it.by_register(spread))
+check("a good overall median still fails on its worst register",
+      status == "REGENERATION_REQUIRED", f"{status} {why}")
+check("and names which register it was",
+      any("high" in reason for reason in why), str(why))
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED:")

@@ -22,6 +22,7 @@ import {
 } from '../../workers/protocol'
 import { INSTRUMENT_LABELS, type Score, type SectionKind } from '../../engine/compose/types'
 import { downloadText, encodeAudio, downloadBlob, safeFilename } from '../../lib/files'
+import { VOCAL_PRESETS, composeStyle, togglePreset } from '../../lib/vocalPresets'
 import { isVocalStem, sumStems } from '../../lib/mixdown'
 import { scoreToMidi } from '../../engine/export/midi'
 import { scoreToLrc, scoreToSrt } from '../../engine/export/subtitles'
@@ -162,6 +163,14 @@ export default function StudioPage() {
   const [vocals, setVocals] = useState<VocalChoice>('auto')
   const [vocalGender, setVocalGender] = useState<VocalGenderChoice>('auto')
   const [singStyle, setSingStyle] = useState('')
+  /**
+   * Vocal hints, kept apart from what the person typed.
+   *
+   * Never written into the Style box. Their text stays theirs, the selection
+   * lives here, and the two are joined only when a request is built — which is
+   * what makes unticking a chip remove exactly its own words and nothing else.
+   */
+  const [vocalHints, setVocalHints] = useState<string[]>([])
   const [seed, setSeed] = useState('')
   const [allGenres, setAllGenres] = useState(false)
   const [customLyrics, setCustomLyrics] = useState('')
@@ -223,6 +232,9 @@ export default function StudioPage() {
   // under someone who saw Neural selected. This decides the position of a
   // control the user can see; it is never a fallback applied to a request.
   const engineMode: EngineMode = resolveEngineMode(engineChoice, neural.hasAnswered)
+  // What the model will be sent. The hints only reach ACE-Step, so the offline
+  // engine composes nothing and sees the caption exactly as written.
+  const composedStyle = engineMode === 'neural' ? composeStyle(prompt, vocalHints) : prompt
 
   /**
    * Controls the neural request cannot carry.
@@ -341,7 +353,7 @@ export default function StudioPage() {
    * one render is not a second take of anything.
    */
   const generateNeural = useCallback(async (overrideSeed?: string) => {
-    const style = prompt.trim()
+    const style = composedStyle.trim()
     const lyrics = customLyrics.trim()
     if (!style) {
       notify('Describe the song you want.', 'error')
@@ -487,7 +499,7 @@ export default function StudioPage() {
       // Only ends the job if it is still this one.
       updateNeural(controller, { controller: null })
     }
-  }, [prompt, customLyrics, language, duration, vocalGender, vocals, seed, effectiveTakes,
+  }, [composedStyle, customLyrics, language, duration, vocalGender, vocals, seed, effectiveTakes,
       notify, openNeuralTake, startNeural, updateNeural])
 
   const generate = useCallback(async (overrideSeed?: string) => {
@@ -754,11 +766,11 @@ export default function StudioPage() {
                       no such limit, so the count only appears in Neural Mode, and
                       only once it is close enough to matter.
                     */}
-                    {engineMode === 'neural' && prompt.length > ACE_STEP_TEXT_LIMITS.style - 96 && (
+                    {engineMode === 'neural' && composedStyle.length > ACE_STEP_TEXT_LIMITS.style - 96 && (
                       <span className="flex items-center">
                         <span
                           className={`t-num text-[11px] ${
-                            prompt.length > ACE_STEP_TEXT_LIMITS.style
+                            composedStyle.length > ACE_STEP_TEXT_LIMITS.style
                               ? 'text-[var(--danger)]'
                               : 'text-[var(--text-dim)]'}`}
                           data-testid="style-length"
@@ -767,7 +779,7 @@ export default function StudioPage() {
                           // words, and is the one a screen reader reads.
                           aria-hidden="true"
                         >
-                          {prompt.length}/{ACE_STEP_TEXT_LIMITS.style}
+                          {composedStyle.length}/{ACE_STEP_TEXT_LIMITS.style}
                         </span>
                         {/*
                           Deliberately not an aria-label on the element above:
@@ -777,11 +789,11 @@ export default function StudioPage() {
                         */}
                         <span className="sr-only" role="status" aria-live="polite"
                           data-testid="style-length-detail">
-                          {prompt.length > ACE_STEP_TEXT_LIMITS.style
-                            ? `${prompt.length} characters, `
-                              + `${prompt.length - ACE_STEP_TEXT_LIMITS.style} over the `
+                          {composedStyle.length > ACE_STEP_TEXT_LIMITS.style
+                            ? `${composedStyle.length} characters, `
+                              + `${composedStyle.length - ACE_STEP_TEXT_LIMITS.style} over the `
                               + `${ACE_STEP_TEXT_LIMITS.style} ACE-Step allows`
-                            : `${prompt.length} of ${ACE_STEP_TEXT_LIMITS.style} characters`}
+                            : `${composedStyle.length} of ${ACE_STEP_TEXT_LIMITS.style} characters`}
                         </span>
                       </span>
                     )}
@@ -851,6 +863,55 @@ export default function StudioPage() {
                   </button>
                 ))}
               </div>
+
+              {/*
+                Vocal hints. Neural mode only, because the caption is the only
+                thing they travel in and the offline engine does not read it the
+                same way — a chip that did nothing here would be exactly the
+                inert control the Seed field used to be.
+
+                They are never written into the Style box. The box stays the
+                person's, the selection lives beside it, and the two are joined
+                when the request is built, which is why unticking one takes its
+                own words away and leaves everything else alone.
+              */}
+              {engineMode === 'neural' && (
+                <div className="grid gap-1.5">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="t-label">Vocal hints</span>
+                    <span className="text-[11px] text-[var(--text-faint)]">optional</span>
+                  </div>
+                  <div className="scroll-x scroll-fade -mx-1 flex gap-1.5 px-1 pb-1">
+                    {VOCAL_PRESETS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        className="chip shrink-0"
+                        aria-pressed={vocalHints.includes(preset.id)}
+                        title={preset.description}
+                        data-testid={`vocal-hint-${preset.id}`}
+                        onClick={() => setVocalHints((chosen) => togglePreset(chosen, preset.id))}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[11.5px] leading-snug text-[var(--text-faint)]">
+                    Added to the end of your style when you generate; your own words are
+                    left exactly as you wrote them. ACE-Step has no pitch, key or melody
+                    control, so these describe the performance you want — they do not
+                    make the model sing a particular note.
+                  </p>
+                  {vocalHints.length > 0 && (
+                    <details className="text-[11.5px] text-[var(--text-faint)]">
+                      <summary className="cursor-pointer">See the style that will be sent</summary>
+                      <p className="mt-1 whitespace-pre-wrap break-words" data-testid="composed-style">
+                        {composedStyle}
+                      </p>
+                    </details>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="grid content-start gap-3">

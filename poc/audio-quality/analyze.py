@@ -310,6 +310,7 @@ def vocals(report: Report, mono, require_demucs: bool) -> None:
     _melody_versus_harmony(report, music, f0, sung, confidence, leak_caveat)
     _timing(report, mono, voice, report_confidence=confidence)
     _intonation(report, mono, f0, sung, leak_caveat)
+    _vibrato_pass(report, voice, leak_caveat)
 
 
 def _melody_versus_harmony(report, music, f0, sung, confidence, leak_caveat) -> None:
@@ -475,11 +476,96 @@ def _intonation(report: Report, mono, f0, sung, leak_caveat: str) -> None:
                    "estimated", "median spread within a held note: vibrato and wobble together")
         report.add("notes_drifting_over_50c", round(result.notes_drifting_over_50c, 1),
                    "estimated", "per cent of held notes that slide more than half a semitone")
+    # The whole range, reported separately. A median over a take can sit inside
+    # tolerance while one register alone is twice as far out, and that register
+    # is the one a listener notices.
+    registers = intonation.by_register(result.notes)
+    report.add("registers", [
+        {
+            "register": r.name, "notes": r.notes, "seconds": round(r.seconds, 1),
+            "median_centre_cents": None if r.median_centre_error_cents is None
+            else round(r.median_centre_error_cents, 1),
+            "worst_centre_cents": None if r.worst_centre_error_cents is None
+            else round(r.worst_centre_error_cents, 1),
+            "median_drift_cents": None if r.median_drift_cents is None
+            else round(r.median_drift_cents, 1),
+        }
+        for r in registers
+    ], "estimated", "held notes split into low, mid and high",
+        "Bands for a male voice. They say where a note sat, not which vocal "
+        "mechanism produced it.")
+
+    leaps = intonation.transitions(result.notes)
+    report.add("large_intervals", [
+        {"at_s": round(t.at_s, 1), "semitones": round(t.semitones, 1),
+         "gap_s": round(t.gap_s, 2)}
+        for t in leaps[:12]
+    ], "estimated", f"jumps of {intonation.LARGE_INTERVAL_SEMITONES} semitones or more between held notes",
+        "Listed, not judged. A wide leap can be the line or can be the tracker "
+        "catching a harmonic; the numbers alone cannot tell them apart.")
+
+    status, reasons = intonation.verdict(result, registers)
+    report.add("verdict", status, "measured", "generate-analyse-regenerate status",
+               " ".join(reasons))
+
     report.add("intonation_limitations", result.limitations, "measured",
                "what these figures cannot support")
     report.add("intonation_contaminated", result.contaminated, "measured",
                "whether the measured signal is an isolated vocal",
                result.contamination_note)
+
+
+def _vibrato_pass(report: Report, voice, leak_caveat: str) -> None:
+    """A second, much shorter window, for the wobble the first one averages away.
+
+    Its own `pyin` run rather than a reuse of the main one: the window length is
+    the whole point, and 46 ms is chosen so a 6 Hz vibrato survives tracking
+    instead of being smoothed into a straight line. The pitch it reports is far
+    coarser than the main pass's, which is why nothing but modulation is taken
+    from it.
+    """
+    import librosa
+    import numpy as np
+
+    window = max(256, int(round(intonation.VIBRATO_WINDOW_SECONDS * SR)))
+    hop = max(64, int(round(intonation.VIBRATO_HOP_SECONDS * SR)))
+    # `pyin` needs two periods of the lowest pitch inside its window.
+    lowest = max(95.0, 2.0 * SR / window)
+    f0, flag, prob = librosa.pyin(voice, fmin=lowest, fmax=900, sr=SR,
+                                  frame_length=window, hop_length=hop, fill_na=np.nan)
+    times = librosa.times_like(f0, sr=SR, hop_length=hop)
+    voiced = flag & np.isfinite(f0) & (prob > 0.5)
+
+    result = intonation.measure_vibrato(
+        times, f0, voiced, len(voice) / SR,
+        window_seconds=window / SR, hop_seconds=hop / SR, isolated_vocal=False)
+
+    report.add("vibrato_window_ms", round(1000 * window / SR, 1), "measured",
+               "the vibrato pass's own analysis window")
+    report.add("vibrato_hop_ms", round(1000 * hop / SR, 1), "measured", "and its hop")
+    report.add("vibrato_windows", result.windows, "measured", "voiced frames it examined")
+    report.add("vibrato_coverage_percent", round(result.coverage_percent, 1), "measured",
+               "share of the track those frames cover")
+    report.add("vibrato_notes_examined", result.notes_examined, "measured",
+               f"notes held at least {intonation.MIN_VIBRATO_SECONDS:.2f} s")
+    report.add("vibrato_notes_with_vibrato", result.notes_with_vibrato, "measured",
+               "of those, how many carried periodic modulation")
+    report.add("vibrato_confidence", result.confidence, "measured",
+               "how much weight these numbers will bear")
+    if result.median_rate_hz is not None:
+        report.add("vibrato_rate_hz", round(result.median_rate_hz, 2), "estimated",
+                   "median modulation rate across those notes")
+        report.add("vibrato_extent_cents", round(result.median_extent_cents, 1), "estimated",
+                   "median peak swing, corrected for what the window shrinks",
+                   "A singer's vibrato is roughly 20-100 cents; wider reads as a wobble.")
+        report.add("vibrato_frames_percent", round(result.frames_with_vibrato_percent, 1),
+                   "estimated", "share of voiced frames inside a note carrying vibrato")
+    else:
+        report.add("vibrato", None, "unavailable", "vibrato pass",
+                   " ".join(result.limitations))
+    report.add("vibrato_limitations", result.limitations, "measured",
+               "what this pass cannot support",
+               (leak_caveat + " " + result.contamination_note).strip())
 
 
 def section_map(report: Report, mono) -> None:

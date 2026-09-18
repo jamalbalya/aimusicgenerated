@@ -382,3 +382,366 @@ def scale_membership(midi_values, scale_pitch_classes) -> float:
         return float("nan")
     classes = np.mod(np.round(np.asarray(midi_values, dtype=float)), 12).astype(int)
     return float(100.0 * np.isin(classes, list(scale_pitch_classes)).mean())
+
+
+# --- vibrato, which the long window cannot see ---------------------------------
+
+#: The vibrato pass's own window and hop, in seconds rather than samples so they
+#: mean the same thing at any sample rate.
+#:
+#: 46 ms is chosen against the thing being measured. A pitch tracker reports the
+#: window-weighted average of the pitch inside its window, so a window spanning a
+#: large part of a vibrato cycle averages the swing away: at 93 ms a 6 Hz vibrato
+#: comes back at roughly half its depth, and at the analyser's 743 ms window it
+#: is gone entirely. At 46 ms a 6 Hz vibrato is attenuated by about 13%, which is
+#: small enough to correct for exactly (`_window_attenuation`) rather than shrug
+#: at. The cost is frequency resolution, which is why this pass reports only the
+#: modulation and never the pitch — note centres and drift stay with the long
+#: window, where a cent of precision is available.
+#:
+#: 10 ms of hop samples a 6 Hz wobble about 17 times per cycle, well clear of the
+#: 83 ms Nyquist limit for the fastest vibrato a singer produces.
+VIBRATO_WINDOW_SECONDS = 0.046
+VIBRATO_HOP_SECONDS = 0.010
+
+#: A note must hold this long to be asked about vibrato: three cycles of the
+#: slowest vibrato in range. Two cycles can be produced by a single scoop.
+MIN_VIBRATO_SECONDS = 3.0 / VIBRATO_RATE_HZ[0]
+
+#: How much of the modulation's energy must sit at one rate before it is called
+#: vibrato. Noise and an unsteady wobble spread their energy across the band; a
+#: real vibrato concentrates it. Below this the note has modulation but not
+#: vibrato, and saying otherwise would turn instability into a virtue.
+MIN_VIBRATO_PROMINENCE = 0.30
+
+
+@dataclass
+class VibratoReport:
+    """Periodic pitch modulation, per note and in summary."""
+
+    windows: int
+    notes_examined: int
+    notes_with_vibrato: int
+    analysed_seconds: float
+    coverage_percent: float
+    track_seconds: float
+
+    median_rate_hz: float | None = None
+    median_extent_cents: float | None = None
+    frames_with_vibrato_percent: float | None = None
+
+    window_seconds: float = VIBRATO_WINDOW_SECONDS
+    hop_seconds: float = VIBRATO_HOP_SECONDS
+
+    contaminated: bool = True
+    contamination_note: str = ""
+    limitations: list = field(default_factory=list)
+
+    @property
+    def sufficient(self) -> bool:
+        return self.notes_examined > 0 and self.notes_with_vibrato > 0
+
+    @property
+    def confidence(self) -> str:
+        if self.notes_examined == 0:
+            return "insufficient — no note held long enough to carry a vibrato"
+        if not self.sufficient:
+            return "no vibrato detected"
+        if self.contaminated:
+            return "low — not an isolated vocal"
+        if self.notes_with_vibrato < 5:
+            return "low — few notes"
+        return "moderate"
+
+    def as_dict(self) -> dict:
+        out = asdict(self)
+        out["confidence"] = self.confidence
+        out["sufficient"] = self.sufficient
+        return out
+
+
+def _window_attenuation(rate_hz: float, window_seconds: float, hann: bool = True) -> float:
+    """How much a tracker of this window shrinks a wobble at this rate.
+
+    The tracker reports a window-weighted mean, so the depth that survives is the
+    window's own frequency response at the modulation rate, normalised. Computed
+    rather than approximated, because the correction it feeds is the difference
+    between reporting 26 cents and reporting 30.
+    """
+    import numpy as np
+
+    if window_seconds <= 0 or rate_hz <= 0:
+        return 1.0
+    n = 512
+    t = np.linspace(-window_seconds / 2, window_seconds / 2, n)
+    w = np.hanning(n) if hann else np.ones(n)
+    response = abs(np.sum(w * np.exp(-2j * np.pi * rate_hz * t)))
+    return float(response / np.sum(w))
+
+
+def measure_vibrato(
+    times,
+    frequencies_hz,
+    voiced,
+    track_seconds: float,
+    *,
+    window_seconds: float = VIBRATO_WINDOW_SECONDS,
+    hop_seconds: float = VIBRATO_HOP_SECONDS,
+    isolated_vocal: bool = False,
+) -> VibratoReport:
+    """Vibrato on a pitch contour tracked with a short window.
+
+    Feed this a contour from a *short* window. Given the analyser's own 743 ms
+    window it will correctly find nothing, and say so, rather than report the
+    residue of an averaged-away wobble as a small tidy vibrato.
+    """
+    import numpy as np
+
+    times = np.asarray(times, dtype=float)
+    frequencies_hz = np.asarray(frequencies_hz, dtype=float)
+    voiced = np.asarray(voiced, dtype=bool) & np.isfinite(frequencies_hz) & (frequencies_hz > 0)
+
+    frame_seconds = float(times[1] - times[0]) if len(times) > 1 else hop_seconds
+    report = VibratoReport(
+        windows=int(voiced.sum()),
+        notes_examined=0,
+        notes_with_vibrato=0,
+        analysed_seconds=float(voiced.sum()) * frame_seconds,
+        coverage_percent=(100.0 * float(voiced.sum()) * frame_seconds / track_seconds)
+        if track_seconds > 0 else 0.0,
+        track_seconds=track_seconds,
+        window_seconds=window_seconds,
+        hop_seconds=hop_seconds,
+        contaminated=not isolated_vocal,
+    )
+    report.contamination_note = "" if isolated_vocal else (
+        "Measured on a mix. Piano can be excluded — a struck string does not modulate "
+        "its pitch — but a tenor saxophone's vibrato is the same 5-7 Hz periodic "
+        "modulation in the same register as a male voice, and nothing here can tell "
+        "the two apart. A vibrato reported from a mix may be the saxophone's."
+    )
+    report.limitations.append(
+        f"Window {window_seconds*1000:.0f} ms, hop {hop_seconds*1000:.0f} ms. Vibrato faster "
+        f"than {0.5/window_seconds:.1f} Hz cannot be resolved and is not reported."
+    )
+    if not isolated_vocal:
+        report.limitations.append(
+            "Saxophone vibrato is indistinguishable from vocal vibrato without isolation."
+        )
+
+    if voiced.sum() < 8:
+        report.limitations.append("Too few voiced frames to look for modulation at all.")
+        return report
+
+    midi = 69.0 + 12.0 * np.log2(np.where(voiced, frequencies_hz, 440.0) / 440.0)
+    minimum_frames = max(8, int(MIN_VIBRATO_SECONDS / frame_seconds))
+
+    rates: list = []
+    extents: list = []
+    frames_with = 0
+    for note in segment_notes(times, midi, voiced):
+        span = [i for i in range(len(times)) if note.start_s <= times[i] <= note.end_s and voiced[i]]
+        if len(span) < minimum_frames:
+            continue
+        report.notes_examined += 1
+        deviation = (midi[span] - np.median(midi[span])) * 100.0
+        # Take the trend out first, so a note that simply slides is not read as
+        # half a cycle of a very slow vibrato.
+        x = np.arange(len(deviation), dtype=float)
+        deviation = deviation - np.polyval(np.polyfit(x, deviation, 1), x)
+        if np.allclose(deviation, 0):
+            continue
+
+        spectrum = np.abs(np.fft.rfft(deviation * np.hanning(len(deviation))))
+        freqs = np.fft.rfftfreq(len(deviation), frame_seconds)
+        band = (freqs >= VIBRATO_RATE_HZ[0]) & (freqs <= VIBRATO_RATE_HZ[1])
+        searchable = (freqs > 0.5) & (freqs <= 20.0)
+        if not band.any() or spectrum[searchable].sum() <= 0:
+            continue
+        # Prominence: is the energy at one rate, or smeared across the band?
+        prominence = float(spectrum[band].max() / spectrum[searchable].sum())
+        if prominence < MIN_VIBRATO_PROMINENCE:
+            continue
+
+        rate = float(freqs[band][int(np.argmax(spectrum[band]))])
+        if window_seconds > 0.5 / rate:
+            continue  # this tracker cannot see a wobble this fast; say nothing
+        attenuation = _window_attenuation(rate, window_seconds)
+        if attenuation < 0.5:
+            continue  # too shrunk to correct honestly
+        extent = float(np.std(deviation) * math.sqrt(2.0) / attenuation)
+        rates.append(rate)
+        extents.append(extent)
+        frames_with += len(span)
+
+    report.notes_with_vibrato = len(rates)
+    if rates:
+        report.median_rate_hz = float(np.median(rates))
+        report.median_extent_cents = float(np.median(extents))
+        report.frames_with_vibrato_percent = float(100.0 * frames_with / max(1, voiced.sum()))
+    else:
+        report.limitations.append(
+            "No note carried periodic modulation concentrated enough to call vibrato."
+        )
+    return report
+
+
+# --- the whole range, not just the top of it -----------------------------------
+
+#: Register boundaries for a male voice, in MIDI numbers.
+#:
+#: Roughly: chest below the first passaggio, mixed through it, head above the
+#: second. The exact crossover moves with the singer and the vowel, so these are
+#: reporting bands and not a claim about which mechanism produced a note. They
+#: exist so a summary cannot be dominated by whichever register happens to carry
+#: the most frames — an average over a whole take hides a chorus that sits sharp
+#: while the verses are fine.
+MALE_REGISTERS = (
+    ("low", 0, 52),        # below E3
+    ("mid", 52, 60),       # E3 to C4
+    ("high", 60, 128),     # C4 and above
+)
+
+#: An interval larger than this between consecutive notes is reported. An octave
+#: leap is musical; it is listed so a reader can see where the line jumps rather
+#: than judged automatically, because a tracker's octave error looks identical.
+LARGE_INTERVAL_SEMITONES = 7
+
+
+@dataclass
+class RegisterSummary:
+    name: str
+    notes: int
+    seconds: float
+    median_centre_error_cents: float | None
+    median_drift_cents: float | None
+    worst_centre_error_cents: float | None
+
+
+def by_register(notes, registers=MALE_REGISTERS) -> list:
+    """Split held notes into registers and summarise each on its own.
+
+    The point is that a take is not one thing. A median over every note can sit
+    comfortably inside tolerance while the high notes alone are twice as far off,
+    and that is exactly the failure a listener notices first.
+    """
+    import numpy as np
+
+    out: list = []
+    for name, low, high in registers:
+        chosen = [n for n in notes if low <= n.median_midi < high]
+        if not chosen:
+            out.append(RegisterSummary(name, 0, 0.0, None, None, None))
+            continue
+        centres = [abs(n.centre_error_cents) for n in chosen]
+        out.append(RegisterSummary(
+            name=name,
+            notes=len(chosen),
+            seconds=float(sum(n.duration_s for n in chosen)),
+            median_centre_error_cents=float(np.median(centres)),
+            median_drift_cents=float(np.median([n.drift_cents for n in chosen])),
+            worst_centre_error_cents=float(max(centres)),
+        ))
+    return out
+
+
+@dataclass
+class Transition:
+    at_s: float
+    semitones: float
+    from_midi: float
+    to_midi: float
+    #: Gap between the notes. A leap taken with a breath is not the same event
+    #: as one taken mid-word.
+    gap_s: float
+
+
+def transitions(notes, minimum_semitones: float = LARGE_INTERVAL_SEMITONES) -> list:
+    """Interval jumps between consecutive held notes.
+
+    Reported, never scored. A seventh in a jazz line is a choice; a seventh that
+    is a pitch tracker mistaking a harmonic for a fundamental is an artefact, and
+    nothing available here can tell them apart from the numbers alone.
+    """
+    found: list = []
+    for earlier, later in zip(notes, notes[1:]):
+        interval = later.median_midi - earlier.median_midi
+        if abs(interval) < minimum_semitones:
+            continue
+        found.append(Transition(
+            at_s=later.start_s,
+            semitones=float(interval),
+            from_midi=earlier.median_midi,
+            to_midi=later.median_midi,
+            gap_s=float(later.start_s - earlier.end_s),
+        ))
+    return found
+
+
+#: What a verdict means, and the numbers behind each one.
+#:
+#: These thresholds are conventions with a stated basis, not laws. 25 cents is
+#: about where a listener stops hearing expression and starts hearing a wrong
+#: note; 50 cents is half a semitone, where the note is closer to its neighbour
+#: than to itself. A take is judged on its worst register rather than its
+#: average, because that is the one that will be heard.
+VERDICT_THRESHOLDS = {
+    "median_centre_cents_warn": 20.0,
+    "median_centre_cents_fail": 30.0,
+    "drift_share_warn": 10.0,
+    "drift_share_fail": 25.0,
+}
+
+
+def verdict(report: IntonationReport, registers=None) -> tuple:
+    """A status for the generate-analyse-regenerate loop, and why.
+
+    Returns `(status, reasons)`. The statuses are the ones the workflow uses:
+    ANALYSIS_UNAVAILABLE when there is not enough to judge or the signal was
+    never isolated, REGENERATION_REQUIRED when a register is far enough out that
+    no post-processing available here would rescue it, PASS_WITH_WARNING when
+    something is marginal, PASS otherwise.
+
+    It never returns PASS on a contaminated measurement. A figure that cannot be
+    attributed to the voice cannot clear the voice, and a loop that regenerated
+    on the strength of one would be burning GPU time on noise.
+    """
+    reasons: list = []
+    if not report.sufficient:
+        return "ANALYSIS_UNAVAILABLE", ["Not enough usable frames to judge."]
+    if report.contaminated:
+        return "ANALYSIS_UNAVAILABLE", [
+            "No vocal isolation, so no figure here can be attributed to the voice. "
+            "This is a limit of the environment, not a verdict on the take."
+        ]
+
+    worst = report.grid_median_cents or 0.0
+    if registers:
+        measured = [r for r in registers if r.median_centre_error_cents is not None]
+        if measured:
+            hardest = max(measured, key=lambda r: r.median_centre_error_cents)
+            worst = max(worst, hardest.median_centre_error_cents)
+            reasons.append(
+                f"worst register is {hardest.name} at "
+                f"{hardest.median_centre_error_cents:.1f} cents"
+            )
+
+    drift_share = report.notes_drifting_over_50c or 0.0
+    status = "PASS"
+    if worst >= VERDICT_THRESHOLDS["median_centre_cents_fail"]:
+        status = "REGENERATION_REQUIRED"
+        reasons.append(f"notes sit {worst:.1f} cents off centre on median")
+    elif worst >= VERDICT_THRESHOLDS["median_centre_cents_warn"]:
+        status = "PASS_WITH_WARNING"
+        reasons.append(f"notes sit {worst:.1f} cents off centre on median")
+
+    if drift_share >= VERDICT_THRESHOLDS["drift_share_fail"]:
+        status = "REGENERATION_REQUIRED"
+        reasons.append(f"{drift_share:.0f}% of held notes slide more than half a semitone")
+    elif drift_share >= VERDICT_THRESHOLDS["drift_share_warn"] and status == "PASS":
+        status = "PASS_WITH_WARNING"
+        reasons.append(f"{drift_share:.0f}% of held notes slide more than half a semitone")
+
+    if status == "PASS":
+        reasons.append("within every threshold this module checks")
+    return status, reasons
