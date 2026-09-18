@@ -130,7 +130,13 @@ tell a blue note from a wrong one, and says so instead of guessing.
 `src/engine/quality/controller.ts`, and the same loop inline in the Studio's
 offline path.
 
-- Default **5 attempts** (`DEFAULT_MAX_ATTEMPTS`).
+- **10 attempts offline** (`OFFLINE_MAX_ATTEMPTS`), **5 for a neural engine**
+  (`DEFAULT_MAX_ATTEMPTS`). Offline takes cost local CPU time and nothing else,
+  so spending ten is cheap and it matters: at the measured pass rate, five
+  attempts leave about one run in six delivering nothing, which is a broken
+  product even though it is a safe one. A neural take spends a share of a free
+  GPU allowance that resets on someone else's schedule, so five is the limit
+  there.
 - A **fresh seed for every attempt**, never repeated within a run. A seed the
   user typed is honoured for attempt 1 only; the rest draw fresh ones, and the
   attempt log says so.
@@ -257,6 +263,7 @@ Measured effect on the offline engine, 20 prompts × 10 seeds:
 | --- | --- | --- |
 | Takes passing the gate | 4% | **58%** |
 | Prompts reaching PASS within 5 attempts | — | **18 / 20** |
+| Offline runs delivering a song within 10 attempts | — | **23 / 24** |
 | Prompts reaching PASS within 10 attempts | — | **20 / 20** |
 
 ## What the gate cannot do

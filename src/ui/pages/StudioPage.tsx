@@ -42,7 +42,7 @@ import {
 } from '../../engine/providers'
 import {
   gateScoreTake, gateNeuralTake, describeAttempt, freshSeedSource,
-  DEFAULT_MAX_ATTEMPTS, type QualityReport,
+  OFFLINE_MAX_ATTEMPTS, type QualityReport,
 } from '../../engine/quality'
 
 /**
@@ -548,7 +548,7 @@ export default function StudioPage() {
     let held: { take: SongTake; takes: SongTake[]; report: QualityReport } | null = null
 
     try {
-      for (let attempt = 1; attempt <= DEFAULT_MAX_ATTEMPTS; attempt++) {
+      for (let attempt = 1; attempt <= OFFLINE_MAX_ATTEMPTS; attempt++) {
         const attemptSeed = attempt === 1
           ? (requestedSeed || `${text}|${Date.now()}`)
           : `${requestedSeed || text}|regenerate-${nextSeed(attempt)}`
@@ -628,13 +628,13 @@ export default function StudioPage() {
 
       setQualityReport({
         verdict: 'REGENERATION_REQUIRED',
-        reasons: [`Generation failed the musical quality gate after ${DEFAULT_MAX_ATTEMPTS} `
+        reasons: [`Generation failed the musical quality gate after ${OFFLINE_MAX_ATTEMPTS} `
           + 'attempts. No incorrect audio was delivered.'],
         failedChecks: [], measurements: null, worstMoments: [],
         evidence: { source: 'score', confidence: 1, isolated: true },
         limitations: [],
       })
-      notify(`Generation failed the musical quality gate after ${DEFAULT_MAX_ATTEMPTS} attempts. `
+      notify(`Generation failed the musical quality gate after ${OFFLINE_MAX_ATTEMPTS} attempts. `
         + 'No incorrect audio was delivered. Press Generate to try again.', 'error')
     } catch (error) {
       if (!isCancellation(error)) {

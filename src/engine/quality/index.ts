@@ -18,7 +18,7 @@ export { evidenceFromScore, regionsOf, sungNotes } from './scoreEvidence'
 export { evidenceFromNeuralAudio, NEURAL_ANALYSIS_UNAVAILABLE } from './neuralEvidence'
 export {
   runGatedGeneration, describeAttempt, freshSeedSource, RequestMutatedError,
-  STRICT_DELIVERY, DEFAULT_MAX_ATTEMPTS,
+  STRICT_DELIVERY, DEFAULT_MAX_ATTEMPTS, OFFLINE_MAX_ATTEMPTS,
   type DeliveryPolicy, type GatedAttempt, type GatedOutcome, type GatedGenerationOptions,
 } from './controller'
 export { gateScoreTake, gateNeuralTake, type TakeGateResult } from './gate'

@@ -109,7 +109,26 @@ export function freshSeedSource(): (attempt: number) => number {
   }
 }
 
+/**
+ * Attempts for an engine whose takes cost something.
+ *
+ * Five, because a neural take on a free GPU spends a share of an allowance that
+ * resets on someone else's schedule, and ten attempts would exhaust it to save
+ * one regeneration the person could have asked for themselves.
+ */
 export const DEFAULT_MAX_ATTEMPTS = 5
+
+/**
+ * Attempts for an engine whose takes cost local CPU time and nothing else.
+ *
+ * Ten. The offline engine's takes are free — no GPU, no account, no allowance —
+ * so the only thing more attempts spend is a few more seconds of a machine that
+ * is already running. It buys a lot: at the measured pass rate five attempts
+ * leave about one run in six delivering nothing, which is a broken product even
+ * though it is a safe one, and ten reaches a passing take on all twenty prompts
+ * this was measured against.
+ */
+export const OFFLINE_MAX_ATTEMPTS = 10
 
 /** Thrown when a provider hands back a request whose words are not the user's. */
 export class RequestMutatedError extends Error {
