@@ -16,6 +16,7 @@ import { pronounceLine, resolveLanguage } from '../engine/lang'
 import { separateStems, splitVocals } from '../engine/audio/separate'
 import { pitchShiftAudio, timeStretchAudio, varispeed } from '../engine/audio/pitchshift'
 import { detectKey, detectTempo, measureLoudness } from '../engine/audio/analyze'
+import { verifyLiveResult } from '../engine/live/verify'
 import { synthesizeSpeech } from '../engine/voice/speech'
 import {
   applyChorus, applyCompression, applyDistortion, applyEcho, applyLimiter, applyReverb,
@@ -291,6 +292,15 @@ async function handle(id: number, request: WorkerRequest): Promise<WorkerResult>
       progress(id, 0.9, 'Measuring loudness')
       const loudness = measureLoudness(audio)
       return { kind: 'analyze', tempo, key, loudness }
+    }
+
+    case 'verify': {
+      // One measurement pass, on the one song that came back. Nothing here can
+      // cause another generation — it has no provider and no ticket, only
+      // numbers.
+      progress(id, 0.3, 'Measuring the song')
+      const verification = verifyLiveResult(toAudioData(request.audio), request.options)
+      return { kind: 'verify', verification }
     }
 
     case 'speak': {

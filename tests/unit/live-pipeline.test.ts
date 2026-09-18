@@ -19,6 +19,7 @@ import {
 } from '../../src/engine/live'
 import { ACE_STEP_TEXT_LIMITS } from '../../src/engine/providers/aceStepRequest'
 import { detectLanguage } from '../../src/engine/lang'
+import { detectTempo } from '../../src/engine/audio/analyze'
 import type { AudioData } from '../../src/engine/audio/wav'
 
 const SHEET = `[Verse 1]
@@ -459,6 +460,44 @@ describe('the song that came back is measured once, and never regenerated', () =
     for (const verdict of verdicts) {
       expect(['PASS', 'PASS_WITH_LIMITATIONS', 'FAILED_VERIFICATION', 'ANALYSIS_UNAVAILABLE'])
         .toContain(verdict)
+    }
+  })
+})
+
+/* ------------------------------------------------- the cost of measuring --- */
+
+describe('measuring the song is cheap enough to do on arrival', () => {
+  /** A click track: a short decaying burst on every beat. */
+  const clicks = (bpm: number, seconds: number, rate = 44100): Float32Array => {
+    const out = new Float32Array(Math.round(seconds * rate))
+    const period = Math.round((60 / bpm) * rate)
+    for (let beat = 0; beat * period < out.length; beat++) {
+      const at = beat * period
+      for (let index = 0; index < 2000 && at + index < out.length; index++) {
+        out[at + index] = Math.sin(2 * Math.PI * 1000 * (index / rate)) * Math.exp(-index / 500)
+      }
+    }
+    return out
+  }
+
+  it('takes the tempo from a window, and gets the same answer as from the whole song', () => {
+    // Verification cost is dominated by tempo detection, which runs its own
+    // STFT at a 256-sample hop: 3.2 of the original 5.3 seconds on a
+    // 271-second song. Taking ninety seconds from the middle is what makes it
+    // affordable, and this is the evidence that it costs nothing in accuracy —
+    // measured on a real click track rather than argued for, because a
+    // sustained tone has no onsets and its "tempo" is noise either way.
+    for (const bpm of [72, 90, 120]) {
+      const rate = 22050
+      const mono = clicks(bpm, 200, rate)
+      const full = detectTempo({ channels: [mono], sampleRate: rate })
+      const window = Math.round(90 * rate)
+      const from = Math.round((mono.length - window) / 2)
+      const windowed = detectTempo(
+        { channels: [mono.subarray(from, from + window)], sampleRate: rate })
+      expect(`${bpm}: ${windowed.bpm.toFixed(2)}`).toBe(`${bpm}: ${full.bpm.toFixed(2)}`)
+      // And the answer is right, not merely stable.
+      expect(Math.abs(windowed.bpm - bpm)).toBeLessThan(1)
     }
   })
 })

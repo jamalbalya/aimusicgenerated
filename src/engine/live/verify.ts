@@ -120,12 +120,33 @@ export const UNMEASURABLE_IN_BROWSER: readonly string[] = [
   + 'they do not judge it.',
 ] as const
 
+/**
+ * How much of the song the tempo estimate is taken from, in seconds.
+ *
+ * Tempo detection is the most expensive thing here by a wide margin — measured
+ * at 3.2 of 5.3 seconds on a 271-second song, because it runs its own STFT at a
+ * 256-sample hop. It is also the measurement that needs the least material: a
+ * fixed-tempo song reports the same BPM from ninety seconds as from four and a
+ * half minutes, and this takes them from the middle, which skips a rubato intro
+ * and a fading outro rather than averaging them in.
+ *
+ * A song whose tempo genuinely changes is measured over this window and nowhere
+ * else, and the confidence figure says when the answer was weak. That is the
+ * same trade the windowed detector in the Python analyser makes.
+ */
+const TEMPO_WINDOW_SECONDS = 90
+
 /** Band-limited energy shares from one STFT pass. */
 function spectralShares(mono: Float32Array, sampleRate: number): {
   low: number; mid: number; high: number; voice: number; voiceActivity: number
 } {
   const frameSize = 1024
-  const hop = 512
+  // A four-frame hop rather than a half-frame one. These are band *averages*
+  // over thousands of frames, so a quarter of the frames gives the same shares
+  // to several decimal places and costs a quarter as much — 359 ms against
+  // 1405 ms on a full-length song. Overlap buys resolution, and nothing here
+  // needs resolution.
+  const hop = 2048
   if (mono.length < frameSize * 4) {
     return { low: 0, mid: 0, high: 0, voice: 0, voiceActivity: 0 }
   }
@@ -247,7 +268,10 @@ export function verifyLiveResult(audio: AudioData, options: VerifyOptions = {}):
   let bpm = 0
   let bpmConfidence = 0
   if (mono.length >= audio.sampleRate * 10) {
-    const tempo = detectTempo(audio)
+    const window = Math.round(TEMPO_WINDOW_SECONDS * audio.sampleRate)
+    const from = mono.length > window ? Math.round((mono.length - window) / 2) : 0
+    const slice = mono.length > window ? mono.subarray(from, from + window) : mono
+    const tempo = detectTempo({ channels: [slice], sampleRate: audio.sampleRate })
     bpm = tempo.bpm
     bpmConfidence = tempo.confidence
   } else {

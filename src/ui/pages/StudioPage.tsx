@@ -30,7 +30,7 @@ import { newProjectId, saveProject } from '../../lib/library'
 import { linkProps } from '../../lib/router'
 import { useNeuralEngine } from '../useNeuralEngine'
 import {
-  planLiveGeneration, compilePrompt, mintRequestTicket, verifyLiveResult,
+  planLiveGeneration, compilePrompt, mintRequestTicket,
   type LivePlan, type CompiledPrompt, type LiveVerification,
 } from '../../engine/live'
 import { useAuth } from '../useAuth'
@@ -584,12 +584,21 @@ export default function StudioPage() {
       // -------------------------------------------------------- 6: verify ---
       // Measured once. Whatever it finds, it never causes another generation:
       // there is no ticket left and no code path that would mint one.
-      const verification = verifyLiveResult(decoded, {
-        ...(duration > 0 ? { targetBpm: plan.music.targetBpm, requestedDurationSeconds: duration } : {}),
-        ...(duration <= 0 ? { targetBpm: plan.music.targetBpm } : {}),
-        instrumental,
-      })
-      setLiveVerification(verification)
+      // Run in the worker, not here. Measured at 1.8 seconds on a 271-second
+      // stereo song — two seconds of a frozen tab, arriving at the exact moment
+      // the song does, is the worst place in the whole flow to block.
+      const measured = await job.run<{ kind: 'verify'; verification: LiveVerification }>(
+        'Verifying the song', {
+          kind: 'verify',
+          audio: { channels: decoded.channels, sampleRate: decoded.sampleRate },
+          options: {
+            targetBpm: plan.music.targetBpm,
+            ...(duration > 0 ? { requestedDurationSeconds: duration } : {}),
+            instrumental,
+          },
+        })
+      setLiveVerification(measured.verification)
+      const verification = measured.verification
 
       // The song is opened whichever way verification went, and labelled
       // accordingly. Withholding it would leave someone who has already spent
@@ -643,7 +652,7 @@ export default function StudioPage() {
       updateNeural(controller, { controller: null })
     }
   }, [composedStyle, customLyrics, language, duration, vocalGender, vocals,
-      notify, openNeuralTake, startNeural, updateNeural])
+      job, notify, openNeuralTake, startNeural, updateNeural])
 
   /**
    * One press, one render, one song.

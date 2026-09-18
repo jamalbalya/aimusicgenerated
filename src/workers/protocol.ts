@@ -16,6 +16,7 @@ import type { SpeakOptions, SpeechVoice } from '../engine/voice/speech'
 import type { SingStyle } from '../engine/voice/singer'
 import type { StemName } from '../engine/audio/separate'
 import type { KeyResult, LoudnessResult, TempoResult } from '../engine/audio/analyze'
+import type { LiveVerification, VerifyOptions } from '../engine/live/verify'
 
 /** Plain audio that survives structured cloning between threads. */
 export interface TransferAudio {
@@ -183,6 +184,25 @@ export interface AnalyzeResult {
   loudness: LoudnessResult
 }
 
+/**
+ * Post-render verification of one live ACE-Step song.
+ *
+ * Off the main thread because it is not cheap: measured at 1.8 seconds on a
+ * 271-second stereo song even after the tempo window and the coarser spectral
+ * hop brought it down from 5.3. Two seconds of a frozen tab, right at the
+ * moment the song finally arrives, is the worst possible moment to freeze one.
+ */
+export interface VerifyRequest {
+  kind: 'verify'
+  audio: TransferAudio
+  options: VerifyOptions
+}
+
+export interface VerifyResult {
+  kind: 'verify'
+  verification: LiveVerification
+}
+
 export interface SpeakRequest {
   kind: 'speak'
   text: string
@@ -211,11 +231,11 @@ export interface SingRequest {
 
 export type WorkerRequest =
   | GenerateRequest | RerenderRequest | LyricsWorkerRequest | SeparateRequest
-  | ProcessRequest | AnalyzeRequest | SpeakRequest | SingRequest | CoverRequest
+  | ProcessRequest | AnalyzeRequest | VerifyRequest | SpeakRequest | SingRequest | CoverRequest
 
 export type WorkerResult =
   | GenerateResult | LyricsWorkerResult | SeparateResult | ProcessResult
-  | AnalyzeResult | SpeakResult | CoverResult
+  | AnalyzeResult | VerifyResult | SpeakResult | CoverResult
 
 export interface WorkerMessage {
   id: number
