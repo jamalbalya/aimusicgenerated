@@ -59,6 +59,12 @@ class Thresholds:
 
 STRICT = Thresholds()
 
+#: How much of the vocal stem is discarded as insufficiently vocal before any
+#: measurement. Matches `analyze.py`, deliberately: the tool that decides whether
+#: a song is delivered must never be more permissive than the one that only
+#: reports on it.
+FORMANT_PERCENTILE = 55
+
 
 @dataclass
 class GateReport:
@@ -107,7 +113,25 @@ def judge(path: Path, thresholds: Thresholds = STRICT) -> GateReport:
     f0, flag, prob = librosa.pyin(
         voice, fmin=95, fmax=520, sr=sr, frame_length=2048, hop_length=hop, fill_na=np.nan)
     times = librosa.times_like(f0, sr=sr, hop_length=hop)
-    sung = flag & np.isfinite(f0) & (prob > 0.5)
+
+    # Voiced is not the same as vocal. A separator leaves some accompaniment in
+    # the vocal stem — a tenor saxophone most of all, which is pitched,
+    # continuous and in a male singer's register — and a pitch tracker is happy
+    # to call all of it voiced. So a frame also has to carry energy where a
+    # singer's consonants and formants live before it counts.
+    #
+    # This is not a refinement. Measured on a real 309-second ballad, the same
+    # audio scored z = +2.30 over every voiced frame, +0.72 with this filter and
+    # +0.43 with a stricter one: the more certainly the frames were voice, the
+    # worse the harmonic fit looked, which means the permissive figure was
+    # measuring leaked accompaniment agreeing with itself. The gate had the
+    # permissive one and the diagnostic analyser had the filter, so the tool that
+    # decides delivery was the more forgiving of the two — exactly backwards.
+    spectrum = np.abs(librosa.stft(voice, n_fft=2048, hop_length=hop))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    formant = spectrum[(freqs >= 1500) & (freqs < 4000)].sum(axis=0)[:len(f0)]
+    sung = (flag & np.isfinite(f0) & (prob > 0.5)
+            & (formant > np.percentile(formant, FORMANT_PERCENTILE)))
 
     tuning = intonation.measure(
         times, f0, sung, len(voice) / sr, isolated_vocal=True,

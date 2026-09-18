@@ -144,6 +144,24 @@ print("\nthe user's words cannot be edited mid-run")
 check("a changed sheet raises rather than sending it",
       issubclass(controller.LyricsChanged, RuntimeError))
 
+print("\nthe gate is never more permissive than the analyser")
+import re as _re
+_gate_src = Path(__file__).with_name("gate.py").read_text()
+_analyze_src = Path(__file__).with_name("analyze.py").read_text()
+check("the gate filters frames by formant energy, as the analyser does",
+      "formant > np.percentile(formant, FORMANT_PERCENTILE)" in _gate_src,
+      "gate.py counts every voiced frame")
+check("and at the same percentile",
+      f"np.percentile(formant_energy, {gate.FORMANT_PERCENTILE})" in _analyze_src,
+      f"analyze.py does not use p{gate.FORMANT_PERCENTILE}")
+# The reason, kept as a number so nobody 'simplifies' the filter away: on a real
+# 309-second ballad the same audio scored z = +2.30 unfiltered, +0.72 filtered
+# and +0.43 with a stricter filter. The more certainly the frames were voice,
+# the worse the fit — so the unfiltered figure was leaked accompaniment
+# agreeing with itself, and the gate was the tool holding it.
+check("the reason is written down where the filter is",
+      "z = +2.30" in _gate_src and "exactly backwards" in _gate_src)
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED:")
