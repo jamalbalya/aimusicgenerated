@@ -165,12 +165,69 @@ opinion, but it no longer decides anything.
 
 ---
 
+## Enforcing the gate on a real generation
+
+`analyze.py` measures a file you already have. `generate_gated.py` is the loop
+that stops a bad one reaching you in the first place:
+
+```
+python3 generate_gated.py \
+  --style-file style.txt --lyrics-file lyrics.txt \
+  --space-url https://<owner>-<space>.hf.space \
+  --out song.wav --attempts 5
+```
+
+Each attempt asks the backend for a complete song, separates the vocal, measures
+it against the accompaniment, and keeps the file only if it passes:
+
+```
+Attempt 1 → REGENERATION_REQUIRED → reject
+Attempt 2 → REGENERATION_REQUIRED → reject
+Attempt 3 → PASS → deliver
+```
+
+A rejected take's audio is **deleted, not shelved** — a rejected take left on
+disk is a rejected take somebody eventually plays. When the attempts run out
+nothing is written but the report:
+
+```
+Generation failed the musical quality gate after 5 attempts.
+No incorrect audio was delivered.
+```
+
+The style and the lyrics are read once, sent byte for byte on every attempt, and
+compared against what was read before each send. A regeneration loop must never
+become a rewriting loop. A fresh seed per attempt costs nothing to arrange: the
+ZeroGPU Space draws its own random seed on every request and reports the one it
+used, so every attempt is genuinely a new take.
+
+`--space-url` also reads `ACE_STEP_SPACE_URL`; a token, if one is needed, comes
+from `HF_TOKEN` and is never logged or written. Needs `gradio_client`
+(`python3 -m pip install gradio_client`) on top of the requirements above.
+
+`gate.py` holds the thresholds and the verdict, and can be used on its own:
+
+```python
+import gate
+report = gate.judge(Path("song.wav"))
+print(report.verdict, report.reasons)
+```
+
+The thresholds, and why each is where it is, are in `gate.Thresholds` and in
+`docs/quality/musical-quality-gate.md`.
+
 ## Running the tests
 
 ```
 python3 test_intonation.py
 python3 test_separation.py
+python3 test_gate.py
 ```
+
+`test_gate.py` needs neither a GPU nor a network: the backend is a stub and the
+verdicts are scripted, because what it tests is not whether the analysis is
+right — the other two cover that — but whether a take that failed can get out of
+the loop. It cannot.
 
 Neither needs the checkpoint or TensorFlow: they build synthetic tones with
 known pitch, known vibrato rate and known extent, and check the analyser reports

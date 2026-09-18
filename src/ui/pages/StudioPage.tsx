@@ -40,6 +40,10 @@ import {
   describeFailure, STAGE_LABELS,
   type EngineMode, type GenerationFailure, type GenerationStatus, type NeuralBackend,
 } from '../../engine/providers'
+import {
+  gateScoreTake, gateNeuralTake, describeAttempt, freshSeedSource,
+  DEFAULT_MAX_ATTEMPTS, type QualityReport,
+} from '../../engine/quality'
 
 /**
  * A title for a neural result.
@@ -272,6 +276,10 @@ export default function StudioPage() {
   // so the two can be compared without generating twice; `takeIndex` is the
   // one on screen and in the player.
   const [takes, setTakes] = useState<SongTake[]>([])
+  /** The gate's verdict on what is currently open, or null before anything is. */
+  const [qualityReport, setQualityReport] = useState<QualityReport | null>(null)
+  /** One line per attempt, so a run that regenerated says so rather than just taking longer. */
+  const [attemptLog, setAttemptLog] = useState<string[]>([])
   const [takeIndex, setTakeIndex] = useState(0)
   const result = takes[takeIndex] ?? null
   const [tab, setTab] = useState<DetailTab>('lyrics')
@@ -420,6 +428,13 @@ export default function StudioPage() {
           if (collected.length === 1) {
             updateNeural(controller, { index: 0 })
             openNeuralTake(collected[0]!)
+            // Judged, and found unjudgeable. Saying so is the point: a neural
+            // take is one mixed file, and nothing in a browser can separate the
+            // voice from the band well enough to ask whether the melody fits
+            // the chords. The panel carries the reason and where to get a real
+            // verdict, rather than leaving an unverified song looking verified.
+            setQualityReport(gateNeuralTake())
+            setAttemptLog([])
           }
         } catch (error) {
           // A cancellation or a backend that has gone away applies to the whole
@@ -502,42 +517,125 @@ export default function StudioPage() {
   }, [composedStyle, customLyrics, language, duration, vocalGender, vocals, seed, effectiveTakes,
       notify, openNeuralTake, startNeural, updateNeural])
 
+  /**
+   * Generate, judge, reject, generate again — and never open a take that failed.
+   *
+   * The loop is here rather than inside the worker because the decision it
+   * makes is a product decision: what reaches the player. Each attempt writes
+   * its takes, every take is judged against the chords the engine itself wrote,
+   * and only a take whose verdict is PASS is opened. When the attempts run out
+   * nothing is opened at all — falling back to the last rejected take would
+   * deliver exactly the songs the gate exists to catch, while appearing to have
+   * checked them.
+   *
+   * A fixed seed is honoured for one attempt only: asking for a specific seed
+   * and then being handed a different one would make the field a lie, but so
+   * would refusing to try anything else when that seed's song is wrong. So the
+   * first attempt uses it and the rest draw fresh ones, which is stated on
+   * screen in the attempt log.
+   */
   const generate = useCallback(async (overrideSeed?: string) => {
     const text = prompt.trim()
     if (!text && !genreId) {
       notify('Describe the song you want, or pick a genre.', 'error')
       return
     }
-    const usedSeed = overrideSeed ?? seed.trim() ?? ''
+    const requestedSeed = overrideSeed ?? seed.trim() ?? ''
+    const nextSeed = freshSeedSource()
+    const log: string[] = []
+    setQualityReport(null)
+    setAttemptLog([])
+    let held: { take: SongTake; takes: SongTake[]; report: QualityReport } | null = null
+
     try {
-      const output = await job.run<GenerateResult>('Generating song', {
-        kind: 'generate',
-        prompt: text,
-        quality,
-        keepStems,
-        takes: takeCount,
-        singStylePreset: singStyle || undefined,
-        overrides: {
-          ...(genreId ? { genreId } : {}),
-          ...(mood ? { mood } : {}),
-          ...(bpm > 0 ? { bpm } : {}),
-          ...(tonic >= 0 ? { tonic } : {}),
-          ...(scale ? { scale } : {}),
-          ...(duration > 0 ? { durationSeconds: duration } : {}),
-          ...(vocals !== 'auto' ? { vocals } : {}),
-          ...(customLyrics.trim() ? { customLyrics } : {}),
-          language,
-          seed: usedSeed || `${text}|${Date.now()}`,
-        },
+      for (let attempt = 1; attempt <= DEFAULT_MAX_ATTEMPTS; attempt++) {
+        const attemptSeed = attempt === 1
+          ? (requestedSeed || `${text}|${Date.now()}`)
+          : `${requestedSeed || text}|regenerate-${nextSeed(attempt)}`
+        const label = attempt === 1 ? 'Generating song' : `Generating song (attempt ${attempt})`
+        const output = await job.run<GenerateResult>(label, {
+          kind: 'generate',
+          prompt: text,
+          quality,
+          keepStems,
+          takes: takeCount,
+          singStylePreset: singStyle || undefined,
+          overrides: {
+            ...(genreId ? { genreId } : {}),
+            ...(mood ? { mood } : {}),
+            ...(bpm > 0 ? { bpm } : {}),
+            ...(tonic >= 0 ? { tonic } : {}),
+            ...(scale ? { scale } : {}),
+            ...(duration > 0 ? { durationSeconds: duration } : {}),
+            ...(vocals !== 'auto' ? { vocals } : {}),
+            ...(customLyrics.trim() ? { customLyrics } : {}),
+            language,
+            seed: attemptSeed,
+          },
+        })
+
+        // Every take in the run is judged, not only the first: a run that
+        // writes four candidates has already paid for four, and picking the one
+        // that passes is free.
+        const reports = output.takes.map((take) => gateScoreTake(take.score))
+        const passing = reports.findIndex((report) => report.verdict === 'PASS')
+        const chosen = passing >= 0 ? passing : 0
+        const report = reports[chosen]!
+        log.push(describeAttempt({
+          attempt, verdict: report.verdict, report, durationMs: 0,
+        }))
+        setAttemptLog([...log])
+
+        if (passing >= 0) {
+          const take = output.takes[chosen]!
+          setTakes(output.takes)
+          setTakeIndex(chosen)
+          setRenderedAt(quality)
+          setSeed(take.score.seed)
+          setQualityReport(report)
+          reportResult(take.validation)
+          openTake(take)
+          setTab(take.score.lyrics ? 'lyrics' : 'chords')
+          if (attempt > 1) {
+            notify(`Quality gate passed on attempt ${attempt}. `
+              + `${attempt - 1} take(s) were rejected and never opened.`, 'success')
+          }
+          return
+        }
+
+        // Kept only if it is not a hard failure. A REGENERATION_REQUIRED take is
+        // never offered, on any path.
+        if (report.verdict !== 'REGENERATION_REQUIRED' && !held) {
+          held = { take: output.takes[chosen]!, takes: output.takes, report }
+          break
+        }
+      }
+
+      if (held) {
+        // Not a pass, and said so: the audio is opened because the gate could
+        // not reach a verdict rather than because it reached a bad one, and the
+        // panel above the player says which.
+        setTakes(held.takes)
+        setTakeIndex(0)
+        setRenderedAt(quality)
+        setSeed(held.take.score.seed)
+        setQualityReport(held.report)
+        reportResult(held.take.validation)
+        openTake(held.take)
+        setTab(held.take.score.lyrics ? 'lyrics' : 'chords')
+        return
+      }
+
+      setQualityReport({
+        verdict: 'REGENERATION_REQUIRED',
+        reasons: [`Generation failed the musical quality gate after ${DEFAULT_MAX_ATTEMPTS} `
+          + 'attempts. No incorrect audio was delivered.'],
+        failedChecks: [], measurements: null, worstMoments: [],
+        evidence: { source: 'score', confidence: 1, isolated: true },
+        limitations: [],
       })
-      const first = output.takes[0]!
-      setTakes(output.takes)
-      setTakeIndex(0)
-      setRenderedAt(quality)
-      setSeed(first.score.seed)
-      reportResult(first.validation)
-      openTake(first)
-      setTab(first.score.lyrics ? 'lyrics' : 'chords')
+      notify(`Generation failed the musical quality gate after ${DEFAULT_MAX_ATTEMPTS} attempts. `
+        + 'No incorrect audio was delivered. Press Generate to try again.', 'error')
     } catch (error) {
       if (!isCancellation(error)) {
         // useJob already surfaced the message.
@@ -1083,6 +1181,83 @@ export default function StudioPage() {
                   Use Offline Procedural Mode
                 </button>
               </div>
+            </div>
+          )}
+
+          {qualityReport && (
+            <div
+              className="grid gap-2 rounded-[var(--radius)] border p-3 text-[13px]"
+              style={{
+                borderColor: qualityReport.verdict === 'PASS'
+                  ? 'var(--ok, #2f7d52)' : 'var(--line)',
+              }}
+              data-testid="quality-gate"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] uppercase tracking-wide text-[var(--text-faint)]">
+                  Musical quality gate
+                </span>
+                <span className="t-num text-[11.5px] font-medium" data-testid="quality-verdict">
+                  {qualityReport.verdict === 'PASS' ? 'Quality gate passed'
+                    : qualityReport.verdict === 'REGENERATION_REQUIRED' ? 'Regeneration required'
+                      : qualityReport.verdict === 'ANALYSIS_UNAVAILABLE' ? 'Analysis unavailable'
+                        : 'Review required'}
+                </span>
+              </div>
+              {qualityReport.reasons.map((reason) => (
+                <p key={reason} className="text-[12.5px] text-[var(--text-dim)]">{reason}</p>
+              ))}
+              {qualityReport.measurements && (
+                <dl className="grid gap-0.5 text-[11.5px] text-[var(--text-faint)]"
+                  data-testid="quality-measurements">
+                  <div className="flex gap-2">
+                    <dt className="min-w-[13rem]">Harmonic compatibility</dt>
+                    <dd className="t-num">
+                      {qualityReport.measurements.harmonicCompatibility.toFixed(3)}
+                    </dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="min-w-[13rem]">Severe harmonic conflicts</dt>
+                    <dd className="t-num">{qualityReport.measurements.severeConflicts}</dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="min-w-[13rem]">Notes clashing with the chord</dt>
+                    <dd className="t-num">
+                      {qualityReport.measurements.strongChordConflictPercent.toFixed(1)}%
+                    </dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="min-w-[13rem]">Notes outside the key</dt>
+                    <dd className="t-num">
+                      {qualityReport.measurements.strongOutOfKeyPercent.toFixed(1)}%
+                    </dd>
+                  </div>
+                </dl>
+              )}
+              {attemptLog.length > 0 && (
+                <details className="text-[11.5px] text-[var(--text-faint)]">
+                  <summary className="cursor-pointer">
+                    {attemptLog.length === 1 ? '1 attempt' : `${attemptLog.length} attempts`}
+                  </summary>
+                  <ul className="mt-1 grid gap-0.5" data-testid="quality-attempts">
+                    {attemptLog.map((line) => <li key={line} className="t-num">{line}</li>)}
+                  </ul>
+                </details>
+              )}
+              {qualityReport.worstMoments.length > 0 && (
+                <details className="text-[11.5px] text-[var(--text-faint)]">
+                  <summary className="cursor-pointer">Where it goes wrong</summary>
+                  <ul className="mt-1 grid gap-0.5" data-testid="quality-worst-moments">
+                    {qualityReport.worstMoments.slice(0, 6).map((moment) => (
+                      <li key={`${moment.index}`} className="t-num">
+                        {Math.floor(moment.atSeconds / 60)}:
+                        {String(Math.floor(moment.atSeconds % 60)).padStart(2, '0')}
+                        {' — '}{moment.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
             </div>
           )}
 
