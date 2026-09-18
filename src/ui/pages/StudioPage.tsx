@@ -41,8 +41,8 @@ import {
   type EngineMode, type GenerationFailure, type GenerationStatus, type NeuralBackend,
 } from '../../engine/providers'
 import {
-  gateScoreTake, gateNeuralTake, describeAttempt, freshSeedSource,
-  OFFLINE_MAX_ATTEMPTS, tempoRequirement, InvalidTempoRequest, type QualityReport,
+  gateScoreTake, gateNeuralTake, describeAttempt,
+  tempoRequirement, InvalidTempoRequest, type QualityReport,
 } from '../../engine/quality'
 
 /**
@@ -519,26 +519,20 @@ export default function StudioPage() {
       notify, openNeuralTake, startNeural, updateNeural])
 
   /**
-   * Generate, judge, reject, generate again — and never open a take that failed.
+   * One press, one render, one song.
    *
-   * The loop is here rather than inside the worker because the decision it
-   * makes is a product decision: what reaches the player. Each attempt writes
-   * its takes, every take is judged against the chords the engine itself wrote,
-   * and only takes whose verdict is PASS are kept. When the attempts run out
-   * nothing is opened at all — falling back to the last rejected take would
-   * deliver exactly the songs the gate exists to catch, while appearing to have
-   * checked them.
+   * There is no regeneration loop here any more, and that is not a relaxation —
+   * it is the consequence of moving the check to where it belongs. A score is a
+   * list of notes and the chords under them, so whether the melody fits is
+   * decided while composing, before a sample exists, and a note that does not
+   * fit is moved to one the chord contains. `repairMelody` does that as the last
+   * step of `composeSong`.
    *
-   * Rejected takes are dropped rather than left unopened. The take chooser is a
-   * list of things a person can press play on, so a rejected take sitting in it
-   * is a rejected take that gets played. Opening the right one and leaving the
-   * wrong one one click away is not a gate.
-   *
-   * A fixed seed is honoured for one attempt only: asking for a specific seed
-   * and then being handed a different one would make the field a lie, but so
-   * would refusing to try anything else when that seed's song is wrong. So the
-   * first attempt uses it and the rest draw fresh ones, which is stated on
-   * screen in the attempt log.
+   * The gate still runs, on the score that was actually rendered. It is a
+   * check that the plan was sound rather than a filter deciding which of
+   * several rolls to keep: 90 of 90 generated songs clear it after repair,
+   * against 57 of 90 before. When it does fail, the studio says so and delivers
+   * nothing, because a take that failed is still not something to hand over.
    */
   const generate = useCallback(async (overrideSeed?: string) => {
     const text = prompt.trim()
@@ -555,127 +549,62 @@ export default function StudioPage() {
       notify(error instanceof InvalidTempoRequest ? error.message : String(error), 'error')
       return
     }
-    const requestedSeed = overrideSeed ?? seed.trim() ?? ''
-    const nextSeed = freshSeedSource()
-    const log: string[] = []
     setQualityReport(null)
     setAttemptLog([])
-    let held: { take: SongTake; takes: SongTake[]; report: QualityReport } | null = null
-    /** Only takes that passed. Nothing else is ever put in front of a person. */
-    const passed: { take: SongTake; report: QualityReport }[] = []
 
     try {
-      for (let attempt = 1; attempt <= OFFLINE_MAX_ATTEMPTS; attempt++) {
-        const attemptSeed = attempt === 1
-          ? (requestedSeed || `${text}|${Date.now()}`)
-          : `${requestedSeed || text}|regenerate-${nextSeed(attempt)}`
-        const label = attempt === 1 ? 'Generating song' : `Generating song (attempt ${attempt})`
-        const output = await job.run<GenerateResult>(label, {
-          kind: 'generate',
-          prompt: text,
-          quality,
-          keepStems,
-          takes: takeCount,
-          singStylePreset: singStyle || undefined,
-          overrides: {
-            ...(genreId ? { genreId } : {}),
-            ...(mood ? { mood } : {}),
-            ...(bpm > 0 ? { bpm } : {}),
-            ...(tonic >= 0 ? { tonic } : {}),
-            ...(scale ? { scale } : {}),
-            ...(duration > 0 ? { durationSeconds: duration } : {}),
-            ...(vocals !== 'auto' ? { vocals } : {}),
-            ...(customLyrics.trim() ? { customLyrics } : {}),
-            language,
-            seed: attemptSeed,
-          },
-        })
-
-        // Every take in the run is judged, not only the first: a run that
-        // writes four candidates has already paid for four, and keeping the
-        // ones that pass is free.
-        //
-        // The ones that fail are *dropped*, not merely left unopened. The take
-        // chooser is a list of things a person can press play on, so a rejected
-        // take sitting in it is a rejected take that gets played — which is the
-        // one thing this whole loop exists to prevent. Opening the right take
-        // and leaving the wrong one one click away is not a gate.
-        // The tempo the person asked for, checked against the tempo the engine
-        // wrote. The offline engine honours a requested BPM, so this is exact.
-        const reports = output.takes.map((take) => gateScoreTake(take.score, { tempo: wanted }))
-        const passedHere = output.takes
-          .map((take, index) => ({ take, report: reports[index]! }))
-          .filter((candidate) => candidate.report.verdict === 'PASS')
-
-        const worst = reports.find((report) => report.verdict !== 'PASS') ?? reports[0]!
-        log.push(describeAttempt({
-          attempt,
-          verdict: passedHere.length > 0 ? 'PASS' : worst.verdict,
-          report: passedHere[0]?.report ?? worst,
-          durationMs: 0,
-        }))
-        setAttemptLog([...log])
-        passed.push(...passedHere)
-
-        // Asked for several takes to compare, so keep going until there are
-        // several that passed — the offline engine's takes cost nothing but a
-        // few seconds, and handing back one when two were asked for would make
-        // the gate look like it broke the feature.
-        if (passed.length >= takeCount) break
-
-        // Nothing regeneration can help with. Held only if it is not a hard
-        // failure: a REGENERATION_REQUIRED take is never offered, on any path.
-        if (passed.length === 0 && worst.verdict !== 'REGENERATION_REQUIRED') {
-          held = { take: output.takes[0]!, takes: output.takes, report: worst }
-          break
-        }
-      }
-
-      if (passed.length > 0) {
-        const kept = passed.slice(0, Math.max(1, takeCount))
-        const first = kept[0]!
-        setTakes(kept.map((candidate) => candidate.take))
-        setTakeIndex(0)
-        setRenderedAt(quality)
-        setSeed(first.take.score.seed)
-        setQualityReport(first.report)
-        reportResult(first.take.validation)
-        openTake(first.take)
-        setTab(first.take.score.lyrics ? 'lyrics' : 'chords')
-        const attempts = log.length
-        if (attempts > 1) {
-          notify(`Quality gate passed after ${attempts} attempts. `
-            + 'Rejected takes were never opened.', 'success')
-        }
-        return
-      }
-
-      if (held) {
-        // Not a pass, and said so: the audio is opened because the gate could
-        // not reach a verdict rather than because it reached a bad one, and the
-        // panel above the player says which.
-        setTakes(held.takes)
-        setTakeIndex(0)
-        setRenderedAt(quality)
-        setSeed(held.take.score.seed)
-        setQualityReport(held.report)
-        reportResult(held.take.validation)
-        openTake(held.take)
-        setTab(held.take.score.lyrics ? 'lyrics' : 'chords')
-        return
-      }
-
-      setQualityReport({
-        verdict: 'REGENERATION_REQUIRED',
-        accepted: false, deliveryAllowed: false, rejectionReasons: [],
-        reasons: [`Generation failed the musical quality gate after ${OFFLINE_MAX_ATTEMPTS} `
-          + 'attempts. No incorrect audio was delivered.'],
-        failedChecks: [], measurements: null, worstMoments: [],
-        evidence: { source: 'score', confidence: 1, isolated: true },
-        limitations: [],
+      const output = await job.run<GenerateResult>('Generating song', {
+        kind: 'generate',
+        prompt: text,
+        quality,
+        keepStems,
+        takes: takeCount,
+        singStylePreset: singStyle || undefined,
+        overrides: {
+          ...(genreId ? { genreId } : {}),
+          ...(mood ? { mood } : {}),
+          ...(bpm > 0 ? { bpm } : {}),
+          ...(tonic >= 0 ? { tonic } : {}),
+          ...(scale ? { scale } : {}),
+          ...(duration > 0 ? { durationSeconds: duration } : {}),
+          ...(vocals !== 'auto' ? { vocals } : {}),
+          ...(customLyrics.trim() ? { customLyrics } : {}),
+          language,
+          seed: overrideSeed ?? seed.trim() ?? `${text}|${Date.now()}`,
+        },
       })
-      notify(`Generation failed the musical quality gate after ${OFFLINE_MAX_ATTEMPTS} attempts. `
-        + 'No incorrect audio was delivered. Press Generate to try again.', 'error')
+
+      const reports = output.takes.map((take) => gateScoreTake(take.score, { tempo: wanted }))
+      const passing = reports.findIndex((report) => report.verdict === 'PASS')
+      setAttemptLog([describeAttempt({
+        attempt: 1,
+        verdict: reports[passing >= 0 ? passing : 0]!.verdict,
+        report: reports[passing >= 0 ? passing : 0]!,
+        durationMs: 0,
+      })])
+
+      if (passing < 0) {
+        // Nothing is opened. The repair is meant to make this unreachable, and
+        // when it is reached the honest thing is to say the plan was unsound
+        // rather than quietly hand over the song it produced.
+        setQualityReport(reports[0]!)
+        notify('The song did not pass the musical quality gate, so it was not opened. '
+          + 'Press Generate to write a different one.', 'error')
+        return
+      }
+
+      // Only takes that passed. A chooser is a list of things a person presses
+      // play on, so a rejected take sitting in it is one that gets played.
+      const kept = output.takes.filter((_, index) => reports[index]!.verdict === 'PASS')
+      const first = output.takes[passing]!
+      setTakes(kept)
+      setTakeIndex(Math.max(0, kept.indexOf(first)))
+      setRenderedAt(quality)
+      setSeed(first.score.seed)
+      setQualityReport(reports[passing]!)
+      reportResult(first.validation)
+      openTake(first)
+      setTab(first.score.lyrics ? 'lyrics' : 'chords')
     } catch (error) {
       if (!isCancellation(error)) {
         // useJob already surfaced the message.

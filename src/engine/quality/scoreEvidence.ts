@@ -15,6 +15,7 @@
 
 import { SCALES, type PitchClass } from '../theory/pitch'
 import { chordName, chordPitchClasses } from '../theory/chords'
+import { harmonicScaleFor } from '../compose/harmony'
 import type { Score } from '../compose/types'
 import type { EvidenceResult, HarmonicRegion, VocalNote } from './types'
 
@@ -87,7 +88,19 @@ export function evidenceFromScore(score: Score): EvidenceResult {
   }
 
   const tonic = score.key.tonic
-  const pitchClasses = SCALES[score.key.scale].map((step) => (((tonic + step) % 12) as PitchClass))
+  // In-key is judged against the scale the *chords* are built from, not the one
+  // the melody is drawn from, and for a gapped scale those differ.
+  //
+  // A blues or pentatonic song has a five-note melodic scale and seven-note
+  // harmony: `fitChordsToMode` builds the chords from the harmonic parent,
+  // because a pentatonic has degrees on which no triad exists. Judging
+  // in-key-ness against the pentatonic then marks the parent's other two
+  // degrees as outside the key — including notes that are chord tones of the
+  // chord sounding at that moment. That failed seven of six hundred generated
+  // songs on `strongOutOfKey` while every note was a chord tone or an accepted
+  // tension and compatibility was 0.957.
+  const harmonicScale = harmonicScaleFor(score.key.scale)
+  const pitchClasses = SCALES[harmonicScale].map((step) => (((tonic + step) % 12) as PitchClass))
 
   return {
     available: true,
@@ -100,7 +113,7 @@ export function evidenceFromScore(score: Score): EvidenceResult {
     beatsPerBar: score.beatsPerBar,
     key: {
       tonic,
-      scale: score.key.scale,
+      scale: harmonicScale,
       pitchClasses,
       name: `${chordName({ root: tonic, quality: 'maj' })} ${score.key.scale}`,
     },

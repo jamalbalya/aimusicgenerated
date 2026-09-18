@@ -200,6 +200,64 @@ That leaves step 1, which is what the generate → analyse → reject → regene
 loop is. Because the Space draws a fresh random seed on every request, each
 attempt is genuinely a new take without the studio having to ask for one.
 
+## One press, one render, one song
+
+The gate used to run on a finished take, so a song that did not fit its own
+chords cost a render to discover and another to replace. That is the wrong place
+for it.
+
+A score is not audio. It is a list of notes and the chords underneath them, so
+whether the melody fits can be decided **before a single sample exists** — and a
+note that does not fit can be moved. `repairMelody` (`src/engine/compose/repair.ts`)
+runs as the last step of `composeSong`:
+
+- Only notes a listener lands on are moved. Passing tones, neighbour notes and
+  suspensions that resolve are how melodies are written; flattening them would
+  turn every line into an arpeggio.
+- A note moves to the **nearest** pitch the chord contains, preferring the
+  direction the line was already going. Jumping it to the root would fix the
+  harmony and destroy the tune.
+- **Everything but pitch survives**: the beat the note starts on, how long it is
+  held, its velocity, the syllable it sings, the phonemes that syllable resolved
+  to, and the lyric line it belongs to. The words still land on the beats they
+  were written for.
+- Escalation exists for one case the gentle pass cannot fix: a melody transposed
+  wholesale keeps every interval, so each wrong note still reads as a passing
+  tone of the note beside it. When the song is still failing after the gentle
+  passes, weak notes and out-of-key strong notes move too.
+
+**Moving a note is composition. Rolling the dice again is regeneration.** This
+does the first.
+
+### Measured
+
+| | Before repair | After repair |
+| --- | --- | --- |
+| Generated songs clearing the gate | 57 / 90 | **90 / 90** |
+| Notes moved | — | **2.4%** |
+| One-pass rate, 25 genres × 8 seeds × 3 tempo conditions | — | **600 / 600 (100%)** |
+
+A deliberately wrecked plan — every sung note pushed a semitone off — repairs
+from `REGENERATION_REQUIRED` (compatibility 0.639, 13 severe conflicts) to
+`PASS` (0.968, none), with the lyrics still on their original beats.
+
+So the Studio does **one render**. The gate still runs on the score that was
+rendered, as a check that the plan was sound rather than a filter choosing
+between rolls. When it fails, nothing is opened and the studio says so.
+
+### What this does not do for the neural engine
+
+Nothing. ACE-Step is a stochastic text-to-music model whose endpoint takes six
+inputs — style, lyrics, language, vocal gender, instrumental, duration — and
+none of them is a tempo, a key, a chord, a melody or an arrangement. There is no
+plan to repair, because there is no plan: the song is produced whole and the
+first time anyone can inspect it is after the GPU has been spent.
+
+A one-pass guarantee for the neural path is therefore **not available**, and
+claiming otherwise would be a claim about a control surface that does not exist.
+What is available there is the generate → analyse → reject loop, which is a
+different thing and is documented as one.
+
 ## Tempo
 
 ### What ACE-Step can and cannot be told

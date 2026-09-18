@@ -17,7 +17,7 @@ import { SCALES, isMinorScale, type PitchClass } from '../../src/engine/theory/p
 import { CHORD_INTERVALS, chordPitchClasses, parseRoman } from '../../src/engine/theory/chords'
 import { buildSpec } from '../../src/engine/compose/prompt'
 import { composeSong } from '../../src/engine/compose/composer'
-import { evidenceFromScore } from '../../src/engine/quality'
+import { evidenceFromScore, regionsOf } from '../../src/engine/quality'
 import { fitChordsToMode, harmonicScaleFor } from '../../src/engine/compose/harmony'
 
 describe('every progression declares the mode it is written in', () => {
@@ -125,20 +125,37 @@ describe('the composer only reaches for progressions that fit the key', () => {
     }
   })
 
-  it('leaves the melody in the same key as the chords', () => {
-    // The measurable consequence: before the fix, generated songs sat around
-    // 0.58-0.63 harmonic compatibility. Nothing should now be down there.
+  it('sings nothing outside the key that the chord underneath does not contain', () => {
+    // Stricter than "every sung note is in the key", and musically right.
+    //
+    // The melody writer works from the scale, so before the pre-render repair
+    // every sung note was a scale tone and "none outside the key" held
+    // trivially. The repair moves a note that fights its chord onto a note that
+    // chord actually has — and in a minor key the dominant's third is the
+    // raised leading tone, which is outside the natural scale and is the whole
+    // point of the cadence. B natural over G7 in C minor is not a defect to
+    // forbid; forbidding it would forbid the way minor keys have resolved for
+    // four hundred years.
+    //
+    // So what is asserted is the thing that actually matters: a note outside
+    // the key has to be a chord tone of the chord sounding under it. Random
+    // chromaticism still fails this; the leading tone does not.
     for (const prompt of PROMPTS) {
       for (const seed of ['a', 'b', 'c']) {
         const score = composeSong(buildSpec(prompt, { seed }))
         const evidence = evidenceFromScore(score)
         if (!evidence.available) continue
-        const outOfKey = evidence.notes.filter((note) => {
-          const pc = ((Math.round(note.midi) % 12) + 12) % 12
-          return !evidence.key.pitchClasses.includes(pc as PitchClass)
+        const regions = regionsOf(score)
+        const unjustified = evidence.notes.filter((note) => {
+          const pc = (((Math.round(note.midi) % 12) + 12) % 12) as PitchClass
+          if (evidence.key.pitchClasses.includes(pc)) return false
+          const region = regions.find(
+            (candidate) => note.startBeat >= candidate.startBeat
+              && note.startBeat < candidate.endBeat)
+          return !region || !region.pitchClasses.includes(pc)
         })
-        expect(`${prompt}/${seed}: ${outOfKey.length} sung notes outside the key`)
-          .toBe(`${prompt}/${seed}: 0 sung notes outside the key`)
+        expect(`${prompt}/${seed}: ${unjustified.length} sung notes outside the key and outside the chord`)
+          .toBe(`${prompt}/${seed}: 0 sung notes outside the key and outside the chord`)
       }
     }
   })
