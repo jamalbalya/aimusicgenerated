@@ -551,7 +551,14 @@ describe('a refused sign-in is its own answer', () => {
     const signsOut = studio.indexOf('signOut()')
     expect(signsOut).toBeLessThan(refusedAccount)
     // And it reaches the page rather than only a toast that clears itself.
-    expect(studio).toMatch(/\|\| error instanceof AccountNotAllowedError\) \{\s*\n\s*setEngineError\(message\)/)
+    // This used to be pinned as the three-error condition that called
+    // setEngineError. There is no condition now: every failure is described and
+    // set on the page, which is a stronger form of the same property — so what
+    // is pinned is that the page is where a failure goes, and that nothing
+    // narrows it back to a subset of the errors.
+    expect(studio).toContain('setEngineError(describeFailure(error))')
+    expect(studio, 'a failure must not be filtered before it reaches the page')
+      .not.toMatch(/instanceof \w+Error\s*\)\s*\{\s*\n\s*setEngineError\(/)
   })
 
   it('signs every gated request, and leaves the public one alone', async () => {

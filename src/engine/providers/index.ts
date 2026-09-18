@@ -31,3 +31,7 @@ export {
   DEFAULT_ZEROGPU_TIMEOUT_SECONDS, VERIFIED_ZEROGPU_DURATION,
 } from './config'
 export { checkWavBuffer, describeAudio, type AudioCheck } from './audioCheck'
+export {
+  describeFailure, STAGE_LABELS,
+  type GenerationFailure, type GenerationStage, type GenerationErrorCode,
+} from './failure'

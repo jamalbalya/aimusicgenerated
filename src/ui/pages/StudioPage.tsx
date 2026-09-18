@@ -36,7 +36,8 @@ import {
   AccountNotAllowedError, AuthenticationRequiredError, createNeuralProvider,
   EngineUnavailableError, GenerationCancelledError, QuotaExceededError,
   engineLabel, resolveEngineMode, VERIFIED_ZEROGPU_DURATION, ACE_STEP_TEXT_LIMITS,
-  type EngineMode, type GenerationStatus, type NeuralBackend,
+  describeFailure, STAGE_LABELS,
+  type EngineMode, type GenerationFailure, type GenerationStatus, type NeuralBackend,
 } from '../../engine/providers'
 
 /**
@@ -205,7 +206,15 @@ export default function StudioPage() {
   const selectNeuralTake = useStudio((s) => s.selectNeuralTake)
   const clearNeural = useStudio((s) => s.clearNeural)
   const { takes: neuralTakes, index: neuralIndex, status: neuralStatus, controller: neuralController } = neuralJob
-  const [engineError, setEngineError] = useState<string | null>(null)
+  /**
+   * The last failure, in full.
+   *
+   * A string was not enough. The engine already knows which stage a request
+   * died at and which code it died with, and throwing that away left "it
+   * failed" as the only thing anyone could report — including from production,
+   * where there is no console to read.
+   */
+  const [engineError, setEngineError] = useState<GenerationFailure | null>(null)
   const neural = useNeuralEngine()
   const auth = useAuth()
 
@@ -361,6 +370,7 @@ export default function StudioPage() {
     // one that fails must not discard the ones that already worked, and the
     // person needs to be told *which* one it was.
     const failures: string[] = []
+    let lastFailure: GenerationFailure | null = null
     try {
       // The capped count, never the control's: a stale or tampered value must
       // not be able to put four jobs on a free GPU from one press.
@@ -421,6 +431,7 @@ export default function StudioPage() {
           // take would be refused for the same reason, so the run ends here.
           if (error instanceof AccountNotAllowedError) throw error
           const message = error instanceof Error ? error.message : String(error)
+          lastFailure = describeFailure(error)
           // Numbering one take "Take 1" says there were others. On the free GPU
           // there is only ever one, so the prefix is added only when it names
           // something — which of several takes this was.
@@ -440,7 +451,12 @@ export default function StudioPage() {
 
       if (collected.length === 0) {
         updateNeural(controller, { status: { state: 'failed' } })
-        notify(failures[0] ?? 'ACE-Step produced nothing.', 'error')
+        // The panel below carries this sentence along with the stage, the code
+        // and the numbers, and it stays until it is dealt with. A toast saying
+        // the same words would be the message twice — and it floats over the
+        // panel's own buttons while it does it.
+        if (lastFailure) setEngineError(lastFailure)
+        else notify(failures[0] ?? 'ACE-Step produced nothing.', 'error')
         return
       }
       updateNeural(controller, { status: { state: 'completed' } })
@@ -462,16 +478,11 @@ export default function StudioPage() {
         return
       }
       updateNeural(controller, { status: { state: 'failed' } })
-      const message = error instanceof Error ? error.message : String(error)
-      // Both of these need reading and acting on, so they stay on the page
-      // instead of only passing through a toast that clears itself: the engine
-      // being absent, and the Space refusing the sign-in this page was holding.
-      if (error instanceof EngineUnavailableError
-          || error instanceof AuthenticationRequiredError
-          || error instanceof AccountNotAllowedError) {
-        setEngineError(message)
-      }
-      notify(message, 'error')
+      // Every failure lands here now, not only the three that used to qualify.
+      // The stage and the code are what make a failure reportable, and a toast
+      // that clears itself takes them with it — so this is the one report, and
+      // it stays on the page until it is dealt with.
+      setEngineError(describeFailure(error))
     } finally {
       // Only ends the job if it is still this one.
       updateNeural(controller, { controller: null })
@@ -964,14 +975,49 @@ export default function StudioPage() {
             </p>
           </div>
 
+          {/*
+            The whole diagnosis, not a sentence. The stage says how far the
+            request got, the code is stable enough to search for and to quote in
+            a bug report, and the details are whatever the thrower actually knew
+            — never a placeholder. Try again appears only where trying again
+            could work: a style that is too long is too long every time.
+          */}
           {engineError && (
-            <div className="grid gap-2 rounded-[10px] border border-[var(--line)] p-3" role="alert">
-              <p className="text-[13px]">{engineError}</p>
+            <div className="grid gap-2 rounded-[10px] border border-[var(--line)] p-3" role="alert"
+              data-testid="engine-error">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="t-label text-[10px] text-[var(--text-dim)]">
+                  {STAGE_LABELS[engineError.stage]}
+                </span>
+                <span className="t-num text-[10px] text-[var(--text-faint)]"
+                  data-testid="engine-error-code">
+                  {engineError.code}
+                </span>
+              </div>
+              <p className="text-[13px]" data-testid="engine-error-message">{engineError.message}</p>
+              {Object.keys(engineError.details).length > 0 && (
+                <dl className="grid gap-0.5 text-[11.5px] text-[var(--text-faint)]"
+                  data-testid="engine-error-details">
+                  {Object.entries(engineError.details).map(([name, value]) => (
+                    <div key={name} className="flex gap-2">
+                      <dt className="min-w-[9rem]">{name}</dt>
+                      <dd className="t-num">{String(value)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
               <div className="flex flex-wrap gap-2">
+                {engineError.retryable && (
+                  <button type="button" className="btn btn-sm btn-primary"
+                    data-testid="engine-error-retry"
+                    onClick={() => { setEngineError(null); void generateSong() }}>
+                    Try again
+                  </button>
+                )}
                 <button type="button" className="btn btn-sm" onClick={neural.recheck}>
                   Re-check the backend
                 </button>
-                <button type="button" className="btn btn-sm btn-primary"
+                <button type="button" className="btn btn-sm"
                   onClick={() => chooseEngine('procedural')}>
                   Use Offline Procedural Mode
                 </button>

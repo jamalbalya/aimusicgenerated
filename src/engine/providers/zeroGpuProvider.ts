@@ -32,10 +32,11 @@ import {
 } from './gradioClient'
 import { describeAudio } from './audioCheck'
 import {
-  ACE_STEP_AUTO_DURATION, ACE_STEP_DURATION_RANGE, aceStepTextTooLong,
+  ACE_STEP_AUTO_DURATION, ACE_STEP_DURATION_RANGE, ACE_STEP_TEXT_LIMITS, aceStepTextTooLong,
   DEFAULT_MODELS, DEFAULT_VOCAL_LANGUAGE, lyricLines, normalizeLyrics,
 } from './aceStepRequest'
 import { spaceUrlProblem, zeroGpuConfig, type ZeroGpuConfig } from './config'
+import type { GenerationErrorCode, GenerationStage } from './failure'
 import { parseQuotaNotice } from './zeroGpuQuota'
 import {
   AccountNotAllowedError, AuthenticationRequiredError, EngineUnavailableError,
@@ -68,10 +69,32 @@ export type ZeroGpuErrorCode =
   | 'missing-audio'
   | 'timeout'
 
+/**
+ * Extra facts the thrower knew, for the screen and for a bug report.
+ *
+ * Optional throughout. The provider's own `code` is enough to place most
+ * failures; these carry the cases where the same code means two different
+ * things — an HTTP error while submitting is not one while downloading — and
+ * the numbers a person needs to act, like which count disagreed with which.
+ */
+export interface ZeroGpuErrorContext {
+  stage?: GenerationStage
+  failureCode?: GenerationErrorCode
+  details?: Record<string, string | number | boolean>
+  cause?: unknown
+}
+
 export class ZeroGpuError extends Error {
-  constructor(readonly code: ZeroGpuErrorCode, message: string, options?: { cause?: unknown }) {
-    super(message, options)
+  readonly stage: GenerationStage | undefined
+  readonly failureCode: GenerationErrorCode | undefined
+  readonly details: Record<string, string | number | boolean> | undefined
+
+  constructor(readonly code: ZeroGpuErrorCode, message: string, options?: ZeroGpuErrorContext) {
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined)
     this.name = 'ZeroGpuError'
+    this.stage = options?.stage
+    this.failureCode = options?.failureCode
+    this.details = options?.details
   }
 }
 
@@ -185,7 +208,12 @@ export function zeroGpuStyle(style: string, gender: ZeroGpuVocalGender, instrume
  */
 function checkZeroGpuTextLength(field: 'style' | 'lyrics', text: string): void {
   const problem = aceStepTextTooLong(field, text)
-  if (problem) throw new ZeroGpuError('oversized-request', problem)
+  if (!problem) return
+  throw new ZeroGpuError('oversized-request', problem, {
+    stage: 'request',
+    failureCode: field === 'style' ? 'STYLE_TOO_LONG' : 'LYRICS_TOO_LONG',
+    details: { field, characters: text.length, limit: ACE_STEP_TEXT_LIMITS[field] },
+  })
 }
 
 /** Builds the six inputs, and the record of them the result is checked against. */
@@ -470,7 +498,8 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
     }
     const [file, metadataText] = data
     if (file === null || file === undefined) {
-      throw new ZeroGpuError('missing-audio', 'The Space finished but returned no audio file.')
+      throw new ZeroGpuError('missing-audio', 'The Space finished but returned no audio file.',
+        { stage: 'result', failureCode: 'AUDIO_RESULT_FAILED' })
     }
     if (typeof file !== 'object' || Array.isArray(file)) {
       throw new ZeroGpuError('bad-result', 'The Space returned an audio output that is not a file.')
@@ -478,7 +507,10 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
     const record = file as Record<string, unknown>
     const url = typeof record.url === 'string' ? record.url : undefined
     const path = typeof record.path === 'string' ? record.path : undefined
-    if (!url && !path) throw new ZeroGpuError('missing-audio', 'The Space returned an audio output with no file in it.')
+    if (!url && !path) {
+      throw new ZeroGpuError('missing-audio', 'The Space returned an audio output with no file in it.',
+        { stage: 'result', failureCode: 'AUDIO_RESULT_FAILED' })
+    }
 
     if (typeof metadataText !== 'string') {
       throw new ZeroGpuError('bad-result', 'The Space returned no generation metadata.')
@@ -517,7 +549,19 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
         + `it ran ${metadata.loaded_lm_model}.`)
     }
     if (metadata.lyric_lines_sent !== plan.lyricLineCount) {
-      throw wrong(`The Space received ${String(metadata.lyric_lines_sent)} lyric lines; ${plan.lyricLineCount} were sent.`)
+      // Its own code and both numbers: this is the one result mismatch a person
+      // can act on, and "which count, and what did the other side say" is the
+      // whole of the diagnosis.
+      throw new ZeroGpuError('bad-result',
+        `The Space received ${String(metadata.lyric_lines_sent)} lyric lines; ${plan.lyricLineCount} were sent.`,
+        {
+          stage: 'result',
+          failureCode: 'LYRICS_LINE_COUNT_MISMATCH',
+          details: {
+            spaceCounted: typeof metadata.lyric_lines_sent === 'number' ? metadata.lyric_lines_sent : -1,
+            studioSent: plan.lyricLineCount,
+          },
+        })
     }
     if (metadata.vocal_language !== plan.language) {
       throw wrong(`The Space sang in "${String(metadata.vocal_language)}"; "${plan.language}" was asked for.`)
@@ -539,13 +583,16 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
       if (context.timedOut) {
         return new ZeroGpuError('timeout',
           `The ZeroGPU Space did not finish within ${Math.round(this.config.jobTimeoutMs / 60_000)} minutes, `
-          + 'so this page stopped waiting. The song may still finish on the Space.')
+          + 'so this page stopped waiting. The song may still finish on the Space.',
+          { stage: 'stream', failureCode: 'GENERATION_TIMED_OUT',
+            details: { budgetMinutes: Math.round(this.config.jobTimeoutMs / 60_000) } })
       }
       return new GenerationCancelledError()
     }
     if (error instanceof GradioAppError) return this.appFailure(error)
     if (error instanceof GradioUnexpectedError) {
-      return new ZeroGpuError('unexpected-error', `The Space's queue failed: ${plain(error.message)}`, { cause: error })
+      return new ZeroGpuError('unexpected-error', `The Space's queue failed: ${plain(error.message)}`,
+        { cause: error, stage: 'stream', failureCode: 'SSE_CONNECTION_FAILED' })
     }
     // Checked before the stage branches below, because a refused sign-in means
     // the same thing wherever it happens: submitting, streaming, or fetching
@@ -575,16 +622,23 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
       const verb = context.stage === 'download' ? 'Could not download the song' : 'The Space refused the request'
       const hint = error.status === 422 ? ' Its inputs no longer match what this site sends.' : ''
       return new ZeroGpuError('http-error',
-        `${verb} (HTTP ${error.status}${error.detail ? `: ${error.detail}` : ''}).${hint}`, { cause: error })
+        `${verb} (HTTP ${error.status}${error.detail ? `: ${error.detail}` : ''}).${hint}`,
+        {
+          cause: error,
+          stage: context.stage === 'download' ? 'download' : 'queue',
+          failureCode: context.stage === 'download' ? 'DOWNLOAD_FAILED' : 'QUEUE_SUBMISSION_FAILED',
+          details: { httpStatus: error.status, ...(error.detail ? { detail: error.detail } : {}) },
+        })
     }
     if (error instanceof GradioNetworkError) {
       return context.stage === 'download'
-        ? new ZeroGpuError('http-error', `Could not download the song. ${error.message}`, { cause: error })
+        ? new ZeroGpuError('http-error', `Could not download the song. ${error.message}`,
+            { cause: error, stage: 'download', failureCode: 'DOWNLOAD_FAILED' })
         : new EngineUnavailableError(this.id, `Neural music engine is unavailable. ${error.message}`)
     }
     if (error instanceof GradioProtocolError) {
       return new ZeroGpuError('bad-result', `The Space answered in a way this site does not understand: ${error.message}`,
-        { cause: error })
+        { cause: error, stage: 'result', failureCode: 'RESULT_MISMATCH' })
     }
     return error instanceof Error ? error : new Error(String(error))
   }
@@ -611,20 +665,28 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
           parseQuotaNotice(text, { totalSeconds: this.config.dailyQuotaSeconds ?? null }))
       case 'ZeroGPU illegal duration':
         return new ZeroGpuError('illegal-duration',
-          `Hugging Face would not give this request enough GPU time. ${text}`.trim())
+          `Hugging Face would not give this request enough GPU time. ${text}`.trim(),
+          { stage: 'inference', failureCode: 'UNSUPPORTED_DURATION' })
       case 'ZeroGPU worker error':
         if (/GPU task aborted/i.test(text)) {
+          // Not a bad request: the request was accepted and the GPU ran out
+          // of the time the Space declares. Its own stage, because "shorten the
+          // song" is useless advice at any earlier one.
           return new ZeroGpuError('illegal-duration',
             'ZeroGPU stopped the generation because it ran past the GPU time the Space allows one request. '
-            + 'A shorter song is more likely to fit.')
+            + 'A shorter song is more likely to fit.',
+            { stage: 'inference', failureCode: 'UNSUPPORTED_DURATION' })
         }
-        return new ZeroGpuError('generation-failed', `ZeroGPU could not run the generation: ${text}`)
+        return new ZeroGpuError('generation-failed', `ZeroGPU could not run the generation: ${text}`,
+          { stage: 'inference', failureCode: 'INFERENCE_FAILED' })
       case 'ZeroGPU queue timeout':
-        return new ZeroGpuError('timeout', `Waited too long for a free GPU on Hugging Face. ${text}`.trim())
+        return new ZeroGpuError('timeout', `Waited too long for a free GPU on Hugging Face. ${text}`.trim(),
+          { stage: 'queue', failureCode: 'GENERATION_TIMED_OUT' })
       default:
         return new ZeroGpuError('generation-failed', text
           ? `The Space could not generate the song: ${text}`
-          : 'The Space reported that the generation failed, without saying why.')
+          : 'The Space reported that the generation failed, without saying why.',
+          { stage: 'inference', failureCode: 'INFERENCE_FAILED' })
     }
   }
 

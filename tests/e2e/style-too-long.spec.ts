@@ -82,8 +82,12 @@ test.describe('a style too long for ACE-Step', () => {
     await page.getByLabel('Lyrics').fill('[Verse 1]\nPerlawanan akan menyala')
     await generateButton(page).click()
 
-    await expect(page.getByText(/ACE-Step takes at most 512\. Shorten it by 945\./))
-      .toBeVisible()
+    // The report is the panel, which names the stage and the code and stays
+    // put. It is deliberately not also a toast: that would be the same sentence
+    // twice, with the transient copy covering the panel's own buttons.
+    await expect(page.getByTestId('engine-error-message'))
+      .toHaveText(/ACE-Step takes at most 512\. Shorten it by 945\./)
+    await expect(page.getByTestId('engine-error-code')).toHaveText('STYLE_TOO_LONG')
     // One take was asked for, so nothing should imply there were others.
     await expect(page.getByText(/^Take \d+:/)).toHaveCount(0)
     // The whole point: the allowance is untouched.

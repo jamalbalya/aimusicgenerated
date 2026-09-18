@@ -354,7 +354,7 @@ describe('a failed ZeroGPU generation never reaches the procedural engine', () =
     }
     walk('zeroGpuProvider')
     expect([...seen].sort()).toEqual(
-      ['aceStepRequest', 'audioCheck', 'config', 'gradioClient', 'types',
+      ['aceStepRequest', 'audioCheck', 'config', 'failure', 'gradioClient', 'types',
         'zeroGpuProvider', 'zeroGpuQuota'])
   })
 

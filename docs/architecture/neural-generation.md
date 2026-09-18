@@ -396,6 +396,49 @@ instant. That work is not done and is not scheduled.
 The `local` backend is different: `buildAceStepTask` does set `seed` and
 `use_random_seed: false`, so a seed works there and the control stays live.
 
+## When it fails, what you are told
+
+A failure used to reach the screen as one sentence. The engine had already
+worked out which stage the request died at and which code it died with, and all
+of that was dropped on the way out — so a report of "generation failed" from
+production could not be placed anywhere, and the first step of every
+investigation was guessing.
+
+`describeFailure()` in `providers/failure.ts` turns any error the engine raises
+into four things: the **stage**, a stable **code**, the sentence to show, and
+whatever **details** the thrower actually knew. The Studio renders all four,
+plus a **Try again** button on the failures where trying again could work.
+
+| Stage | Means |
+|---|---|
+| `request` | the request was checked here and refused; nothing was sent |
+| `connect` | the Space did not answer |
+| `queue` | the job could not be submitted |
+| `stream` | the result stream failed, went quiet, or ran out of time |
+| `inference` | the Space's own code or the model failed |
+| `result` | something came back and did not match what was asked |
+| `download` | the finished file could not be fetched |
+| `auth` | who the caller is, or whether they are served |
+| `quota` | the GPU allowance is spent |
+
+Codes are stable and safe to quote: `STYLE_TOO_LONG`, `LYRICS_TOO_LONG`,
+`UNSUPPORTED_DURATION`, `ENGINE_UNAVAILABLE`, `QUEUE_SUBMISSION_FAILED`,
+`SSE_CONNECTION_FAILED`, `INFERENCE_FAILED`, `GENERATION_TIMED_OUT`,
+`LYRICS_LINE_COUNT_MISMATCH`, `RESULT_MISMATCH`, `AUDIO_RESULT_FAILED`,
+`DOWNLOAD_FAILED`, `AUTH_REQUIRED`, `ACCOUNT_NOT_ALLOWED`, `QUOTA_EXCEEDED`,
+`CANCELLED`, `UNKNOWN`.
+
+Two rules the module keeps. It never invents: an error it cannot place returns
+`stage: 'unknown'`, `code: 'UNKNOWN'` rather than the nearest-looking code, and
+a quota reading that says "not published" (`null`) contributes no detail rather
+than a zero. And **Try again is not offered for anything the request itself
+causes** — a style that is too long is too long every time, and a retry there
+wastes the person's time and the GPU's.
+
+The failure is reported once, on the page, and it stays until it is dealt with.
+It is deliberately not also a toast: that would be the same sentence twice, and
+the transient copy floats over the panel's own buttons.
+
 ## Progress, and why there is no percentage
 
 The states are `idle`, `initializing`, `queued`, `generating`, `completed`,
