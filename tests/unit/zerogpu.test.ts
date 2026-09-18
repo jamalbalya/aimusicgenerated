@@ -29,6 +29,7 @@ import {
   EVENT_ID, FILE_DATA, METADATA, SESSION, SPACE, SPACE_CONFIG, SPACE_INFO, SUCCESS_STREAM, TEST_CONFIG,
   completed, failed, json, sse, wav, zeroGpu,
 } from './helpers/fakeSpace'
+import { press } from './helpers/press'
 
 const BOS_TOXIC: MusicGenerationRequest = {
   style: BOS_TOXIC_STYLE,
@@ -67,7 +68,7 @@ describe('the request matches the endpoint the live Space declares', () => {
 
   it('sends exactly its six inputs, in its order, with its types', async () => {
     const { server, provider } = zeroGpu()
-    await provider.generate(BOS_TOXIC)
+    await provider.generate(BOS_TOXIC, { ticket: press() })
     const sent = server.joinBody()!.data
 
     expect(declared.parameters.map((p) => p.parameter_name))
@@ -90,7 +91,7 @@ describe('the request matches the endpoint the live Space declares', () => {
 
   it('joins the queue the way Gradio does, and reads the stream for that session', async () => {
     const { server, provider } = zeroGpu()
-    await provider.generate(BOS_TOXIC)
+    await provider.generate(BOS_TOXIC, { ticket: press() })
 
     expect(server.calls.map((call) => `${call.method} ${call.url.replace(SPACE, '')}`)).toEqual([
       'GET /config',
@@ -108,13 +109,13 @@ describe('the request matches the endpoint the live Space declares', () => {
   it('finds the endpoint by name, so a reordered app still gets the right function', async () => {
     const moved = { ...SPACE_CONFIG, dependencies: [{ id: 0, api_name: 'something_else' }, { id: 7, api_name: 'generate_music' }] }
     const { server, provider } = zeroGpu({ config: json(moved) })
-    await provider.generate(BOS_TOXIC)
+    await provider.generate(BOS_TOXIC, { ticket: press() })
     expect(server.joinBody()!.fn_index).toBe(7)
   })
 
   it('refuses an app that speaks another protocol, before submitting anything', async () => {
     const { server, provider } = zeroGpu({ config: json({ ...SPACE_CONFIG, protocol: 'sse_v2' }) })
-    const error = await failure(provider.generate(BOS_TOXIC))
+    const error = await failure(provider.generate(BOS_TOXIC, { ticket: press() }))
     expect(error).toBeInstanceOf(EngineUnavailableError)
     expect(error.message).toMatch(/protocol "sse_v2"/)
     expect(server.joins()).toBe(0)
@@ -122,7 +123,7 @@ describe('the request matches the endpoint the live Space declares', () => {
 
   it('refuses an app that no longer has the endpoint, before submitting anything', async () => {
     const { server, provider } = zeroGpu({ config: json({ ...SPACE_CONFIG, dependencies: [] }) })
-    const error = await failure(provider.generate(BOS_TOXIC))
+    const error = await failure(provider.generate(BOS_TOXIC, { ticket: press() }))
     expect(error).toBeInstanceOf(EngineUnavailableError)
     expect(error.message).toMatch(/no endpoint named "generate_music"/)
     expect(server.joins()).toBe(0)
@@ -132,7 +133,7 @@ describe('the request matches the endpoint the live Space declares', () => {
 describe('the Bos Toxic request reaches the Space intact', () => {
   const sent = async (request: MusicGenerationRequest, config = {}) => {
     const { server, provider } = zeroGpu({}, config)
-    await provider.generate(request)
+    await provider.generate(request, { ticket: press() })
     return server.joinBody()!.data
   }
 
@@ -160,7 +161,7 @@ describe('the Bos Toxic request reaches the Space intact', () => {
     // The Space echoes the language it sang in, and a mismatch is refused, so
     // this fake has to answer in Japanese too.
     const { server, provider } = zeroGpu({ stream: withMetadata({ vocal_language: 'ja' }) })
-    await provider.generate({ ...BOS_TOXIC, language: 'ja' })
+    await provider.generate({ ...BOS_TOXIC, language: 'ja' }, { ticket: press() })
     expect(server.joinBody()!.data[2]).toBe('ja')
   })
 
@@ -178,7 +179,7 @@ describe('the Bos Toxic request reaches the Space intact', () => {
   it('sends the instrumental choice as the Space\'s own flag', async () => {
     expect((await sent(BOS_TOXIC))[4]).toBe(false)
     const { server, provider } = zeroGpu({ stream: withMetadata({ instrumental: true }) })
-    await provider.generate({ ...BOS_TOXIC, instrumental: true })
+    await provider.generate({ ...BOS_TOXIC, instrumental: true }, { ticket: press() })
     expect(server.joinBody()!.data[4]).toBe(true)
   })
 
@@ -186,7 +187,7 @@ describe('the Bos Toxic request reaches the Space intact', () => {
     expect((await sent(BOS_TOXIC))[5]).toBe(271)
     const { server, provider } = zeroGpu({ stream: withMetadata({ requested_audio_duration_s: 180, audio_duration_s: 180 }),
       file: () => new Response(wav(180), { headers: { 'Content-Type': 'audio/wav' } }) })
-    await provider.generate({ ...BOS_TOXIC, duration: 179.6 })
+    await provider.generate({ ...BOS_TOXIC, duration: 179.6 }, { ticket: press() })
     expect(server.joinBody()!.data[5]).toBe(180)
   })
 })
@@ -278,7 +279,7 @@ describe('Auto asks ACE-Step for the length, and a stated length is validated', 
     expect(ACE_STEP_AUTO_DURATION).toBe(-1)
     const { duration: _dropped, ...auto } = BOS_TOXIC
     const { server, provider } = zeroGpu()
-    await provider.generate(auto)
+    await provider.generate(auto, { ticket: press() })
     expect(server.joinBody()!.data[5]).toBe(-1)
   })
 
@@ -296,7 +297,7 @@ describe('Auto asks ACE-Step for the length, and a stated length is validated', 
     expect(resolveZeroGpuDuration(238, TEST_CONFIG)).toBe(238)
     expect(resolveZeroGpuDuration(90.4, TEST_CONFIG)).toBe(90)
     const { server, provider } = zeroGpu()
-    await provider.generate({ ...BOS_TOXIC, duration: 271 })
+    await provider.generate({ ...BOS_TOXIC, duration: 271 }, { ticket: press() })
     expect(server.joinBody()!.data[5]).toBe(271)
   })
 
@@ -309,14 +310,14 @@ describe('Auto asks ACE-Step for the length, and a stated length is validated', 
   it('refuses a length ACE-Step cannot make, without contacting the Space', async () => {
     for (const duration of [5, 601, -30, Number.NaN, Number.POSITIVE_INFINITY]) {
       const { server, provider } = zeroGpu()
-      await expectCode(provider.generate({ ...BOS_TOXIC, duration }), 'illegal-duration')
+      await expectCode(provider.generate({ ...BOS_TOXIC, duration }, { ticket: press() }), 'illegal-duration')
       expect(server.calls, `duration ${duration} reached the Space`).toHaveLength(0)
     }
   })
 
   it('refuses a length over the configured ceiling, without contacting the Space', async () => {
     const { server, provider } = zeroGpu({}, { maxDuration: 300 })
-    const error = await expectCode(provider.generate({ ...BOS_TOXIC, duration: 420 }), 'illegal-duration')
+    const error = await expectCode(provider.generate({ ...BOS_TOXIC, duration: 420 }, { ticket: press() }), 'illegal-duration')
     expect(error.message).toMatch(/limited to 5:00/)
     expect(server.calls).toHaveLength(0)
   })
@@ -380,7 +381,7 @@ describe('the ZeroGPU settings are read strictly', () => {
 describe('a generation that works', () => {
   it('comes back as a playable neural result of the length asked for', async () => {
     const { provider } = zeroGpu()
-    const result = await provider.generate(BOS_TOXIC)
+    const result = await provider.generate(BOS_TOXIC, { ticket: press() })
 
     expect(result.engine).toBe('ace-step')
     expect(result.id).toBe(EVENT_ID)
@@ -397,7 +398,7 @@ describe('a generation that works', () => {
   it('reports only what the Space said, in order, with no invented progress', async () => {
     const statuses: GenerationStatus[] = []
     const { provider } = zeroGpu()
-    await provider.generate(BOS_TOXIC, { onStatus: (status) => statuses.push(status) })
+    await provider.generate(BOS_TOXIC, { ticket: press(), onStatus: (status) => statuses.push(status) })
 
     expect(statuses).toEqual([
       { state: 'initializing', detail: 'Reaching the ZeroGPU Space' },
@@ -418,7 +419,7 @@ describe('a generation that works', () => {
       { msg: 'progress', event_id: EVENT_ID, progress_data: [{ index: 4, length: 8, unit: 'steps', progress: null, desc: 'Diffusion' }] },
       completed(),
     ]) })
-    await provider.generate(BOS_TOXIC, { onStatus: (status) => statuses.push(status) })
+    await provider.generate(BOS_TOXIC, { ticket: press(), onStatus: (status) => statuses.push(status) })
     expect(statuses).toContainEqual({ state: 'generating', detail: 'Diffusion', progress: 0.5 })
   })
 
@@ -427,12 +428,12 @@ describe('a generation that works', () => {
     const chunks: string[] = []
     for (let at = 0; at < framed.length; at += 7) chunks.push(framed.slice(at, at + 7))
     const { provider } = zeroGpu({ stream: chunks })
-    expect((await provider.generate(BOS_TOXIC)).duration).toBeCloseTo(271, 5)
+    expect((await provider.generate(BOS_TOXIC, { ticket: press() })).duration).toBeCloseTo(271, 5)
   })
 
   it('ignores a message type newer than this client, rather than failing on it', async () => {
     const { provider } = zeroGpu({ stream: sse([{ msg: 'some_future_message', event_id: EVENT_ID }, completed()]) })
-    await expect(provider.generate(BOS_TOXIC)).resolves.toMatchObject({ engine: 'ace-step' })
+    await expect(provider.generate(BOS_TOXIC, { ticket: press() })).resolves.toMatchObject({ engine: 'ace-step' })
   })
 })
 
@@ -452,7 +453,7 @@ describe('the answer the live Space actually gave is accepted', () => {
       stream: sse([completed([FILE_DATA, REAL])]),
       file: () => new Response(wav(271, { rate: 48000 }), { headers: { 'Content-Type': 'audio/wav' } }),
     })
-    const result = await provider.generate(BOS_TOXIC)
+    const result = await provider.generate(BOS_TOXIC, { ticket: press() })
     expect(result.duration).toBeCloseTo(271, 5)
     expect(result.sampleRate).toBe(48000)
     expect(result.metadata).toMatchObject({
@@ -496,7 +497,7 @@ describe('a refused sign-in is its own answer', () => {
 
   it('passes on the gate\'s own sentence with the status, and asks only once', async () => {
     const { server, provider } = zeroGpu({ join: () => json({ detail: STALE_SIGN_IN }, 401) })
-    const error = await failure(provider.generate(BOS_TOXIC))
+    const error = await failure(provider.generate(BOS_TOXIC, { ticket: press() }))
     expect(error).toBeInstanceOf(AuthenticationRequiredError)
     expect(error.message).toContain(STALE_SIGN_IN)
     expect(error.message).toContain('HTTP 401')
@@ -507,14 +508,14 @@ describe('a refused sign-in is its own answer', () => {
 
   it('says so too when nothing was signed in the first place', async () => {
     const { provider } = zeroGpu({ join: () => json({ detail: NO_SIGN_IN }, 401) })
-    const error = await failure(provider.generate(BOS_TOXIC))
+    const error = await failure(provider.generate(BOS_TOXIC, { ticket: press() }))
     expect(error).toBeInstanceOf(AuthenticationRequiredError)
     expect(error.message).toContain(NO_SIGN_IN)
   })
 
   it('catches a sign-in that expires while the finished song is being fetched', async () => {
     const { provider } = zeroGpu({ file: () => json({ detail: STALE_SIGN_IN }, 401) })
-    expect(await failure(provider.generate(BOS_TOXIC))).toBeInstanceOf(AuthenticationRequiredError)
+    expect(await failure(provider.generate(BOS_TOXIC, { ticket: press() }))).toBeInstanceOf(AuthenticationRequiredError)
   })
 
   it('keeps an account that is merely not approved apart from a bad sign-in', async () => {
@@ -523,7 +524,7 @@ describe('a refused sign-in is its own answer', () => {
     // account was refused rather than offering a sign-in that would not help.
     const refused = 'This Hugging Face account is not approved for this studio.'
     const { provider } = zeroGpu({ join: () => json({ detail: refused }, 403) })
-    const error = await failure(provider.generate(BOS_TOXIC))
+    const error = await failure(provider.generate(BOS_TOXIC, { ticket: press() }))
     expect(error).toBeInstanceOf(AccountNotAllowedError)
     expect(error).not.toBeInstanceOf(AuthenticationRequiredError)
     expect(error.message).toContain(refused)
@@ -538,7 +539,7 @@ describe('a refused sign-in is its own answer', () => {
       { file: () => json({ detail: 'nope' }, 403) },
     ]) {
       const { provider } = zeroGpu(script)
-      expect(await failure(provider.generate(BOS_TOXIC))).toBeInstanceOf(AccountNotAllowedError)
+      expect(await failure(provider.generate(BOS_TOXIC, { ticket: press() }))).toBeInstanceOf(AccountNotAllowedError)
     }
   })
 
@@ -547,14 +548,23 @@ describe('a refused sign-in is its own answer', () => {
     // which account they are signed in as — and signing in again with it would
     // fail identically. So the page shows it and keeps the session.
     const studio = readFileSync(new URL('../../src/ui/pages/StudioPage.tsx', import.meta.url), 'utf8')
-    expect(studio).toContain('if (error instanceof AccountNotAllowedError) throw error')
-    // The only sign-out in the file is the one for a refused sign-in, and it
-    // carries the reason so the login page can say why the session ended.
+    // Pinned as a property rather than as a line of code. This used to assert
+    // `if (error instanceof AccountNotAllowedError) throw error`, which existed
+    // only to break out of the take loop; the loop is gone, because one press
+    // now sends exactly one request. What matters was never the throw — it is
+    // that a refused *account* does not end the session, and only a refused
+    // *sign-in* does.
+    //
+    // So: exactly one sign-out in the file, it carries the reason, and the one
+    // condition guarding it names AuthenticationRequiredError. An
+    // AccountNotAllowedError therefore cannot reach it however the catch is
+    // written, which is a stronger claim than the old string match.
     expect(studio.match(/signOut\(/g)).toHaveLength(1)
     expect(studio).toContain('signOut(error.message)')
-    const refusedAccount = studio.indexOf('AccountNotAllowedError) throw error')
-    const signsOut = studio.indexOf('signOut()')
-    expect(signsOut).toBeLessThan(refusedAccount)
+    expect(studio).toMatch(
+      /if \(error instanceof AuthenticationRequiredError\) \{[\s\S]{0,200}?signOut\(error\.message\)/)
+    // And nothing signs out on the account refusal.
+    expect(studio).not.toMatch(/AccountNotAllowedError[\s\S]{0,300}?signOut\(/)
     // And it reaches the page rather than only a toast that clears itself.
     // This used to be pinned as the three-error condition that called
     // setEngineError. There is no condition now: every failure is described and
@@ -568,7 +578,7 @@ describe('a refused sign-in is its own answer', () => {
 
   it('signs every gated request, and leaves the public one alone', async () => {
     const { server, provider } = zeroGpu({}, {}, { authorization: () => 'Bearer test-token' })
-    await provider.generate(BOS_TOXIC)
+    await provider.generate(BOS_TOXIC, { ticket: press() })
     expect(server.calls.filter((call) => call.authorization === 'Bearer test-token')
       .map((call) => call.url.replace(SPACE, ''))).toEqual([
       '/gradio_api/queue/join',
@@ -582,7 +592,7 @@ describe('a refused sign-in is its own answer', () => {
 
   it('sends no Authorization header at all when signed out, never "Bearer undefined"', async () => {
     const { server, provider } = zeroGpu({}, {}, { authorization: () => undefined })
-    await provider.generate(BOS_TOXIC)
+    await provider.generate(BOS_TOXIC, { ticket: press() })
     expect(server.calls.map((call) => call.authorization)).toEqual(server.calls.map(() => undefined))
     expect(JSON.stringify(server.calls)).not.toContain('Bearer')
   })
@@ -614,7 +624,7 @@ describe('the neural engine is closed to anyone who has not signed in', () => {
     expect(neuralBranch).toMatch(/if \(auth\.status !== 'signed-in'\) \{[\s\S]{0,200}?return\n/)
     // And it is reached before the generation is started, not after.
     const refusal = neuralBranch.indexOf("auth.status !== 'signed-in'")
-    const start = neuralBranch.indexOf('generateNeural(overrideSeed)')
+    const start = neuralBranch.indexOf('generateNeural()')
     expect(refusal).toBeGreaterThan(-1)
     expect(refusal).toBeLessThan(start)
   })
@@ -669,7 +679,7 @@ describe('every way ZeroGPU can say no, named', () => {
   it('a spent quota is its own error, carries ZeroGPU\'s words, and is asked exactly once', async () => {
     const text = 'You have exceeded your free ZeroGPU quota (120s requested vs. 44s left). Try again in 23:14:07.'
     const { server, provider } = zeroGpu({ stream: sse([failed('ZeroGPU quota exceeded', text)]) })
-    const error = await failure(provider.generate(BOS_TOXIC))
+    const error = await failure(provider.generate(BOS_TOXIC, { ticket: press() }))
     expect(error).toBeInstanceOf(QuotaExceededError)
     expect(error.message).toContain('Try again in 23:14:07')
     expect(server.joins()).toBe(1)
@@ -677,65 +687,65 @@ describe('every way ZeroGPU can say no, named', () => {
 
   it('the anonymous form of a spent quota is recognised too', async () => {
     const { provider } = zeroGpu({ stream: sse([failed('ZeroGPU quota exceeded', 'Space app has reached its GPU limit.')]) })
-    expect(await failure(provider.generate(BOS_TOXIC))).toBeInstanceOf(QuotaExceededError)
+    expect(await failure(provider.generate(BOS_TOXIC, { ticket: press() }))).toBeInstanceOf(QuotaExceededError)
   })
 
   it('too many GPU credits in flight counts as a spent quota', async () => {
     const { provider } = zeroGpu({ stream: sse([failed('ZeroGPU pending credits exceeded', 'Try again once some of those tasks have completed.')]) })
-    expect(await failure(provider.generate(BOS_TOXIC))).toBeInstanceOf(QuotaExceededError)
+    expect(await failure(provider.generate(BOS_TOXIC, { ticket: press() }))).toBeInstanceOf(QuotaExceededError)
   })
 
   it('an illegal GPU duration', async () => {
     const { provider } = zeroGpu({ stream: sse([failed('ZeroGPU illegal duration', 'The requested GPU duration (120s) is larger than the maximum allowed')]) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'illegal-duration')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'illegal-duration')
     expect(error.message).toContain('larger than the maximum allowed')
   })
 
   it('a song that outran the Space\'s GPU time is an unsupported length, with advice', async () => {
     const { provider } = zeroGpu({ stream: sse([failed('ZeroGPU worker error', 'GPU task aborted')]) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'illegal-duration')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'illegal-duration')
     expect(error.message).toMatch(/shorter song/)
   })
 
   it('any other worker failure is a failed generation', async () => {
     const { provider } = zeroGpu({ stream: sse([failed('ZeroGPU worker error', 'RuntimeError')]) })
-    await expectCode(provider.generate(BOS_TOXIC), 'generation-failed')
+    await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'generation-failed')
   })
 
   it('waiting too long for a GPU is a timeout', async () => {
     const { provider } = zeroGpu({ stream: sse([failed('ZeroGPU queue timeout', '<b>No GPU was available</b>')]) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'timeout')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'timeout')
     expect(error.message).not.toContain('<b>')
   })
 
   it('the Space\'s own failure message is passed on', async () => {
     const { provider } = zeroGpu({ stream: sse([failed('Error', 'ACE-Step generation failed: CUDA out of memory')]) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'generation-failed')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'generation-failed')
     expect(error.message).toContain('CUDA out of memory')
   })
 
   it('a failure the Space did not explain is still a failure, not a silence', async () => {
     const { provider } = zeroGpu({ stream: sse([failed(null, null)]) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'generation-failed')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'generation-failed')
     expect(error.message).toMatch(/without saying why/)
   })
 
   it('a queue that failed outside the handler is an unexpected error', async () => {
     const { provider } = zeroGpu({ stream: sse([{ msg: 'unexpected_error', event_id: null, message: 'Session not found.', session_not_found: true, success: false }]) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'unexpected-error')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'unexpected-error')
     expect(error.message).toContain('Session not found')
   })
 
   it('a server that stopped mid-job is an unexpected error', async () => {
     const { provider } = zeroGpu({ stream: sse([{ msg: 'Server stopped unexpectedly.', event_id: null }]) })
-    await expectCode(provider.generate(BOS_TOXIC), 'unexpected-error')
+    await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'unexpected-error')
   })
 })
 
 describe('HTTP and queue failures', () => {
   it('a Space that does not answer is unavailable, and says what it got', async () => {
     const { server, provider } = zeroGpu({ config: new Response('<html>Your space is sleeping</html>', { status: 503 }) })
-    const error = await failure(provider.generate(BOS_TOXIC))
+    const error = await failure(provider.generate(BOS_TOXIC, { ticket: press() }))
     expect(error).toBeInstanceOf(EngineUnavailableError)
     expect(error.message).toContain(ZEROGPU_UNAVAILABLE_MESSAGE)
     expect(error.message).toContain('HTTP 503')
@@ -744,32 +754,32 @@ describe('HTTP and queue failures', () => {
 
   it('a Space that cannot be reached at all is unavailable', async () => {
     const { provider } = zeroGpu({ config: () => { throw new TypeError('Failed to fetch') } })
-    const error = await failure(provider.generate(BOS_TOXIC))
+    const error = await failure(provider.generate(BOS_TOXIC, { ticket: press() }))
     expect(error).toBeInstanceOf(EngineUnavailableError)
     expect(error.message).toContain('Failed to fetch')
   })
 
   it('a refused submission is an HTTP error with the Space\'s reason', async () => {
     const { provider } = zeroGpu({ join: json({ detail: 'Internal Server Error' }, 500) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'http-error')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'http-error')
     expect(error.message).toContain('HTTP 500')
   })
 
   it('a full queue is reported as the Space put it', async () => {
     const { provider } = zeroGpu({ join: json({ detail: 'Queue is full. Max size is 20 and size is 20.' }, 503) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'http-error')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'http-error')
     expect(error.message).toContain('Queue is full')
   })
 
   it('inputs the Space rejects point at a contract that has moved', async () => {
     const { provider } = zeroGpu({ join: json({ detail: [{ msg: 'Value is not a valid choice' }] }, 422) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'http-error')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'http-error')
     expect(error.message).toMatch(/no longer match/)
   })
 
   it('a submission the network dropped is unavailable, not retried', async () => {
     const { server, provider } = zeroGpu({ join: () => { throw new TypeError('network error') } })
-    expect(await failure(provider.generate(BOS_TOXIC))).toBeInstanceOf(EngineUnavailableError)
+    expect(await failure(provider.generate(BOS_TOXIC, { ticket: press() }))).toBeInstanceOf(EngineUnavailableError)
     expect(server.joins()).toBe(1)
   })
 })
@@ -777,64 +787,64 @@ describe('HTTP and queue failures', () => {
 describe('results that are not a song', () => {
   it('outputs missing altogether', async () => {
     const { provider } = zeroGpu({ stream: sse([{ ...completed(), output: { is_generating: false } }]) })
-    await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
   })
 
   it('fewer outputs than the endpoint declares', async () => {
     const { provider } = zeroGpu({ stream: sse([completed([FILE_DATA])]) })
-    await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
   })
 
   it('metadata that is not JSON, or not an object', async () => {
     for (const metadata of ['{not json', '[1, 2, 3]', null]) {
       const { provider } = zeroGpu({ stream: sse([completed([FILE_DATA, metadata])]) })
-      await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+      await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
     }
   })
 
   it('an audio output that is not a file', async () => {
     const { provider } = zeroGpu({ stream: sse([completed(['/tmp/song.wav', JSON.stringify(METADATA)])]) })
-    await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
   })
 
   it('a message on the stream that is not JSON', async () => {
     const { provider } = zeroGpu({ stream: ['data: {"msg": "process_completed", \n\n'] })
-    await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
   })
 
   it('no audio at all', async () => {
     const { provider } = zeroGpu({ stream: sse([completed([null, JSON.stringify(METADATA)])]) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'missing-audio')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'missing-audio')
     expect(error.message).toMatch(/no audio file/)
   })
 
   it('a file record with no file in it', async () => {
     const { provider } = zeroGpu({ stream: sse([completed([{ orig_name: 'x.wav', meta: {} }, JSON.stringify(METADATA)])]) })
-    await expectCode(provider.generate(BOS_TOXIC), 'missing-audio')
+    await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'missing-audio')
   })
 
   it('a download that is gone', async () => {
     const { provider } = zeroGpu({ file: new Response('not found', { status: 404 }) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'http-error')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'http-error')
     expect(error.message).toMatch(/Could not download the song \(HTTP 404/)
   })
 
   it('a file on another site is never fetched', async () => {
     const elsewhere = { ...FILE_DATA, url: 'https://example.com/steal.wav' }
     const { server, provider } = zeroGpu({ stream: sse([completed([elsewhere, JSON.stringify(METADATA)])]) })
-    await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
     expect(server.calls.some((call) => call.url.includes('example.com'))).toBe(false)
   })
 
   it('an error page served as the file', async () => {
     const { provider } = zeroGpu({ file: new Response('<html>oops</html>', { headers: { 'Content-Type': 'text/html' } }) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
     expect(error.message).toMatch(/not usable audio/)
   })
 
   it('a silent file', async () => {
     const { provider } = zeroGpu({ file: () => new Response(wav(271, { amplitude: 0 }), { headers: { 'Content-Type': 'audio/wav' } }) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
     expect(error.message).toMatch(/silent/)
   })
 
@@ -843,13 +853,13 @@ describe('results that are not a song', () => {
     // Space's metadata still saying 271 seconds: none of that makes it a song.
     const junk = new Uint8Array(8192).map((_, i) => (i * 37) % 251)
     const { provider } = zeroGpu({ file: () => new Response(junk, { headers: { 'Content-Type': 'audio/wav' } }) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
     expect(error.message).toMatch(/not a readable WAV/)
   })
 
   it('a clip where a song was asked for', async () => {
     const { provider } = zeroGpu({ file: () => new Response(wav(58), { headers: { 'Content-Type': 'audio/wav' } }) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
     expect(error.message).toMatch(/Asked for a 4:31 song and received 0:58/)
   })
 
@@ -864,21 +874,21 @@ describe('results that are not a song', () => {
       // Nothing was asked for, so there is no shortfall to measure. The live
       // Space chose 238 seconds for the sheet that a fixed 271 had cut off.
       const { provider } = zeroGpu(served(238))
-      const result = await provider.generate(AUTO)
+      const result = await provider.generate(AUTO, { ticket: press() })
       expect(result.duration).toBeCloseTo(238, 3)
     })
 
     it('accepts a length anywhere in the range ACE-Step generates within', async () => {
       for (const seconds of [10, 180, 271, 600]) {
         const { provider } = zeroGpu(served(seconds))
-        expect((await provider.generate(AUTO)).duration).toBeCloseTo(seconds, 3)
+        expect((await provider.generate(AUTO, { ticket: press() })).duration).toBeCloseTo(seconds, 3)
       }
     })
 
     it('refuses a length outside that range, which is not a song it made', async () => {
       for (const seconds of [9, 601]) {
         const { provider } = zeroGpu(served(seconds))
-        const error = await expectCode(provider.generate(AUTO), 'bad-result')
+        const error = await expectCode(provider.generate(AUTO, { ticket: press() }), 'bad-result')
         expect(error.message).toMatch(/outside the 10 to 600 seconds/)
       }
     })
@@ -889,14 +899,14 @@ describe('results that are not a song', () => {
       const { provider } = zeroGpu({
         file: () => new Response(new Uint8Array(4096), { headers: { 'Content-Type': 'audio/wav' } }),
       })
-      await expectCode(provider.generate(AUTO), 'bad-result')
+      await expectCode(provider.generate(AUTO, { ticket: press() }), 'bad-result')
     })
 
     it('still refuses silence, however long it is', async () => {
       const { provider } = zeroGpu({
         file: () => new Response(wav(238, { amplitude: 0 }), { headers: { 'Content-Type': 'audio/wav' } }),
       })
-      const error = await expectCode(provider.generate(AUTO), 'bad-result')
+      const error = await expectCode(provider.generate(AUTO, { ticket: press() }), 'bad-result')
       expect(error.message).toMatch(/silent/)
     })
   })
@@ -905,30 +915,30 @@ describe('results that are not a song', () => {
 describe('what the Space says it did must be what was asked', () => {
   it('refuses a song made by a substituted language model', async () => {
     const { provider } = zeroGpu({ stream: withMetadata({ loaded_lm_model: 'acestep-5Hz-lm-1.7B' }) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
     expect(error.message).toMatch(/asked for acestep-5Hz-lm-0\.6B, it ran acestep-5Hz-lm-1\.7B/)
   })
 
   it('refuses a song made by a substituted generation model', async () => {
     const { provider } = zeroGpu({ stream: withMetadata({ loaded_model: 'acestep-v15-sft' }) })
-    await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
   })
 
   it('refuses a song whose models the Space did not report', async () => {
     const { provider } = zeroGpu({ stream: withMetadata({ loaded_model: undefined }) })
-    await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
   })
 
   it('refuses when fewer lyric lines arrived than were sent', async () => {
     const { provider } = zeroGpu({ stream: withMetadata({ lyric_lines_sent: 60 }) })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
     expect(error.message).toMatch(/received 60 lyric lines; 68 were sent/)
   })
 
   it('refuses a different language, instrumental choice or length than was sent', async () => {
     for (const changes of [{ vocal_language: 'en' }, { instrumental: true }, { requested_audio_duration_s: 120 }]) {
       const { provider } = zeroGpu({ stream: withMetadata(changes) })
-      await expectCode(provider.generate(BOS_TOXIC), 'bad-result')
+      await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'bad-result')
     }
   })
 })
@@ -936,7 +946,7 @@ describe('what the Space says it did must be what was asked', () => {
 describe('time, cancellation and a dead connection', () => {
   it('a job over the overall budget is a timeout, and is not resubmitted', async () => {
     const { server, provider } = zeroGpu({ stream: [], hang: true }, { jobTimeoutMs: 30 }, { heartbeatTimeoutMs: 10_000 })
-    const error = await expectCode(provider.generate(BOS_TOXIC), 'timeout')
+    const error = await expectCode(provider.generate(BOS_TOXIC, { ticket: press() }), 'timeout')
     expect(error.message).toMatch(/did not finish within/)
     expect(server.joins()).toBe(1)
   })
@@ -944,7 +954,7 @@ describe('time, cancellation and a dead connection', () => {
   it('a stream that stops sending heartbeats is treated as a lost, unavailable connection', async () => {
     const { server, provider } = zeroGpu({ stream: sse([{ msg: 'estimation', event_id: EVENT_ID, rank: 0, queue_size: 1 }]), hang: true },
       {}, { heartbeatTimeoutMs: 25 })
-    const error = await failure(provider.generate(BOS_TOXIC))
+    const error = await failure(provider.generate(BOS_TOXIC, { ticket: press() }))
     expect(error).toBeInstanceOf(EngineUnavailableError)
     expect(error.message).toMatch(/no heartbeat/)
     expect(server.joins()).toBe(1)
@@ -953,14 +963,14 @@ describe('time, cancellation and a dead connection', () => {
   it('a stream that closes before the job finishes is a lost connection', async () => {
     for (const stream of [sse([{ msg: 'process_starts', event_id: EVENT_ID }]), sse([{ msg: 'close_stream', event_id: null }])]) {
       const { provider } = zeroGpu({ stream })
-      expect(await failure(provider.generate(BOS_TOXIC))).toBeInstanceOf(EngineUnavailableError)
+      expect(await failure(provider.generate(BOS_TOXIC, { ticket: press() }))).toBeInstanceOf(EngineUnavailableError)
     }
   })
 
   it('cancelling while waiting settles as cancelled, and nothing is resubmitted', async () => {
     const controller = new AbortController()
     const { server, provider } = zeroGpu({ stream: sse([{ msg: 'estimation', event_id: EVENT_ID, rank: 3, queue_size: 4 }]), hang: true })
-    const promise = provider.generate(BOS_TOXIC, {
+    const promise = provider.generate(BOS_TOXIC, { ticket: press(),
       signal: controller.signal,
       onStatus: (status) => { if (status.queuePosition) controller.abort() },
     })
@@ -972,7 +982,7 @@ describe('time, cancellation and a dead connection', () => {
     const controller = new AbortController()
     controller.abort()
     const { server, provider } = zeroGpu()
-    expect(await failure(provider.generate(BOS_TOXIC, { signal: controller.signal }))).toBeInstanceOf(GenerationCancelledError)
+    expect(await failure(provider.generate(BOS_TOXIC, { ticket: press(), signal: controller.signal }))).toBeInstanceOf(GenerationCancelledError)
     expect(server.calls).toHaveLength(0)
   })
 
@@ -1000,7 +1010,7 @@ describe('checking the connection costs no GPU', () => {
   it('a provider with no address is blocked, says why, and never calls anything', async () => {
     const { server, provider } = zeroGpu({}, { spaceUrl: '' })
     expect(await provider.status()).toEqual({ connected: false, blockedReason: expect.stringMatching(/not set/) })
-    expect(await failure(provider.generate(BOS_TOXIC))).toBeInstanceOf(EngineUnavailableError)
+    expect(await failure(provider.generate(BOS_TOXIC, { ticket: press() }))).toBeInstanceOf(EngineUnavailableError)
     expect(server.calls).toHaveLength(0)
   })
 })
@@ -1030,7 +1040,7 @@ describe('the provider factory', () => {
     expect(provider).toBeInstanceOf(MisconfiguredNeuralProvider)
     expect(await provider.isAvailable()).toBe(false)
     expect((await provider.status()).blockedReason).toMatch(/must be "local" or "zerogpu"/)
-    expect(await failure(provider.generate(BOS_TOXIC))).toBeInstanceOf(EngineUnavailableError)
+    expect(await failure(provider.generate(BOS_TOXIC, { ticket: press() }))).toBeInstanceOf(EngineUnavailableError)
   })
 
   it('hands back neural for neural and procedural for procedural', () => {
@@ -1092,7 +1102,7 @@ describe('the Gradio client, as transport', () => {
   it('ignores messages that belong to another job in the session', async () => {
     const { provider } = zeroGpu({ stream: sse([failed('ZeroGPU quota exceeded', 'not ours'), completed()].map((message, index) =>
       index === 0 ? { ...message, event_id: 'someone-else' } : message)) })
-    await expect(provider.generate(BOS_TOXIC)).resolves.toMatchObject({ engine: 'ace-step' })
+    await expect(provider.generate(BOS_TOXIC, { ticket: press() })).resolves.toMatchObject({ engine: 'ace-step' })
   })
 })
 
@@ -1146,7 +1156,7 @@ describe('the studio and the Space count sung lines the same way', () => {
     const result = await provider.generate({
       style: 'Original Indonesian Batak romantic pop ballad, high-register male vocal',
       lyrics: BATAK_SHEET, language: 'id', vocalGender: 'male', instrumental: false,
-    })
+    }, { ticket: press() })
     expect(result.duration).toBeGreaterThan(0)
     expect(result.engine).toBe('ace-step')
     // One submission: the song was made once and kept, not made and discarded.
@@ -1216,7 +1226,7 @@ describe('a caption or a sheet ACE-Step cannot take is refused before it is sent
 
   it('costs no request: nothing reaches the Space', async () => {
     const { server, provider } = zeroGpu()
-    await expect(provider.generate({ ...BOS_TOXIC, style: longStyle(1457) }))
+    await expect(provider.generate({ ...BOS_TOXIC, style: longStyle(1457) }, { ticket: press() }))
       .rejects.toThrow(/ACE-Step takes at most 512/)
     expect(server.joins()).toBe(0)
   })
@@ -1329,16 +1339,16 @@ describe('live generation is off unless a build says otherwise', () => {
         return Promise.reject(new Error('nothing should have been sent'))
       }) as typeof fetch,
     })
-    await expect(provider.generate({ style: 's', lyrics: 'l' })).rejects.toThrow(/switched off/i)
+    await expect(provider.generate({ style: 's', lyrics: 'l' }, { ticket: press() })).rejects.toThrow(/switched off/i)
     // The point of the switch: no request, not a request that failed.
     expect(calls).toEqual([])
   })
 
   it('says how to turn it on, and that nothing was spent', async () => {
     const provider = new ZeroGpuProvider({ config: { ...TEST_CONFIG, liveGeneration: false } })
-    await expect(provider.generate({ style: 's', lyrics: 'l' }))
+    await expect(provider.generate({ style: 's', lyrics: 'l' }, { ticket: press() }))
       .rejects.toThrow(/ACE_STEP_LIVE_GENERATION_ENABLED=true/)
-    await expect(provider.generate({ style: 's', lyrics: 'l' }))
+    await expect(provider.generate({ style: 's', lyrics: 'l' }, { ticket: press() }))
       .rejects.toThrow(/no GPU time was spent/i)
   })
 })

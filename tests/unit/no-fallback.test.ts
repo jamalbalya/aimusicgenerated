@@ -19,7 +19,7 @@
  *     ← renderSong()                   engine/synth/pipeline.ts
  *     ← handleRequest()                workers/handler.ts
  *     ← runJob()                       workers/client.ts       ← the only gateway
- *     ← ProceduralMusicProvider.generate() and ui/useJob.ts
+ *     ← ProceduralMusicProvider.generate(, { ticket: press() }) and ui/useJob.ts
  *
  * `AceStepProvider` imports none of that: its whole transitive closure is
  * aceStepClient, aceStepRequest, config, types, audioCheck and zeroGpuQuota.
@@ -35,6 +35,7 @@ import * as workerClient from '../../src/workers/client'
 import { BOS_TOXIC_LYRICS, BOS_TOXIC_STYLE } from './fixtures/bos-toxic'
 import { EVENT_ID, FILE_DATA, METADATA, TEST_CONFIG, completed, failed, sse, wav, zeroGpu, type SpaceScript } from './helpers/fakeSpace'
 import type { MusicGenerationRequest, ZeroGpuConfig, ZeroGpuProviderOptions } from '../../src/engine/providers'
+import { press } from './helpers/press'
 
 const REQUEST: MusicGenerationRequest = {
   style: BOS_TOXIC_STYLE,
@@ -180,7 +181,7 @@ describe('a failed neural generation never reaches the procedural engine', () =>
         const provider = neuralProvider(handler)
         let thrown: unknown = null
         try {
-          await provider.generate(REQUEST)
+          await provider.generate(REQUEST, { ticket: press() })
         } catch (error) {
           thrown = error
         }
@@ -212,7 +213,7 @@ describe('a failed neural generation never reaches the procedural engine', () =>
           return wrap([{ task_id: 't', status: 0, result: '[]' }])
         }) as typeof fetch,
       })
-      await expect(provider.generate(REQUEST)).rejects.toThrow(/within the time allowed/)
+      await expect(provider.generate(REQUEST, { ticket: press() })).rejects.toThrow(/within the time allowed/)
       watch.expectUntouched()
     } finally {
       watch.restore()
@@ -223,7 +224,7 @@ describe('a failed neural generation never reaches the procedural engine', () =>
     const watch = watchProceduralEngine()
     try {
       const provider = neuralProvider(() => { throw new TypeError('fetch failed') })
-      await expect(provider.generate(REQUEST)).rejects.toBeInstanceOf(EngineUnavailableError)
+      await expect(provider.generate(REQUEST, { ticket: press() })).rejects.toBeInstanceOf(EngineUnavailableError)
       watch.expectUntouched()
     } finally {
       watch.restore()
@@ -298,7 +299,7 @@ describe('a failed ZeroGPU generation never reaches the procedural engine', () =
         const { provider } = zeroGpu(script, config, options)
         let thrown: unknown = null
         try {
-          await provider.generate({ ...REQUEST, duration: 271, ...request })
+          await provider.generate({ ...REQUEST, duration: 271, ...request }, { ticket: press() })
         } catch (error) {
           thrown = error
         }
@@ -315,7 +316,7 @@ describe('a failed ZeroGPU generation never reaches the procedural engine', () =
     try {
       const controller = new AbortController()
       const { provider } = zeroGpu({ stream: sse([{ msg: 'estimation', event_id: EVENT_ID, rank: 2, queue_size: 3 }]), hang: true })
-      await expect(provider.generate({ ...REQUEST, duration: 271 }, {
+      await expect(provider.generate({ ...REQUEST, duration: 271 }, { ticket: press(),
         signal: controller.signal,
         onStatus: (status) => { if (status.queuePosition) controller.abort() },
       })).rejects.toBeInstanceOf(GenerationCancelledError)
@@ -379,7 +380,7 @@ describe('the offline engine still works exactly as before', () => {
 
     const result = await offline.generate({
       style: BOS_TOXIC_STYLE, lyrics: BOS_TOXIC_LYRICS, language: 'id', vocalGender: 'male',
-    })
+    }, { ticket: press() })
 
     expect(result.engine).toBe('procedural')
     expect(result.takes).toHaveLength(1)
@@ -401,7 +402,7 @@ describe('the offline engine still works exactly as before', () => {
       await offline.generate({
         style: 'a short lo-fi loop', lyrics: '[Verse]\nPagi datang hati berdebar',
         language: 'id', duration: 20,
-      })
+      }, { ticket: press() })
       expect(sing).toHaveBeenCalled()
     } finally {
       sing.mockRestore()

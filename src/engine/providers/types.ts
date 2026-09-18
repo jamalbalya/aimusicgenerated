@@ -43,6 +43,15 @@ export interface MusicGenerationRequest {
 
 export interface MusicGenerationResult {
   id: string
+  /**
+   * The request ticket this song was generated under, when one was required.
+   *
+   * Present on every ZeroGPU result. It is how a song is traced back to the
+   * single press of Generate that authorised it, and how a test proves that
+   * two songs in one session came from two presses rather than from one press
+   * and a retry.
+   */
+  ticketId?: string
   engine: 'ace-step' | 'procedural'
   /** Playable and downloadable; an object URL for a locally produced result. */
   audioUrl: string
@@ -100,6 +109,20 @@ export interface GenerationStatus {
 export interface GenerateOptions {
   onStatus?: (status: GenerationStatus) => void
   signal?: AbortSignal
+  /**
+   * The single permission to send this request, minted by one press of Generate.
+   *
+   * Required by the ZeroGPU provider and by nothing else: it exists because a
+   * ZeroGPU request costs someone's GPU allowance, and the guarantee the studio
+   * makes is that one press buys exactly one of them. The provider spends the
+   * ticket before it opens a socket, so a caller holding one ticket cannot send
+   * twice however it is written — a loop's second iteration throws rather than
+   * generating.
+   *
+   * Typed loosely here so `types.ts` stays free of an import from `live/`; the
+   * provider narrows it.
+   */
+  ticket?: { readonly id: string; readonly spent: boolean; spend(): string }
 }
 
 export interface MusicGenerationProvider {

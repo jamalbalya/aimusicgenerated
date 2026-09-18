@@ -29,13 +29,17 @@ import { scoreToLrc, scoreToSrt } from '../../engine/export/subtitles'
 import { newProjectId, saveProject } from '../../lib/library'
 import { linkProps } from '../../lib/router'
 import { useNeuralEngine } from '../useNeuralEngine'
+import {
+  planLiveGeneration, compilePrompt, mintRequestTicket, verifyLiveResult,
+  type LivePlan, type CompiledPrompt, type LiveVerification,
+} from '../../engine/live'
 import { useAuth } from '../useAuth'
 import { authorizationHeader, signOut } from '../../auth/hfOAuth'
 import { reportQuota } from '../../state/quota'
 import { decodeWav } from '../../engine/audio/wav'
 import {
-  AccountNotAllowedError, AuthenticationRequiredError, createNeuralProvider,
-  EngineUnavailableError, GenerationCancelledError, QuotaExceededError,
+  AuthenticationRequiredError, createNeuralProvider,
+  GenerationCancelledError, QuotaExceededError,
   engineLabel, resolveEngineMode, VERIFIED_ZEROGPU_DURATION, ACE_STEP_TEXT_LIMITS,
   describeFailure, STAGE_LABELS,
   type EngineMode, type GenerationFailure, type GenerationStatus, type NeuralBackend,
@@ -91,6 +95,48 @@ export function effectiveTakeCount(
   takeCount: number, engineMode: EngineMode, backend: NeuralBackend,
 ): number {
   return engineMode === 'neural' && backend === 'zerogpu' ? 1 : takeCount
+}
+
+/**
+ * Where a live request is, from the person's point of view.
+ *
+ * The first three stages happen on this machine and cost nothing. Naming them
+ * separately is the point: "rejected" has to be visibly different from
+ * "failed", because one means the request never left and the other means it
+ * did and something went wrong out there.
+ */
+export type LiveStage =
+  | 'idle'
+  /** Reading the Style and Lyrics into a musical plan. Local, free. */
+  | 'planning'
+  /** Refused before the network. No request was sent and no GPU was spent. */
+  | 'rejected'
+  /** The one request is on its way. */
+  | 'sending'
+  /** ACE-Step is generating. */
+  | 'generating'
+  /** Audio is back and is being decoded and measured. */
+  | 'processing'
+  /** Done, and the verification report is worth reading. */
+  | 'completed'
+  /** Audio came back with a measured technical defect. Not regenerated. */
+  | 'failed-verification'
+  /** The request itself failed. Nothing is retried automatically. */
+  | 'failed'
+  | 'cancelled'
+
+/** What the interface says at each stage, in the words the requirement asks for. */
+export const LIVE_STAGE_LABELS: Record<LiveStage, string> = {
+  idle: '',
+  planning: 'Preparing and validating locally — nothing sent yet',
+  rejected: 'Pre-generation validation failed. No request was sent and no GPU time was used.',
+  sending: 'One ACE-Step generation request started. No automatic regeneration will be performed.',
+  generating: 'Generating — one request, one song',
+  processing: 'Processing the result',
+  completed: 'Audio verification completed',
+  'failed-verification': 'Audio verification failed. The song was not regenerated.',
+  failed: 'The generation request failed. Nothing was retried automatically.',
+  cancelled: 'Stopped waiting.',
 }
 
 /** The host of an address, for display; the address itself when it is not one. */
@@ -280,6 +326,21 @@ export default function StudioPage() {
   const [qualityReport, setQualityReport] = useState<QualityReport | null>(null)
   /** One line per attempt, so a run that regenerated says so rather than just taking longer. */
   const [attemptLog, setAttemptLog] = useState<string[]>([])
+  /**
+   * The live pipeline's own state, one stage at a time.
+   *
+   * Separate from the neural job's `status` because they answer different
+   * questions. The job's status is what the Space is doing; this is where the
+   * request is in a pipeline whose first three stages never reach the Space at
+   * all. Someone whose request was refused in validation needs to see that it
+   * never left the machine.
+   */
+  const [liveStage, setLiveStage] = useState<LiveStage>('idle')
+  const [livePlan, setLivePlan] = useState<LivePlan | null>(null)
+  const [compiledPrompt, setCompiledPrompt] = useState<CompiledPrompt | null>(null)
+  const [liveVerification, setLiveVerification] = useState<LiveVerification | null>(null)
+  /** Which press of Generate authorised the request in flight. */
+  const [ticketId, setTicketId] = useState<string | null>(null)
   const [takeIndex, setTakeIndex] = useState(0)
   const result = takes[takeIndex] ?? null
   const [tab, setTab] = useState<DetailTab>('lyrics')
@@ -360,15 +421,64 @@ export default function StudioPage() {
    * afresh each time rather than one file being varied, because a variation of
    * one render is not a second take of anything.
    */
-  const generateNeural = useCallback(async (overrideSeed?: string) => {
+  /**
+   * One press of Generate, one ACE-Step request, one song.
+   *
+   * The order below is the guarantee, not a style choice. Everything that can
+   * be decided or refused locally happens first, while it is still free:
+   *
+   *   1. plan       — genre, tempo, key, form, voice, arrangement, from the
+   *                   Style and Lyrics, deterministically and offline.
+   *   2. validate   — is this sheet singable in the time asked for? A request
+   *                   that cannot be served is refused HERE, and no GPU is
+   *                   spent on it.
+   *   3. compile    — the plan becomes one caption inside ACE-Step's 512
+   *                   characters, with what did not fit recorded rather than
+   *                   silently dropped.
+   *   4. ticket     — one permission to send, minted once, spent by the
+   *                   provider before it opens a socket.
+   *   5. generate   — exactly one call. There is no loop around it and no
+   *                   second iteration is possible: the ticket is spent.
+   *   6. verify     — measured once, reported, and never acted on by
+   *                   generating again.
+   *
+   * There is deliberately no path from step 6 back to step 5.
+   */
+  const generateNeural = useCallback(async () => {
     const style = composedStyle.trim()
     const lyrics = customLyrics.trim()
-    if (!style) {
-      notify('Describe the song you want.', 'error')
+    const instrumental = vocals === 'none'
+
+    setLiveVerification(null)
+    setCompiledPrompt(null)
+    setLiveStage('planning')
+
+    // ---------------------------------------------------- 1 and 2: plan ---
+    const plan = planLiveGeneration({
+      style,
+      lyrics,
+      ...(duration > 0 ? { durationSeconds: duration } : {}),
+      instrumental,
+      vocalGender,
+      language,
+    })
+    setLivePlan(plan)
+
+    if (!plan.valid) {
+      // Refused before the network. Nothing was sent, no GPU was spent, and
+      // the panel says which checks failed and what to change.
+      setLiveStage('rejected')
+      const first = plan.problems.find((problem) => problem.severity === 'error')
+      notify(first?.message ?? 'The request did not pass pre-generation validation.', 'error')
       return
     }
-    if (!lyrics) {
-      notify('The neural engine sings the lyrics you write. Add some, or switch to Offline Procedural Mode.', 'error')
+
+    // -------------------------------------------------------- 3: compile ---
+    const compiled = compilePrompt(plan, style)
+    setCompiledPrompt(compiled)
+    if (compiled.refusal) {
+      setLiveStage('rejected')
+      notify(compiled.refusal, 'error')
       return
     }
 
@@ -378,144 +488,117 @@ export default function StudioPage() {
     // superseded is dropped rather than applied to whatever is running now.
     startNeural(controller)
     setEngineError(null)
+    setLiveStage('sending')
     updateNeural(controller, { status: { state: 'initializing' } })
 
     // The bearer is borrowed at send time, so a token that arrives or is
     // dropped between presses is honoured without rebuilding anything.
     const provider = createNeuralProvider(undefined, { authorization: authorizationHeader })
-    const baseSeed = Number.parseInt(overrideSeed ?? seed.trim(), 10)
-    const collected: NeuralTake[] = []
 
-    // Each take is its own generation, so each take's failure is its own too:
-    // one that fails must not discard the ones that already worked, and the
-    // person needs to be told *which* one it was.
-    const failures: string[] = []
-    let lastFailure: GenerationFailure | null = null
+    // --------------------------------------------------------- 4: ticket ---
+    // One press, one ticket. The provider spends it before it opens a socket,
+    // so nothing downstream can send a second request under this press —
+    // a retry, a second candidate and a regeneration are all the same
+    // impossible thing from here.
+    const ticket = mintRequestTicket()
+    setTicketId(ticket.id)
+
     try {
-      // The capped count, never the control's: a stale or tampered value must
-      // not be able to put four jobs on a free GPU from one press.
-      for (let index = 0; index < effectiveTakes; index++) {
-        const label = effectiveTakes > 1 ? ` (take ${index + 1} of ${effectiveTakes})` : ''
-        try {
-          const result = await provider.generate({
-            style,
-            lyrics,
-            language: language === 'auto' ? (detectLanguage(lyrics) as string) : language,
-            ...(duration > 0 ? { duration } : {}),
-            ...(vocalGender !== 'auto' ? { vocalGender } : {}),
-            ...(vocals === 'none' ? { instrumental: true } : {}),
-            ...(Number.isFinite(baseSeed) ? { seed: baseSeed + index } : {}),
-          }, {
-            signal: controller.signal,
-            onStatus: (status) => updateNeural(controller, {
-              status: { ...status, ...(status.detail ? { detail: `${status.detail}${label}` } : {}) },
-            }),
-          })
+      // ------------------------------------------------------ 5: generate ---
+      // One call. Not the first of a series — the only one.
+      const result = await provider.generate({
+        style: compiled.caption,
+        lyrics,
+        language: plan.music.language,
+        ...(duration > 0 ? { duration } : {}),
+        ...(vocalGender !== 'auto' ? { vocalGender } : {}),
+        ...(instrumental ? { instrumental: true } : {}),
+      }, {
+        ticket,
+        signal: controller.signal,
+        onStatus: (status) => {
+          if (status.state === 'generating') setLiveStage('generating')
+          updateNeural(controller, { status })
+        },
+      })
 
-          // The object URL is only a way to hand the file across; once it has
-          // been read, the decoded audio is what the player and every export
-          // use. Releasing it frees the whole download — about 52 MB for a
-          // 271-second song — instead of holding it until the tab closes.
-          let buffer: ArrayBuffer
-          try {
-            buffer = await (await fetch(result.audioUrl)).arrayBuffer()
-          } finally {
-            URL.revokeObjectURL(result.audioUrl)
-          }
-          const decoded = decodeWav(buffer)
-          collected.push({ result, audio: decoded })
-          updateNeural(controller, { takes: [...collected] })
-          // Judged, and found unjudgeable — every take, not only the first.
-          // A neural take is one mixed file, and nothing in a browser can
-          // separate the voice from the band well enough to ask whether the
-          // melody fits the chords. The panel carries the reason and where a
-          // real verdict comes from, so an unverified song is never left
-          // looking like a verified one.
-          setQualityReport(gateNeuralTake())
-          setAttemptLog([])
-          if (collected.length === 1) {
-            updateNeural(controller, { index: 0 })
-            openNeuralTake(collected[0]!)
-          }
-        } catch (error) {
-          // A cancellation or a backend that has gone away applies to the whole
-          // run, not to one take: there is nothing to be gained by asking a
-          // dead backend three more times.
-          if (error instanceof GenerationCancelledError) throw error
-          if (error instanceof EngineUnavailableError) throw error
-          // The Space has just refused this sign-in, so the session this page is
-          // holding is worthless: end it, rather than keep saying "Signed in"
-          // above a button that can only fail. The next take would be refused
-          // for the same reason, so the run stops here too.
-          if (error instanceof AuthenticationRequiredError) {
-            // Carried out of the session, because ending it closes this page:
-            // the login screen shows this sentence instead of appearing for no
-            // stated reason.
-            signOut(error.message)
-            throw error
-          }
-          // A refused *account* is not a refused sign-in: the session stays,
-          // because who they are signed in as is the explanation. Every later
-          // take would be refused for the same reason, so the run ends here.
-          if (error instanceof AccountNotAllowedError) throw error
-          const message = error instanceof Error ? error.message : String(error)
-          lastFailure = describeFailure(error)
-          // Numbering one take "Take 1" says there were others. On the free GPU
-          // there is only ever one, so the prefix is added only when it names
-          // something — which of several takes this was.
-          failures.push(effectiveTakes > 1 ? `Take ${index + 1}: ${message}` : message)
-          // A spent allowance is spent for every take after this one too, and
-          // asking again would only be refused again. Stop, and keep what
-          // already worked.
-          if (error instanceof QuotaExceededError) {
-            // The refusal is the only moment Hugging Face states a real
-            // allowance figure. Record it so the banner can show it; it is
-            // informational, and the Space still decides what is allowed.
-            if (error.quota) reportQuota(error.quota)
-            break
-          }
-        }
+      setLiveStage('processing')
+
+      // The object URL is only a way to hand the file across; once it has been
+      // read, the decoded audio is what the player and every export use.
+      // Releasing it frees the whole download — about 52 MB for a 271-second
+      // song — instead of holding it until the tab closes.
+      let buffer: ArrayBuffer
+      try {
+        buffer = await (await fetch(result.audioUrl)).arrayBuffer()
+      } finally {
+        URL.revokeObjectURL(result.audioUrl)
       }
+      const decoded = decodeWav(buffer)
+      const take: NeuralTake = { result, audio: decoded }
 
-      if (collected.length === 0) {
-        updateNeural(controller, { status: { state: 'failed' } })
-        // The panel below carries this sentence along with the stage, the code
-        // and the numbers, and it stays until it is dealt with. A toast saying
-        // the same words would be the message twice — and it floats over the
-        // panel's own buttons while it does it.
-        if (lastFailure) setEngineError(lastFailure)
-        else notify(failures[0] ?? 'ACE-Step produced nothing.', 'error')
+      // -------------------------------------------------------- 6: verify ---
+      // Measured once. Whatever it finds, it never causes another generation:
+      // there is no ticket left and no code path that would mint one.
+      const verification = verifyLiveResult(decoded, {
+        ...(duration > 0 ? { targetBpm: plan.music.targetBpm, requestedDurationSeconds: duration } : {}),
+        ...(duration <= 0 ? { targetBpm: plan.music.targetBpm } : {}),
+        instrumental,
+      })
+      setLiveVerification(verification)
+
+      // The song is opened whichever way verification went, and labelled
+      // accordingly. Withholding it would leave someone who has already spent
+      // their GPU allowance with nothing at all; describing a failed one as a
+      // success would be the lie this whole pipeline exists to avoid. So it is
+      // handed over, with the verdict on it.
+      updateNeural(controller, { takes: [take], index: 0 })
+      openNeuralTake(take)
+      // A neural take is one mixed file, and nothing in a browser can separate
+      // the voice from the band well enough to ask whether the melody fits the
+      // chords. The harmonic gate says so rather than guessing.
+      setQualityReport(gateNeuralTake())
+      setAttemptLog([])
+
+      if (verification.verdict === 'FAILED_VERIFICATION') {
+        setLiveStage('failed-verification')
+        updateNeural(controller, { status: { state: 'completed' } })
+        notify(`Audio verification failed: ${verification.failures[0]}`, 'error')
         return
       }
+      setLiveStage('completed')
       updateNeural(controller, { status: { state: 'completed' } })
-      if (failures.length > 0) {
-        notify(
-          `${collected.length} of ${effectiveTakes} takes generated. ${failures.join(' · ')}`,
-          'error',
-        )
-      } else {
-        notify(`Song generated by ${engineLabel('ace-step').replace('Engine: ', '')}.`, 'success')
-      }
+      notify('One ACE-Step request, one song. Verification report below.', 'success')
     } catch (error) {
       if (error instanceof GenerationCancelledError) {
+        setLiveStage('cancelled')
         updateNeural(controller, { status: { state: 'cancelled' } })
         // ACE-Step has no cancellation endpoint, so this is the honest wording.
-        notify(collected.length > 0
-          ? `Stopped after ${collected.length} take(s). The backend may still be finishing the next one.`
-          : 'Stopped waiting. The backend may still be finishing this song.', 'info')
+        notify('Stopped waiting. The backend may still be finishing this song.', 'info')
         return
       }
+      // The Space has just refused this sign-in, so the session this page is
+      // holding is worthless: end it, rather than keep saying "Signed in" above
+      // a button that can only fail. Carried out of the session, because ending
+      // it closes this page: the login screen shows this sentence instead of
+      // appearing for no stated reason.
+      if (error instanceof AuthenticationRequiredError) {
+        signOut(error.message)
+      }
+      setLiveStage('failed')
       updateNeural(controller, { status: { state: 'failed' } })
-      // Every failure lands here now, not only the three that used to qualify.
-      // The stage and the code are what make a failure reportable, and a toast
-      // that clears itself takes them with it — so this is the one report, and
-      // it stays on the page until it is dealt with.
+      if (error instanceof QuotaExceededError && error.quota) reportQuota(error.quota)
+      // Every failure lands here. The stage and the code are what make a
+      // failure reportable, and a toast that clears itself takes them with it —
+      // so this is the one report, and it stays until it is dealt with.
+      // Nothing here generates again: a failed request cost one press, and the
+      // next request costs another press.
       setEngineError(describeFailure(error))
     } finally {
       // Only ends the job if it is still this one.
       updateNeural(controller, { controller: null })
     }
-  }, [composedStyle, customLyrics, language, duration, vocalGender, vocals, seed, effectiveTakes,
+  }, [composedStyle, customLyrics, language, duration, vocalGender, vocals,
       notify, openNeuralTake, startNeural, updateNeural])
 
   /**
@@ -647,7 +730,7 @@ export default function StudioPage() {
           return
         }
         setTakes([])
-        await generateNeural(overrideSeed)
+        await generateNeural()
         return
       }
       clearNeural()
@@ -1138,8 +1221,10 @@ export default function StudioPage() {
                 {engineError.retryable && (
                   <button type="button" className="btn btn-sm btn-primary"
                     data-testid="engine-error-retry"
+                    title="Starts a new generation. Nothing is retried automatically — this is a
+                      second press of Generate and it costs a second request."
                     onClick={() => { setEngineError(null); void generateSong() }}>
-                    Try again
+                    Generate again
                   </button>
                 )}
                 <button type="button" className="btn btn-sm" onClick={neural.recheck}>
@@ -1150,6 +1235,142 @@ export default function StudioPage() {
                   Use Offline Procedural Mode
                 </button>
               </div>
+            </div>
+          )}
+
+          {engineMode === 'neural' && liveStage !== 'idle' && (
+            <div
+              className="grid gap-2 rounded-[var(--radius)] border p-3 text-[13px]"
+              style={{
+                borderColor: liveStage === 'rejected' || liveStage === 'failed'
+                  || liveStage === 'failed-verification'
+                  ? 'var(--bad, #a33)' : 'var(--line)',
+              }}
+              data-testid="live-pipeline"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] uppercase tracking-wide text-[var(--text-faint)]">
+                  Live ACE-Step pipeline
+                </span>
+                {ticketId && (
+                  <span className="t-num text-[10px] text-[var(--text-faint)]"
+                    data-testid="live-ticket">{ticketId}</span>
+                )}
+              </div>
+              <p className="text-[13px]" data-testid="live-stage">{LIVE_STAGE_LABELS[liveStage]}</p>
+
+              {livePlan && (
+                <>
+                  <p className="text-[11.5px] text-[var(--text-dim)]" data-testid="live-validation">
+                    {livePlan.valid
+                      ? 'Pre-generation validation passed.'
+                      : 'Pre-generation validation failed. Nothing was sent to the Space.'}
+                  </p>
+                  {livePlan.problems.length > 0 && (
+                    <ul className="grid gap-1 text-[11.5px]" data-testid="live-problems">
+                      {livePlan.problems.map((problem, index) => (
+                        <li key={`${problem.code}-${index}`}
+                          style={{ color: problem.severity === 'error'
+                            ? 'var(--bad, #a33)' : 'var(--text-faint)' }}>
+                          <span className="t-num text-[10px]">{problem.code}</span> {problem.message}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <dl className="grid gap-0.5 text-[11.5px] text-[var(--text-faint)]"
+                    data-testid="live-plan">
+                    <div className="flex gap-2"><dt className="min-w-[8rem]">Genre</dt>
+                      <dd>{livePlan.music.genre}</dd></div>
+                    <div className="flex gap-2"><dt className="min-w-[8rem]">Target tempo</dt>
+                      <dd className="t-num">{livePlan.music.targetBpm} BPM</dd></div>
+                    <div className="flex gap-2"><dt className="min-w-[8rem]">Key</dt>
+                      <dd>{livePlan.music.keyName}</dd></div>
+                    <div className="flex gap-2"><dt className="min-w-[8rem]">Form</dt>
+                      <dd>{livePlan.music.form.map((section) => section.label).join(' · ')}</dd></div>
+                    {!livePlan.music.instrumental && (
+                      <div className="flex gap-2"><dt className="min-w-[8rem]">Lyric density</dt>
+                        <dd className="t-num">
+                          {livePlan.lyrics.syllables} syllables
+                          {livePlan.lyrics.density > 0
+                            ? `, ${livePlan.lyrics.density.toFixed(2)}/s` : ''}
+                        </dd></div>
+                    )}
+                  </dl>
+                </>
+              )}
+
+              {compiledPrompt && (
+                <details className="text-[11.5px]" data-testid="live-caption">
+                  <summary className="cursor-pointer text-[var(--text-dim)]">
+                    Compiled caption · {compiledPrompt.characters}/{compiledPrompt.limit} characters
+                  </summary>
+                  <p className="mt-1 whitespace-pre-wrap text-[var(--text-faint)]">
+                    {compiledPrompt.caption}
+                  </p>
+                  {compiledPrompt.dropped.length > 0 && (
+                    <p className="mt-1 text-[var(--text-faint)]" data-testid="live-caption-dropped">
+                      Did not fit in ACE-Step&rsquo;s {compiledPrompt.limit}-character caption, so the
+                      model was never told: {compiledPrompt.dropped.join(', ')}.
+                    </p>
+                  )}
+                </details>
+              )}
+
+              {liveVerification && (
+                <div className="grid gap-1" data-testid="live-verification">
+                  <span className="t-num text-[11.5px] font-medium"
+                    data-testid="live-verdict">{liveVerification.verdict}</span>
+                  {liveVerification.failures.map((failure, index) => (
+                    <p key={index} className="text-[11.5px]" style={{ color: 'var(--bad, #a33)' }}>
+                      {failure}
+                    </p>
+                  ))}
+                  {liveVerification.notes.map((note, index) => (
+                    <p key={index} className="text-[11.5px] text-[var(--text-faint)]">{note}</p>
+                  ))}
+                  {liveVerification.measurements && (
+                    <dl className="grid gap-0.5 text-[11.5px] text-[var(--text-faint)]"
+                      data-testid="live-measurements">
+                      <div className="flex gap-2"><dt className="min-w-[8rem]">Duration</dt>
+                        <dd className="t-num">
+                          {liveVerification.measurements.durationSeconds.toFixed(1)}s</dd></div>
+                      <div className="flex gap-2"><dt className="min-w-[8rem]">Measured tempo</dt>
+                        <dd className="t-num">
+                          {liveVerification.measurements.bpm > 0
+                            ? `${liveVerification.measurements.bpm.toFixed(1)} BPM`
+                            : 'not measurable'}</dd></div>
+                      <div className="flex gap-2"><dt className="min-w-[8rem]">Peak / RMS</dt>
+                        <dd className="t-num">
+                          {liveVerification.measurements.peakDb.toFixed(1)} /{' '}
+                          {liveVerification.measurements.rmsDb.toFixed(1)} dBFS</dd></div>
+                      <div className="flex gap-2"><dt className="min-w-[8rem]">Loudness</dt>
+                        <dd className="t-num">
+                          {liveVerification.measurements.lufs.toFixed(1)} LUFS</dd></div>
+                      <div className="flex gap-2"><dt className="min-w-[8rem]">Clipped samples</dt>
+                        <dd className="t-num">
+                          {(liveVerification.measurements.clippedShare * 100).toFixed(3)}%</dd></div>
+                      <div className="flex gap-2"><dt className="min-w-[8rem]">Silence</dt>
+                        <dd className="t-num">
+                          {(liveVerification.measurements.silentShare * 100).toFixed(1)}%, longest{' '}
+                          {liveVerification.measurements.longestSilenceSeconds.toFixed(1)}s</dd></div>
+                      <div className="flex gap-2"><dt className="min-w-[8rem]">Voice-band activity</dt>
+                        <dd className="t-num">
+                          {(liveVerification.measurements.voiceActivityShare * 100).toFixed(0)}%</dd></div>
+                    </dl>
+                  )}
+                  <details className="text-[11.5px]">
+                    <summary className="cursor-pointer text-[var(--text-dim)]">
+                      Some musical properties cannot be deterministically guaranteed by ACE-Step
+                    </summary>
+                    <ul className="mt-1 grid gap-1 text-[var(--text-faint)]"
+                      data-testid="live-not-measured">
+                      {liveVerification.notMeasured.map((item, index) => (
+                        <li key={index}>{item}</li>
+                      ))}
+                    </ul>
+                  </details>
+                </div>
+              )}
             </div>
           )}
 

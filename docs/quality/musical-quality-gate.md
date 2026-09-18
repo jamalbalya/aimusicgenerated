@@ -550,3 +550,20 @@ Measured effect on the offline engine, 20 prompts × 10 seeds:
   timbre, arrangement or lyrics.
 - On the audio path it inherits every limit of the separator and the pitch
   tracker, which `poc/audio-quality/README.md` states.
+
+## The live ACE-Step path is a different pipeline
+
+Everything above describes the **offline procedural engine**, where the gate
+runs on a composed score before a sample exists and a note that does not fit
+can be moved. That is possible because the engine's own working is visible.
+
+The **live ACE-Step path** cannot work that way and does not pretend to. It is
+documented separately in [`live-ace-step-pipeline.md`](./live-ace-step-pipeline.md).
+The short version: one press of Generate mints one request ticket, the ticket is
+spent before a socket opens, and there is no second request under any
+circumstance — not a retry, not a candidate, not a regeneration after a failed
+check. Everything that can be decided or refused locally happens first, while it
+is still free; what comes back is measured once and reported, never re-rolled.
+
+The two paths never substitute for each other. A neural request that fails,
+fails.

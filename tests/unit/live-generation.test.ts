@@ -15,6 +15,7 @@ import {
 } from '../../src/engine/providers'
 import { TEST_CONFIG } from './helpers/fakeSpace'
 import { NEURAL_SETTINGS } from '../../vite.config'
+import { press } from './helpers/press'
 
 const BOS_TOXIC = { style: 'Dangdut koplo sarkastik', lyrics: '[Verse]\nHei kawan' }
 
@@ -29,7 +30,7 @@ describe('a build is not allowed to generate unless it was told it may', () => {
       }) as typeof fetch,
     })
 
-    await expect(provider.generate(BOS_TOXIC)).rejects.toThrow(/switched off/i)
+    await expect(provider.generate(BOS_TOXIC, { ticket: press() })).rejects.toThrow(/switched off/i)
     // Not "a request that failed" — no request. That is the difference between
     // a switch and a hope.
     expect(reached).toEqual([])
@@ -40,7 +41,7 @@ describe('a build is not allowed to generate unless it was told it may', () => {
     // planner. The switch has to come first, or a build with it off would
     // report a length problem and leave someone believing generation was tried.
     const provider = new ZeroGpuProvider({ config: { ...TEST_CONFIG, liveGeneration: false } })
-    await expect(provider.generate({ style: 'x'.repeat(900), lyrics: 'hello' }))
+    await expect(provider.generate({ style: 'x'.repeat(900), lyrics: 'hello' }, { ticket: press() }))
       .rejects.toThrow(/switched off/i)
   })
 
@@ -68,7 +69,7 @@ describe('a build is not allowed to generate unless it was told it may', () => {
       config: { ...TEST_CONFIG, liveGeneration: true },
       fetchImpl: (() => Promise.reject(new TypeError('Failed to fetch'))) as typeof fetch,
     })
-    await expect(provider.generate(BOS_TOXIC)).rejects.not.toThrow(/switched off/i)
+    await expect(provider.generate(BOS_TOXIC, { ticket: press() })).rejects.not.toThrow(/switched off/i)
   })
 })
 

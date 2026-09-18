@@ -36,6 +36,7 @@ import {
   DEFAULT_MODELS, DEFAULT_VOCAL_LANGUAGE, lyricLines, normalizeLyrics,
 } from './aceStepRequest'
 import { spaceUrlProblem, zeroGpuConfig, type ZeroGpuConfig } from './config'
+import { MissingRequestTicketError } from '../live/requestGuard'
 import type { GenerationErrorCode, GenerationStage } from './failure'
 import { parseQuotaNotice } from './zeroGpuQuota'
 import {
@@ -352,8 +353,21 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
   }
 
   async generate(request: MusicGenerationRequest, options: GenerateOptions = {}): Promise<MusicGenerationResult> {
-    const { onStatus, signal } = options
+    const { onStatus, signal, ticket } = options
     const report = (status: GenerationStatus) => onStatus?.(status)
+
+    // Spent first, ahead of every other check, so that a request which is going
+    // to be refused still consumes the press that authorised it. The reason is
+    // the loop that used to sit around this call: were the ticket spent last,
+    // a request refused early would leave it unspent and a second iteration
+    // would sail through. Spending here makes "one press, one request" hold
+    // even for the requests that never leave the machine.
+    //
+    // The ticket is optional in the type and required here, because only this
+    // provider spends someone else's GPU allowance. A call without one is a
+    // programming error rather than a user-facing failure, and it names itself.
+    if (!ticket) throw new MissingRequestTicketError()
+    const ticketId = ticket.spend()
 
     const client = this.client
     if (!client) {
@@ -458,7 +472,11 @@ export class ZeroGpuProvider implements NeuralMusicProvider {
 
       report({ state: 'completed', detail: 'Song generated' })
       return {
+        // The Gradio event id identifies the call; the ticket identifies the
+        // press that authorised it. Both are kept so a song can be traced back
+        // to the one action that asked for it.
         id: submission.eventId,
+        ticketId,
         engine: 'ace-step',
         audioUrl: this.toObjectUrl(blob),
         duration,
