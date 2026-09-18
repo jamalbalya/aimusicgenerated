@@ -16,9 +16,8 @@
  * singable Indonesian sheets.
  */
 
-import { countLineSyllables } from '../lang'
 import type { LanguageId } from '../lang/types'
-import { parseLyricStructure, type LyricBlock } from '../lyrics/structure'
+import { parseLyricScript, type LyricScript, type ScriptSection } from './lyricScript'
 import type { SectionKind } from '../compose/types'
 
 /**
@@ -55,12 +54,23 @@ export type LyricProblemCode =
   | 'SPARSE'
   | 'NO_CHORUS'
   | 'UNBALANCED_SECTION'
+  | 'DENSITY_CONFLICT'
 
 export interface LyricProblem {
   code: LyricProblemCode
-  /** `error` stops the request. `warning` is shown and the request proceeds. */
-  severity: 'error' | 'warning'
+  /**
+   * `error` stops the request. `warning` and `conflict` are shown and the
+   * request proceeds.
+   *
+   * `conflict` is its own level because it is its own situation: the words and
+   * the length asked for cannot both be honoured, the system has no business
+   * choosing between them, and it must not resolve the conflict by editing
+   * either. It says what will happen and lets the person decide.
+   */
+  severity: 'error' | 'warning' | 'conflict'
   message: string
+  /** What the model is likely to do with it, for a conflict. */
+  consequence?: string
   /** 1-based line in the sheet, when the problem is at one. */
   line?: number
 }
@@ -68,6 +78,10 @@ export interface LyricProblem {
 export interface PlannedSection {
   kind: SectionKind
   label: string
+  /** The section's own name, without its direction. */
+  sectionName: string
+  /** The arrangement direction written in its header, when there was one. */
+  sectionDirection: string
   lines: number
   syllables: number
   /** Share of the sung syllables this section carries, 0..1. */
@@ -75,8 +89,15 @@ export interface PlannedSection {
 }
 
 export interface LyricPlan {
-  /** The sheet as it will be sent, with line endings normalised. */
+  /**
+   * The sheet as it will be sent.
+   *
+   * The original, minus anything at or after an end marker. No line, header or
+   * direction inside the song is altered, shortened or removed.
+   */
   text: string
+  /** The parsed reading. The original is on `script.original`, untouched. */
+  script: LyricScript
   language: LanguageId
   /** The language actually detected in the sung lines. */
   detectedLanguage: LanguageId
@@ -94,33 +115,19 @@ export interface LyricPlan {
 }
 
 /**
- * Bracketed lines that are directions rather than section names.
- *
- * ACE-Step sings what it is given. A line like `[slow down here]` is not a
- * section tag and not a control instruction the model understands — it is four
- * words the singer may well sing. Caught here rather than heard later.
- */
-const KNOWN_TAG = /^(intro|verse|pre-?chorus|chorus|hook|bridge|solo|drop|breakdown|outro|interlude|instrumental|inst|refrain|final chorus|guitar solo|instrumental break|coda|ad-?lib|ad-?libs|post-?chorus)\b/i
-
-function isDirection(tag: string): boolean {
-  return !KNOWN_TAG.test(tag.trim())
-}
-
-/** Normalises line endings and drops a trailing blank run. Nothing else. */
-export function normalizeSheet(text: string): string {
-  return text.replace(/\r\n?/g, '\n').replace(/\s+$/, '')
-}
-
-const blockKey = (block: LyricBlock) =>
-  block.lines.map((line) => line.trim().toLowerCase()).join('\n')
-
-/**
- * Reads the sheet and says whether it can be sung in the time available.
+ * Reads the sheet and reports what it will and will not fit.
  *
  * `targetSeconds` may be undefined, which is Auto: ACE-Step picks the length
  * from the words. Then there is no length to overflow, so the duration checks
- * do not run and the density figure is reported against the minimum singable
- * length instead.
+ * do not run.
+ *
+ * Nothing here refuses a sheet for being long. A sheet that will not fit the
+ * length asked for is a *conflict between two things the person asked for*, and
+ * resolving it by refusing — or worse, by trimming — is the system deciding
+ * which of their own requests matters less. It says what will happen and lets
+ * them choose. The one exception is ACE-Step's own 4096-character ceiling,
+ * which is not a judgement but an HTTP 400, and that is handled in `plan.ts`
+ * where the other hard limits live.
  */
 export function planLyrics(
   rawText: string,
@@ -128,60 +135,66 @@ export function planLyrics(
   targetSeconds: number | undefined,
   detect: (text: string) => LanguageId,
 ): LyricPlan {
-  const text = normalizeSheet(rawText)
+  const script = parseLyricScript(rawText, language)
   const problems: LyricProblem[] = []
-  const blocks = parseLyricStructure(text)
 
-  const sungLineTexts: string[] = []
-  const sections: PlannedSection[] = []
-  let hasChorus = false
-
-  // Directions left among the words, reported against the line they sit on.
-  const lines = text.split('\n')
-  lines.forEach((raw, index) => {
-    const line = raw.trim()
-    const tag = /^\[([^\]]+)\]$/.exec(line)
-    if (tag && isDirection(tag[1]!)) {
-      problems.push({
-        code: 'CONTROL_INSTRUCTION', severity: 'warning', line: index + 1,
-        message: `Line ${index + 1}: "${line}" is not a section name. ACE-Step has no control `
-          + 'instructions — a bracketed line it does not recognise is words it may sing.',
-      })
-    }
-  })
-
-  for (const block of blocks) {
-    const syllables = block.lines.reduce((total, line) => total + countLineSyllables(line, language), 0)
-    if (block.kind === 'chorus') hasChorus = true
-    sungLineTexts.push(...block.lines)
-    sections.push({
-      kind: block.kind, label: block.label, lines: block.lines.length, syllables, share: 0,
+  // Bracketed lines that name no section. Reported, never removed.
+  for (const stray of script.strayDirections) {
+    problems.push({
+      code: 'CONTROL_INSTRUCTION', severity: 'warning', line: stray.line,
+      message: `Line ${stray.line}: "${stray.text}" is not a section name. ACE-Step has no control `
+        + 'instructions, so a bracketed line it does not recognise is words it may sing. '
+        + 'It is being sent exactly as written — nothing was removed.',
     })
   }
 
-  const syllables = sections.reduce((total, section) => total + section.syllables, 0)
-  for (const section of sections) section.share = syllables > 0 ? section.syllables / syllables : 0
+  const sections: PlannedSection[] = script.sections.map((section: ScriptSection) => ({
+    kind: section.kind,
+    label: section.rawHeader ? section.rawHeader.replace(/^[[(]|[\])]$/g, '') : section.sectionName,
+    sectionName: section.sectionName,
+    sectionDirection: section.sectionDirection,
+    lines: section.lines.length,
+    syllables: section.syllables,
+    share: 0,
+  }))
 
-  // Consecutive identical blocks. A chorus repeating later in the song is the
-  // form working; the same block twice in a row is a paste that slipped.
-  for (let index = 1; index < blocks.length; index++) {
-    const previous = blocks[index - 1]!
-    const current = blocks[index]!
-    if (current.lines.length > 0 && blockKey(current) === blockKey(previous)) {
+  const syllables = script.syllables
+  for (const section of sections) section.share = syllables > 0 ? section.syllables / syllables : 0
+  const hasChorus = script.sections.some((section) => section.kind === 'chorus')
+  const sungLines = script.sungLines
+
+  // Consecutive identical blocks. A chorus returning later is the form working;
+  // the same block twice in a row is a paste that slipped.
+  for (let index = 1; index < script.sections.length; index++) {
+    const previous = script.sections[index - 1]!
+    const current = script.sections[index]!
+    const key = (section: ScriptSection) =>
+      section.lines.map((line) => line.trim().toLowerCase()).join('\n')
+    if (current.lines.length > 0 && key(current) === key(previous)) {
       problems.push({
         code: 'DUPLICATE_BLOCK', severity: 'warning',
-        message: `"${current.label}" repeats the block immediately before it word for word. `
-          + 'A chorus that returns later is normal; the same block twice in a row is usually a paste.',
+        message: `"${current.sectionName}" repeats the block immediately before it word for word. `
+          + 'A chorus that returns later is normal; the same block twice in a row is usually a '
+          + 'paste. Both are being sent — nothing was removed.',
       })
     }
   }
 
-  const sungLines = sungLineTexts.length
+  if (script.terminated) {
+    const after = script.afterEnd.length
+    problems.push({
+      code: 'CONTROL_INSTRUCTION', severity: 'warning',
+      message: `"${script.terminator}" ends the sheet. It is a marker, not something to sing, so `
+        + `it is not sent${after > 0 ? `, and neither are the ${after} line(s) after it` : ''}. `
+        + 'Everything before it is sent in full, and your sheet is unchanged in the editor.',
+    })
+  }
+
   const minimumDurationSeconds = syllables > 0
     ? (syllables / MAX_SUSTAINED_SYLLABLES_PER_SECOND) / (1 - NON_SUNG_SHARE)
     : 0
 
-  if (text.trim().length === 0) {
+  if (rawText.trim().length === 0) {
     problems.push({
       code: 'EMPTY', severity: 'error',
       message: 'The lyric sheet is empty. ACE-Step sings the words it is given; '
@@ -200,13 +213,21 @@ export function planLyrics(
 
   if (targetSeconds !== undefined && syllables > 0) {
     if (density > MAX_SUSTAINED_SYLLABLES_PER_SECOND) {
+      // A conflict, not a refusal. Both halves were asked for by the same
+      // person, and the system has no standing to decide which one they meant
+      // less. It says what the model will do and generates if they say so.
       problems.push({
-        code: 'TOO_LONG_FOR_DURATION', severity: 'error',
-        message: `${syllables} syllables cannot be sung in ${Math.round(targetSeconds)} seconds: it `
-          + `would need ${density.toFixed(1)} syllables a second, and ${MAX_SUSTAINED_SYLLABLES_PER_SECOND} `
-          + `is the ceiling for a whole song. Ask for at least ${Math.ceil(minimumDurationSeconds)} `
-          + 'seconds, or shorten the sheet. ACE-Step would not sing this faster — it would stop mid-phrase '
-          + 'when the length ran out.',
+        code: 'DENSITY_CONFLICT', severity: 'conflict',
+        message: `These lyrics and this length pull against each other. ${syllables} syllables in `
+          + `${Math.round(targetSeconds)} seconds is ${density.toFixed(1)} a second, and `
+          + `${MAX_SUSTAINED_SYLLABLES_PER_SECOND} is about the ceiling for a whole song. Your `
+          + 'lyrics are being sent in full, exactly as written.',
+        consequence: `ACE-Step will not sing them faster to fit. It is given a token budget of `
+          + `length x 5 and must end at it, so the likely outcome is that the later sections are `
+          + `rushed or the song stops mid-phrase. Asking for about `
+          + `${Math.ceil(minimumDurationSeconds)} seconds, or leaving the length on Auto so the `
+          + `model picks one from the words, would give them room. Generate anyway if you want to `
+          + `hear what it does.`,
       })
     } else if (density < SPARSE_SYLLABLES_PER_SECOND && targetSeconds > 60) {
       problems.push({
@@ -217,7 +238,8 @@ export function planLyrics(
     }
   }
 
-  const detectedLanguage = sungLines > 0 ? detect(sungLineTexts.join('\n')) : language
+  const sungText = script.sections.flatMap((section) => section.lines).join('\n')
+  const detectedLanguage = sungLines > 0 ? detect(sungText) : language
   if (sungLines > 0 && detectedLanguage !== language) {
     problems.push({
       code: 'LANGUAGE_MISMATCH', severity: 'warning',
@@ -227,7 +249,7 @@ export function planLyrics(
     })
   }
 
-  if (sungLines >= 8 && !hasChorus && blocks.some((block) => block.kind !== 'verse')) {
+  if (sungLines >= 8 && !hasChorus && script.sections.some((section) => section.kind !== 'verse')) {
     problems.push({
       code: 'NO_CHORUS', severity: 'warning',
       message: 'No section is tagged as a chorus, so nothing in the sheet is marked to return. '
@@ -235,7 +257,6 @@ export function planLyrics(
     })
   }
 
-  // A single section carrying almost the whole sheet is a sheet with no form.
   const dominant = sections.find((section) => section.share > 0.8 && sections.length > 1)
   if (dominant) {
     problems.push({
@@ -246,7 +267,8 @@ export function planLyrics(
   }
 
   return {
-    text,
+    text: script.payload,
+    script,
     language,
     detectedLanguage,
     sungLines,
@@ -256,6 +278,8 @@ export function planLyrics(
     minimumDurationSeconds,
     hasChorus,
     problems,
+    // A conflict is not an error. The request is still sendable and the person
+    // decides whether to send it.
     singable: !problems.some((problem) => problem.severity === 'error'),
   }
 }

@@ -13,7 +13,7 @@ import { describe, expect, it, beforeEach } from 'vitest'
 import {
   planLiveGeneration, planSeed, compilePrompt, directionsFor,
   mintRequestTicket, resetRequestTickets, RequestTicketSpentError, MissingRequestTicketError,
-  verifyLiveResult, planLyrics, CONSTRAINTS, constraintsOf,
+  verifyLiveResult, planLyrics, parseLyricScript, CONSTRAINTS, constraintsOf,
   MAX_SUSTAINED_SYLLABLES_PER_SECOND,
   type LiveGenerationInput,
 } from '../../src/engine/live'
@@ -81,36 +81,30 @@ describe('nothing reaches the GPU until the request is worth sending', () => {
     }
   })
 
-  it('refuses lyrics that cannot be sung in the time asked for', () => {
-    // Deliberately far past any human delivery rate: 60 dense lines in 30
-    // seconds. ACE-Step would not sing this faster, it would stop mid-phrase.
+  it('states a density conflict instead of refusing, and keeps every word', () => {
+    // The system adapts to the input, not the other way round. Lyrics and a
+    // length that pull against each other were BOTH asked for by the same
+    // person; refusing, or trimming to fit, is the system deciding which of
+    // their requests it liked less. It says what the model will do and leaves
+    // the decision where it belongs.
     const dense = Array.from({ length: 60 }, (_, index) =>
       `Baris nomor ${index} penuh dengan kata kata yang sangat panjang sekali`).join('\n')
-    const plan = planLiveGeneration(input({ lyrics: `[Verse 1]\n${dense}`, durationSeconds: 30 }))
-    expect(plan.valid).toBe(false)
-    const problem = plan.problems.find((entry) => entry.code === 'TOO_LONG_FOR_DURATION')
-    expect(problem?.severity).toBe('error')
-    // And it says what length would work, rather than only refusing.
-    expect(problem?.message).toMatch(/at least \d+ seconds/)
-  })
+    const sheet = `[Verse 1]\n${dense}`
+    const plan = planLiveGeneration(input({ lyrics: sheet, durationSeconds: 30 }))
 
-  it('refuses a sheet longer than ACE-Step takes, whatever the duration', () => {
-    // Not the same question as whether it fits the time. A sheet can be
-    // perfectly singable at the length requested and still be more characters
-    // than the endpoint accepts — found by an end-to-end test whose sheet
-    // passed every musical check and was then refused by the provider, after
-    // the planner had said the request was fine.
-    const huge = Array.from({ length: 200 }, (_, index) =>
-      `Baris ${index} dengan kata kata panjang sekali untuk mengisi ruang`).join('\n')
-    expect(huge.length).toBeGreaterThan(4096)
-    const plan = planLiveGeneration(input({ lyrics: `[Verse 1]\n${huge}` }))
-    expect(plan.valid).toBe(false)
-    expect(plan.problems.some((problem) => /at most 4096/.test(problem.message))).toBe(true)
+    // Sendable. The person decides.
+    expect(plan.valid).toBe(true)
+    const conflict = plan.problems.find((entry) => entry.code === 'DENSITY_CONFLICT')
+    expect(conflict?.severity).toBe('conflict')
+    // It explains what will happen rather than only that something is wrong.
+    expect(conflict?.consequence).toMatch(/will not sing them faster/)
+    expect(conflict?.consequence).toMatch(/at least|about \d+ seconds|Auto/)
 
-    // And an instrumental, whose sheet is replaced by [inst], is not refused
-    // for the contents of a box it does not send.
-    expect(planLiveGeneration(input({ lyrics: `[Verse 1]\n${huge}`, instrumental: true })).valid)
-      .toBe(true)
+    // And not one word was removed on the way to the payload.
+    for (const line of dense.split('\n')) {
+      expect(plan.lyrics.text).toContain(line)
+    }
+    expect(plan.lyrics.script.original).toBe(sheet)
   })
 
   it('warns rather than refuses when the sheet is sparse for its length', () => {
@@ -160,6 +154,125 @@ describe('nothing reaches the GPU until the request is worth sending', () => {
     const plan = planLyrics(SHEET, 'id', undefined, detectLanguage)
     expect(plan.minimumDurationSeconds).toBeGreaterThan(0)
     expect(plan.minimumDurationSeconds).toBeLessThan(120)
+  })
+})
+
+/* ------------------------------------------------- reading the user's sheet --- */
+
+describe('the sheet is read, never rewritten', () => {
+  const RICH = `[Intro, Delicate Piano and Soft Saxophone]
+
+[Verse 1, Soft and Intimate]
+Aku masih di sini menunggu
+Cahaya pagi yang tak kunjung datang
+
+[Chorus, Full Band, Powerful]
+Rindu yang tak selesai
+Menggantung di udara
+
+[Verse 2]
+Langkahku pelan menyusuri jalan
+
+[Chorus, Full Band, Powerful]
+Rindu yang tak selesai
+Menggantung di udara
+
+[Outro, Fading Saxophone]
+Tak pernah jadi nyata
+
+[End]
+notes to self that are not part of the song`
+
+  it('splits a header into its section name and its arrangement direction', () => {
+    const script = parseLyricScript(RICH, 'id')
+    const intro = script.sections[0]!
+    expect(intro.sectionName).toBe('Intro')
+    expect(intro.sectionDirection).toBe('Delicate Piano and Soft Saxophone')
+    expect(intro.kind).toBe('intro')
+    expect(intro.rawHeader).toBe('[Intro, Delicate Piano and Soft Saxophone]')
+
+    // A direction with its own commas stays whole.
+    const chorus = script.sections.find((section) => section.sectionName === 'Chorus')!
+    expect(chorus.sectionDirection).toBe('Full Band, Powerful')
+
+    // A header with no direction has an empty one, not a missing section.
+    const verse2 = script.sections.find((section) => section.sectionName === 'Verse 2')!
+    expect(verse2.sectionDirection).toBe('')
+  })
+
+  it('collects every direction as a planned constraint', () => {
+    const script = parseLyricScript(RICH, 'id')
+    expect(script.directions.map((entry) => entry.direction)).toEqual([
+      'Delicate Piano and Soft Saxophone',
+      'Soft and Intimate',
+      'Full Band, Powerful',
+      'Full Band, Powerful',
+      'Fading Saxophone',
+    ])
+  })
+
+  it('treats [End] as a terminator, not as something to sing', () => {
+    const script = parseLyricScript(RICH, 'id')
+    expect(script.terminated).toBe(true)
+    expect(script.terminator).toBe('[End]')
+    expect(script.afterEnd).toEqual(['notes to self that are not part of the song'])
+    // Neither the marker nor what follows it reaches the model.
+    expect(script.payload).not.toContain('[End]')
+    expect(script.payload).not.toContain('notes to self')
+    // And no section was invented for it.
+    expect(script.sections.some((section) => /end/i.test(section.sectionName))).toBe(false)
+  })
+
+  it('keeps the original exactly, whatever it does with the reading', () => {
+    const script = parseLyricScript(RICH, 'id')
+    expect(script.original).toBe(RICH)
+  })
+
+  it('sends every line, every header and every direction of the song itself', () => {
+    const script = parseLyricScript(RICH, 'id')
+    for (const line of RICH.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      if (trimmed === '[End]' || trimmed.startsWith('notes to self')) continue
+      expect(script.payload).toContain(trimmed)
+    }
+    // Repeated choruses are repeated, not collapsed.
+    expect(script.payload.match(/Rindu yang tak selesai/g)).toHaveLength(2)
+    expect(script.payload.match(/\[Chorus, Full Band, Powerful\]/g)).toHaveLength(2)
+  })
+
+  it('carries the directions through the plan to the form', () => {
+    const plan = planLiveGeneration(input({ lyrics: RICH }))
+    const intro = plan.music.form.find((section) => section.label.startsWith('Intro'))!
+    expect(intro.direction).toBe('Delicate Piano and Soft Saxophone')
+    expect(plan.lyrics.sections[0]!.sectionDirection).toBe('Delicate Piano and Soft Saxophone')
+  })
+
+  it('keeps words written before any header', () => {
+    const script = parseLyricScript('sebuah baris tanpa judul\nbaris kedua', 'id')
+    expect(script.sungLines).toBe(2)
+    expect(script.sections[0]!.kind).toBe('verse')
+    expect(script.payload).toContain('sebuah baris tanpa judul')
+  })
+
+  it('sends a stray bracketed line rather than deleting it, and says so', () => {
+    const sheet = '[Verse 1]\nSatu dua tiga\n[slow down here]\nEmpat lima enam'
+    const plan = planLiveGeneration(input({ lyrics: sheet }))
+    // Reported...
+    const problem = plan.problems.find((entry) => entry.code === 'CONTROL_INSTRUCTION')
+    expect(problem?.message).toMatch(/nothing was removed/)
+    // ...and still sent, because deleting somebody's line to protect them from
+    // it is worse than singing it.
+    expect(plan.lyrics.text).toContain('[slow down here]')
+  })
+
+  it('keeps the requested tempo as the target, and says it was requested', () => {
+    const stated = planLiveGeneration(input({ style: 'soft ballad at 78 bpm' }))
+    expect(stated.music.targetBpm).toBe(78)
+    expect(stated.music.bpmStated).toBe(true)
+
+    const inferred = planLiveGeneration(input({ style: 'soft ballad' }))
+    expect(inferred.music.bpmStated).toBe(false)
   })
 })
 

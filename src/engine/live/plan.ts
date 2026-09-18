@@ -54,6 +54,8 @@ export interface PlannedForm {
   label: string
   /** True when the section came from the user's own sheet rather than a template. */
   fromLyrics: boolean
+  /** The arrangement direction written in the header, when there was one. */
+  direction?: string
 }
 
 export interface MusicalPlan {
@@ -64,6 +66,14 @@ export interface MusicalPlan {
   /** The emotional direction, as a short phrase for the caption. */
   emotion: string
   targetBpm: number
+  /**
+   * True when the person wrote the tempo themselves.
+   *
+   * A stated tempo is a requirement and is reported against the measured one
+   * afterwards. An inferred tempo is the planner filling a gap, and reporting a
+   * deviation from a number nobody asked for would be inventing a failure.
+   */
+  bpmStated: boolean
   /** How the beat sits: straight, shuffled, syncopated. */
   groove: string
   keyName: string
@@ -296,7 +306,10 @@ export function planLiveGeneration(input: LiveGenerationInput): LivePlan {
   // the person asked for, and overriding them with a genre default would be
   // rewriting the song.
   const fromSheet: PlannedForm[] = lyrics.sections.map((section) => ({
-    kind: section.kind, label: section.label, fromLyrics: true,
+    kind: section.kind,
+    label: section.label,
+    fromLyrics: true,
+    ...(section.sectionDirection ? { direction: section.sectionDirection } : {}),
   }))
   const form = input.instrumental
     ? templateForm(spec, input.durationSeconds)
@@ -346,6 +359,12 @@ export function planLiveGeneration(input: LiveGenerationInput): LivePlan {
   const genreConfident = genreIsConfident(detectGenreDetailed(
     ` ${input.style.toLowerCase().replace(/[^\p{L}\p{N}#&'\s.,;-]/gu, ' ').replace(/\s+/g, ' ')} `))
 
+  // Whether the tempo came from the person or from the planner. Read off the
+  // style text the same way `buildSpec` reads it, so the two cannot disagree
+  // about whether a number was stated.
+  const bpmStated = /(\d{2,3})\s*(?:bpm|beats per minute)/i.test(input.style)
+    || /\bat\s+(\d{2,3})\b/i.test(input.style)
+
   const music: MusicalPlan = {
     genre: spec.genre.label,
     genreFamily: spec.genre.family,
@@ -353,6 +372,7 @@ export function planLiveGeneration(input: LiveGenerationInput): LivePlan {
     mood: spec.mood.label,
     emotion: emotionOf(spec),
     targetBpm: spec.bpm,
+    bpmStated,
     groove: grooveOf(spec),
     keyName: keyNameOf(spec.key.tonic, spec.key.scale),
     tonic: spec.key.tonic,

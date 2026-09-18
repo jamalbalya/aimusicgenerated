@@ -94,6 +94,36 @@ any other press.
 
 Everything in this list costs nothing and happens on the visitor's own machine.
 
+### The sheet is read, never rewritten
+
+Two objects exist and they are never the same one. The **original** is what the
+person typed, byte for byte, and nothing in the pipeline writes to it — not the
+editor, not the planner, not the compiler. The **script** is a reading of it,
+built for the generator and discarded afterwards.
+
+Headers are parsed as `[Name]` or `[Name, direction]`:
+
+```
+[Intro, Delicate Piano and Soft Saxophone]
+  sectionName      = "Intro"
+  sectionDirection = "Delicate Piano and Soft Saxophone"
+```
+
+The direction is an arrangement instruction, not words to sing. It travels to
+ACE-Step **inside the lyric sheet**, which is the only place a per-section
+instruction can go — the caption describes the whole song. It is also counted as
+a planned constraint, so the interface can say it arrived.
+
+`[End]` (and `fin`, `the end`, `stop`) **terminates the reading**. It is a
+marker, not lyric text: it is not sent, nothing after it is sent, and both facts
+are reported. Everything before it is sent in full.
+
+What is **never** done to a sheet: shortened, trimmed, reordered, de-duplicated,
+translated, or had a section removed. A repeated chorus is sent twice because it
+was written twice. A bracketed line the parser does not recognise is *reported*
+and then *sent anyway*, because deleting somebody's line to protect them from it
+is worse than singing it.
+
 **Refusals — the request is not sent and no GPU time is used:**
 
 - Style empty.
@@ -101,27 +131,40 @@ Everything in this list costs nothing and happens on the visitor's own machine.
   with no lyrics is correct, not invalid.)
 - Lyric sheet with section tags but no words under them.
 - Duration outside ACE-Step's own 10–600 second range, or not a number.
-- **Lyrics that cannot be sung in the time requested.** Syllables are counted
-  with the syllabifier for the language the words are actually in, then checked
-  against 7 syllables per second of singing time — a ceiling no singer sustains
-  across a whole song. This matters more than it looks: ACE-Step does not sing
-  an overlong sheet faster, it installs a token budget of `duration × 5` and the
-  decoder is barred from ending before it and forced to end at it, so the words
-  run out of room and the song stops mid-phrase. The refusal names the length
-  that would work.
-- A Style already longer than ACE-Step's 512 characters. Refused rather than
-  truncated: nobody's sentence is edited to make it fit.
+- A Style longer than ACE-Step's 512 characters, or a sheet longer than its
+  4096. Refused rather than truncated: nobody's sentence is edited to make it
+  fit. These two are not judgements — they are an HTTP 400 from the Space, which
+  would spend the queue wait and return nothing.
+
+**A constraint conflict — stated, and the person decides:**
+
+When the lyrics cannot fit the length requested, **the request is not refused
+and the lyrics are not touched**. Both halves were asked for by the same person,
+and choosing between them is not the system's to do. So it says:
+
+> These lyrics and this length pull against each other. 420 syllables in 120
+> seconds is 4.7 a second… Your lyrics are being sent in full, exactly as
+> written.
+>
+> ACE-Step will not sing them faster to fit. It is given a token budget of
+> length × 5 and must end at it, so the likely outcome is that the later
+> sections are rushed or the song stops mid-phrase. Asking for about 180
+> seconds, or leaving the length on Auto so the model picks one from the words,
+> would give them room. Generate anyway if you want to hear what it does.
+
+Nobody is asked to shorten their lyrics to suit the model.
 
 **Warnings — shown, and the request proceeds:**
 
 - A bracketed line that is not a section name. ACE-Step has no control
-  instructions, so `[slow down here]` is four words it may sing.
+  instructions, so `[slow down here]` is four words it may sing — and it is sent.
 - A block that repeats the block immediately before it word for word. (A chorus
-  returning later is normal form and is not flagged.)
+  returning later is normal form and is not flagged.) Both are sent.
 - Lyrics that read as a different language from the one requested.
 - A sheet so sparse for its length that most of the song will be instrumental.
 - No section tagged as a chorus, in a sheet long enough to have one.
 - One section holding more than 80% of the words.
+- An end marker, and anything after it, not being sent.
 
 **Decided, and written into the caption:** genre, subgenre family, mood,
 emotional direction, target BPM, groove, key, scale, chord character, form,
@@ -149,8 +192,20 @@ priority order and each is dropped if it will not fit:
 8. Mix and master direction — last, because ACE-Step returns one finished mixed
    file and these words move it least.
 
-What did not fit is listed in `dropped` and shown in the interface, so nobody
-believes the model was told something it was not.
+What did not fit is listed in `dropped` and shown in the interface as three
+separate counts — **Planned**, **Sent**, **Dropped** — so nobody believes the
+model was told something it was not. A dropped direction is not enforced, not
+partially enforced, and not implied; it simply never reached the model.
+
+The interface also shows the original sheet and the compiled payload side by
+side, labelled *Your input — kept exactly* and *Sent to ACE-Step*, so the two are
+never confused for one another.
+
+The tempo the person wrote is kept as the target. After generation the measured
+tempo is reported **as a signed deviation** — "78 BPM asked for, 84.2 measured,
+off by +6.2 BPM (+7.9%)" — rather than as a pass or a fail, because ACE-Step has
+no tempo input and a song that ignored a description has not malfunctioned. The
+report says whether the number was the person's or the planner's.
 
 ## D. What is measured afterwards
 

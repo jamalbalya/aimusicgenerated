@@ -150,7 +150,26 @@ for (const testCase of CASES) {
     line('syllables', plan.lyrics.syllables)
     line('syllables/sec', plan.lyrics.density.toFixed(2))
     line('minimum length', `${Math.ceil(plan.lyrics.minimumDurationSeconds)}s`)
-    line('sections', plan.lyrics.sections.map((s) => s.label).join(', '))
+    line('sections', plan.lyrics.sections.map((s) => s.sectionName).join(' | '))
+
+    console.log('\n-- parsed headers (name / direction) --')
+    for (const section of plan.lyrics.sections) {
+      console.log(`  ${section.sectionName.padEnd(16)} ${section.sectionDirection || '(no direction)'}`)
+    }
+
+    const script = plan.lyrics.script
+    console.log('\n-- original vs sent --')
+    line('original characters', script.original.length)
+    line('sent characters', plan.lyrics.text.length)
+    line('end marker', script.terminated ? `${script.terminator} (terminator, not sent)` : 'none')
+    if (script.afterEnd.length > 0) {
+      line('after the marker', `${script.afterEnd.length} line(s), kept but not sent`)
+    }
+    const originalLines = script.original.split('\n').map((l) => l.trim()).filter(Boolean)
+    const sentLines = new Set(plan.lyrics.text.split('\n').map((l) => l.trim()).filter(Boolean))
+    const missing = originalLines.filter((l) => !sentLines.has(l))
+    line('lines not sent', missing.length === 0 ? 'none' : missing.join(' | '))
+    line('section directions', `${script.directions.length}, all inside the sheet and all sent`)
   }
 
   console.log('\n-- validation --')

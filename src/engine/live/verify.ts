@@ -103,6 +103,23 @@ export interface LiveVerification {
   notMeasured: string[]
   /** The requested-versus-measured tempo check, when a tempo was requested. */
   tempo?: TempoCheck
+  /**
+   * The tempo that was asked for against the one that came back.
+   *
+   * Reported as a deviation rather than a pass or a fail, because ACE-Step has
+   * no tempo input: the number in the caption was a description, and a song
+   * that ignored it has not malfunctioned. `deviationBpm` is signed — positive
+   * means the song came back faster than requested.
+   */
+  tempoDeviation?: {
+    requestedBpm: number
+    measuredBpm: number | null
+    deviationBpm: number | null
+    deviationPercent: number | null
+    confidence: number
+    /** True when the person wrote the tempo rather than the planner inferring it. */
+    requestedByUser: boolean
+  }
   /** True only for PASS and PASS_WITH_LIMITATIONS. */
   usable: boolean
 }
@@ -231,6 +248,8 @@ function levelStats(mono: Float32Array, sampleRate: number): {
 export interface VerifyOptions {
   /** The tempo that was asked for, when one was. */
   targetBpm?: number
+  /** True when that tempo was written by the person, not inferred. */
+  targetBpmStated?: boolean
   /** True when the request asked for no vocals. */
   instrumental?: boolean
   /** The length that was asked for, when one was. Undefined means Auto. */
@@ -399,9 +418,23 @@ export function verifyLiveResult(audio: AudioData, options: VerifyOptions = {}):
       + 'alternatives only weakly, so it should not be relied on.')
   }
 
+  // The deviation, reported whether or not the check passed, because "116 BPM
+  // asked for, 122 measured, +5.2%" is the useful sentence and "tempo-mismatch"
+  // is not.
+  const tempoDeviation = options.targetBpm !== undefined && options.targetBpm > 0
+    ? {
+      requestedBpm: options.targetBpm,
+      measuredBpm: bpm > 0 ? bpm : null,
+      deviationBpm: bpm > 0 ? bpm - options.targetBpm : null,
+      deviationPercent: bpm > 0 ? ((bpm - options.targetBpm) / options.targetBpm) * 100 : null,
+      confidence: bpmConfidence,
+      requestedByUser: options.targetBpmStated === true,
+    }
+    : undefined
+
   if (failures.length > 0) {
     return { verdict: 'FAILED_VERIFICATION', measurements, failures, notes, notMeasured,
-      ...(tempo ? { tempo } : {}), usable: false }
+      ...(tempo ? { tempo } : {}), ...(tempoDeviation ? { tempoDeviation } : {}), usable: false }
   }
 
   // PASS is for a song with nothing to report at all. `notMeasured` is never
@@ -411,5 +444,5 @@ export function verifyLiveResult(audio: AudioData, options: VerifyOptions = {}):
     ? 'PASS' : 'PASS_WITH_LIMITATIONS'
 
   return { verdict, measurements, failures, notes, notMeasured,
-    ...(tempo ? { tempo } : {}), usable: true }
+    ...(tempo ? { tempo } : {}), ...(tempoDeviation ? { tempoDeviation } : {}), usable: true }
 }

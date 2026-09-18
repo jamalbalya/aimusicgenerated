@@ -552,7 +552,11 @@ export default function StudioPage() {
       // One call. Not the first of a series — the only one.
       const result = await provider.generate({
         style: compiled.caption,
-        lyrics,
+        // The parsed payload, not the raw box: identical to what was typed
+        // except that an [End] marker and anything after it are left off,
+        // which is what the marker means. Every line, header and direction of
+        // the song itself travels exactly as written.
+        lyrics: plan.lyrics.text,
         language: plan.music.language,
         ...(duration > 0 ? { duration } : {}),
         ...(vocalGender !== 'auto' ? { vocalGender } : {}),
@@ -593,6 +597,7 @@ export default function StudioPage() {
           audio: { channels: decoded.channels, sampleRate: decoded.sampleRate },
           options: {
             targetBpm: plan.music.targetBpm,
+            targetBpmStated: plan.music.bpmStated,
             ...(duration > 0 ? { requestedDurationSeconds: duration } : {}),
             instrumental,
           },
@@ -1315,17 +1320,29 @@ export default function StudioPage() {
               {livePlan && (
                 <>
                   <p className="text-[11.5px] text-[var(--text-dim)]" data-testid="live-validation">
-                    {livePlan.valid
-                      ? 'Pre-generation validation passed.'
-                      : 'Pre-generation validation failed. Nothing was sent to the Space.'}
+                    {!livePlan.valid
+                      ? 'Pre-generation validation failed. Nothing was sent to the Space.'
+                      : livePlan.problems.some((problem) => problem.severity === 'conflict')
+                        ? 'Pre-generation validation passed with a constraint conflict. '
+                          + 'Your lyrics are being sent in full, exactly as written.'
+                        : 'Pre-generation validation passed.'}
                   </p>
                   {livePlan.problems.length > 0 && (
-                    <ul className="grid gap-1 text-[11.5px]" data-testid="live-problems">
+                    <ul className="grid gap-1.5 text-[11.5px]" data-testid="live-problems">
                       {livePlan.problems.map((problem, index) => (
                         <li key={`${problem.code}-${index}`}
+                          data-severity={problem.severity}
                           style={{ color: problem.severity === 'error'
-                            ? 'var(--bad, #a33)' : 'var(--text-faint)' }}>
+                            ? 'var(--bad, #a33)'
+                            : problem.severity === 'conflict'
+                              ? 'var(--warn, #9a6b00)' : 'var(--text-faint)' }}>
                           <span className="t-num text-[10px]">{problem.code}</span> {problem.message}
+                          {problem.consequence && (
+                            // A conflict says what will happen, because the
+                            // person is the one choosing whether to accept it.
+                            <span className="mt-0.5 block text-[var(--text-faint)]"
+                              data-testid="live-consequence">{problem.consequence}</span>
+                          )}
                         </li>
                       ))}
                     </ul>
@@ -1352,18 +1369,68 @@ export default function StudioPage() {
                 </>
               )}
 
-              {compiledPrompt && (
+              {compiledPrompt && livePlan && (
                 <details className="text-[11.5px]" data-testid="live-caption">
                   <summary className="cursor-pointer text-[var(--text-dim)]">
-                    Compiled caption · {compiledPrompt.characters}/{compiledPrompt.limit} characters
+                    What you wrote, and what was sent ·{' '}
+                    {compiledPrompt.characters}/{compiledPrompt.limit} caption characters
                   </summary>
-                  <p className="mt-1 whitespace-pre-wrap text-[var(--text-faint)]">
-                    {compiledPrompt.caption}
-                  </p>
+
+                  {/* Two panes, labelled, so nobody has to guess which text the
+                      model received. The left is theirs and is never edited;
+                      the right is the compiled payload. */}
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <div className="grid gap-1">
+                      <span className="t-label text-[10px] text-[var(--text-faint)]">
+                        Your input — kept exactly
+                      </span>
+                      <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-[var(--radius)]
+                        border border-[var(--line)] p-2 text-[11px] text-[var(--text-faint)]"
+                        data-testid="live-original">{livePlan.lyrics.script.original || '(none)'}</pre>
+                    </div>
+                    <div className="grid gap-1">
+                      <span className="t-label text-[10px] text-[var(--text-faint)]">
+                        Sent to ACE-Step
+                      </span>
+                      <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-[var(--radius)]
+                        border border-[var(--line)] p-2 text-[11px] text-[var(--text-faint)]"
+                        data-testid="live-payload">{livePlan.lyrics.text || '(instrumental)'}</pre>
+                    </div>
+                  </div>
+
+                  <p className="mt-2 t-label text-[10px] text-[var(--text-faint)]">Compiled caption</p>
+                  <p className="whitespace-pre-wrap text-[var(--text-faint)]"
+                    data-testid="live-caption-text">{compiledPrompt.caption}</p>
+
+                  {/* Planned, sent, dropped — stated as three counts, because
+                      "planned" and "the model was told" are different claims. */}
+                  <dl className="mt-2 grid gap-0.5 text-[11px] text-[var(--text-faint)]"
+                    data-testid="live-constraints">
+                    <div className="flex gap-2"><dt className="min-w-[5rem]">Planned</dt>
+                      <dd>{compiledPrompt.included.length + compiledPrompt.dropped.length} directions
+                        {livePlan.lyrics.script.directions.length > 0
+                          ? `, plus ${livePlan.lyrics.script.directions.length} section direction(s) in the sheet`
+                          : ''}</dd></div>
+                    <div className="flex gap-2"><dt className="min-w-[5rem]">Sent</dt>
+                      <dd>{compiledPrompt.included.join(', ') || 'none'}</dd></div>
+                    <div className="flex gap-2"><dt className="min-w-[5rem]">Dropped</dt>
+                      <dd data-testid="live-caption-dropped">
+                        {compiledPrompt.dropped.length === 0 ? 'none'
+                          : compiledPrompt.dropped.join(', ')}</dd></div>
+                  </dl>
                   {compiledPrompt.dropped.length > 0 && (
-                    <p className="mt-1 text-[var(--text-faint)]" data-testid="live-caption-dropped">
-                      Did not fit in ACE-Step&rsquo;s {compiledPrompt.limit}-character caption, so the
-                      model was never told: {compiledPrompt.dropped.join(', ')}.
+                    <p className="mt-1 text-[var(--text-faint)]">
+                      The dropped directions did not fit in ACE-Step&rsquo;s {compiledPrompt.limit}-character
+                      caption. The model was never told about them, so nothing about them is enforced.
+                      Your Style and Lyrics are unchanged.
+                    </p>
+                  )}
+                  {livePlan.lyrics.script.directions.length > 0 && (
+                    <p className="mt-1 text-[var(--text-faint)]" data-testid="live-section-directions">
+                      Section directions travel inside the lyric sheet and were all sent:{' '}
+                      {livePlan.lyrics.script.directions
+                        .map((entry) => `${entry.section} — ${entry.direction}`).join(' · ')}.
+                      ACE-Step has no per-section parameter, so these are description, not control.
                     </p>
                   )}
                 </details>
@@ -1392,6 +1459,22 @@ export default function StudioPage() {
                           {liveVerification.measurements.bpm > 0
                             ? `${liveVerification.measurements.bpm.toFixed(1)} BPM`
                             : 'not measurable'}</dd></div>
+                      {liveVerification.tempoDeviation && (
+                        <div className="flex gap-2" data-testid="live-bpm-deviation">
+                          <dt className="min-w-[8rem]">
+                            {liveVerification.tempoDeviation.requestedByUser
+                              ? 'Tempo you asked for' : 'Tempo planned'}
+                          </dt>
+                          <dd className="t-num">
+                            {liveVerification.tempoDeviation.requestedBpm} BPM
+                            {liveVerification.tempoDeviation.deviationBpm !== null
+                              ? ` · off by ${liveVerification.tempoDeviation.deviationBpm > 0 ? '+' : ''}`
+                                + `${liveVerification.tempoDeviation.deviationBpm.toFixed(1)} BPM `
+                                + `(${liveVerification.tempoDeviation.deviationPercent!.toFixed(1)}%)`
+                              : ' · deviation not measurable'}
+                          </dd>
+                        </div>
+                      )}
                       <div className="flex gap-2"><dt className="min-w-[8rem]">Peak / RMS</dt>
                         <dd className="t-num">
                           {liveVerification.measurements.peakDb.toFixed(1)} /{' '}

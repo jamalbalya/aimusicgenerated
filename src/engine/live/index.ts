@@ -22,10 +22,15 @@ export {
 } from './constraints'
 
 export {
-  planLyrics, normalizeSheet,
+  planLyrics,
   MAX_SUSTAINED_SYLLABLES_PER_SECOND, SPARSE_SYLLABLES_PER_SECOND, NON_SUNG_SHARE,
   type LyricPlan, type LyricProblem, type LyricProblemCode, type PlannedSection,
 } from './lyricPlan'
+
+export {
+  parseLyricScript, splitHeader, isTerminator,
+  type LyricScript, type ScriptSection,
+} from './lyricScript'
 
 export {
   planLiveGeneration, planSeed, PLANNABLE_SCALES,
