@@ -15,6 +15,11 @@ export {
   evaluate, judgeNotes, measure, classifyInterval, regionAt, type GateOptions,
 } from './harmonicGate'
 export { evidenceFromScore, regionsOf, sungNotes } from './scoreEvidence'
+export {
+  tempoRequirement, checkTempo, InvalidTempoRequest,
+  BPM_RANGE, DEFAULT_BPM_TOLERANCE, STABILITY_SPREAD_BPM,
+  type TempoRequirement, type TempoCheck, type TempoCheckReason, type TempoMeasurement,
+} from './tempo'
 export { evidenceFromNeuralAudio, NEURAL_ANALYSIS_UNAVAILABLE } from './neuralEvidence'
 export {
   runGatedGeneration, describeAttempt, freshSeedSource, RequestMutatedError,

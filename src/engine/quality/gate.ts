@@ -17,6 +17,9 @@ export type TakeGateResult = QualityReport
 function unavailable(reason: string, source: 'score' | 'audio'): QualityReport {
   return {
     verdict: 'ANALYSIS_UNAVAILABLE',
+    accepted: false,
+    deliveryAllowed: false,
+    rejectionReasons: ['ANALYSIS_UNAVAILABLE'],
     reasons: [reason],
     failedChecks: [],
     measurements: null,
@@ -26,11 +29,22 @@ function unavailable(reason: string, source: 'score' | 'audio'): QualityReport {
   }
 }
 
-/** Judges a take from the offline engine, against the score it was rendered from. */
+/**
+ * Judges a take from the offline engine, against the score it was rendered from.
+ *
+ * The tempo check here is exact rather than estimated: the offline engine wrote
+ * `score.bpm` and the renderer played it, so there is no measurement to be
+ * wrong about. That is the one place in this project where a requested tempo
+ * can be enforced rather than merely checked — the neural engine has no tempo
+ * parameter to enforce with.
+ */
 export function gateScoreTake(score: Score, options: GateOptions = {}): TakeGateResult {
   const evidence = evidenceFromScore(score)
   if (!evidence.available) return unavailable(evidence.reason, 'score')
-  return evaluate(evidence, options)
+  return evaluate(evidence, {
+    ...options,
+    ...(options.tempo !== undefined ? { measuredBpm: score.bpm, tempoSpreadBpm: 0 } : {}),
+  })
 }
 
 /** Judges a take from the neural engine. Always ANALYSIS_UNAVAILABLE in a browser; see `neuralEvidence`. */

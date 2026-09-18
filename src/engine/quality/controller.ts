@@ -201,11 +201,16 @@ export async function runGatedGeneration(options: GatedGenerationOptions): Promi
     attempts.push(record)
     onAttempt?.(record)
 
-    if (policy.deliverOn.includes(report.verdict)) {
+    // Both, and deliberately: the policy says which verdicts may be delivered,
+    // and the report says whether this particular one may be. Trusting the
+    // verdict string alone would let a report whose own fields forbid delivery
+    // through on the strength of its label, and the fields are what every other
+    // caller reads. The conjunction cannot be widened by mislabelling.
+    if (policy.deliverOn.includes(report.verdict) && report.deliveryAllowed) {
       return { delivered: true, result, report, attempts }
     }
 
-    if (policy.offerUnverifiedOn.includes(report.verdict)) {
+    if (policy.offerUnverifiedOn.includes(report.verdict) && !report.accepted) {
       // Keep the first one rather than the last: they are equivalent, and
       // holding the first means a later attempt cannot quietly replace a
       // better-reasoned report with a worse one.

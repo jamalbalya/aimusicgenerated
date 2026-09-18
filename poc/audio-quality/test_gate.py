@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import gate  # noqa: E402
+import pipeline  # noqa: E402
 import generate_gated as controller  # noqa: E402
 
 FAILURES: list = []
@@ -50,13 +51,28 @@ class StubClient:
 
 
 def scripted(verdicts):
-    """Replaces `gate.judge` with a fixed sequence, one per attempt."""
+    """Replaces `gate.judge` with a fixed sequence, one per attempt.
+
+    The reports are built the way the pipeline builds them, so the controller is
+    tested against the shape it really receives — including `delivery_allowed`,
+    which is the field it actually branches on.
+    """
     remaining = list(verdicts)
 
-    def judge(path, thresholds=gate.STRICT):
+    def judge(path, thresholds=gate.STRICT, requirements=None):
         verdict = remaining.pop(0) if remaining else "REGENERATION_REQUIRED"
-        return gate.GateReport(verdict, [f"scripted {verdict}"],
-                               ["harmonicCompatibility"] if verdict == "REGENERATION_REQUIRED" else [])
+        rejection = {
+            "REGENERATION_REQUIRED": [pipeline.HARMONIC_MISMATCH],
+            "ANALYSIS_UNAVAILABLE": [pipeline.SEPARATION_UNRELIABLE],
+            "REVIEW_REQUIRED": [],
+        }.get(verdict, [])
+        return pipeline.QualityReport(
+            verdict=verdict,
+            accepted=verdict == "PASS",
+            delivery_allowed=verdict == "PASS",
+            rejection_reasons=rejection,
+            reasons=[f"scripted {verdict}"],
+        )
     return judge
 
 
@@ -125,12 +141,22 @@ check("keep the audio, clearly marked unverified",
 client, outcome = with_verdicts(["REGENERATION_REQUIRED"] * 3, attempts=3)
 check("a take that failed the gate is never offered, on any path", outcome.path is None)
 
-print("\nthe gate itself refuses what it cannot measure")
-state = gate.judge.__module__
-check("judge lives in the gate module", state == "gate")
-missing = gate._unavailable("no separator")
+print("\nthe gate refuses what it cannot measure")
+missing = pipeline._unavailable("no separator", pipeline.SEPARATION_UNRELIABLE, {})
 check("an unavailable report is never a pass", missing.verdict == "ANALYSIS_UNAVAILABLE")
-check("and carries its reason as a limitation", missing.limitations == ["no separator"])
+check("and is never accepted", not missing.accepted)
+check("and may never be delivered", not missing.delivery_allowed)
+check("and names the code the loop branches on",
+      missing.rejection_reasons == [pipeline.SEPARATION_UNRELIABLE])
+
+print("\nthe gate has no analysis of its own left to disagree with")
+_gate_src = Path(__file__).with_name("gate.py").read_text()
+for banned in ("librosa", "pyin", "compatibility(", "formant"):
+    check(f"gate.py does not reimplement {banned}", banned not in _gate_src)
+check("gate.judge calls the shared pipeline", "pipeline.evaluate_audio" in _gate_src)
+_analyze_src = Path(__file__).with_name("analyze.py").read_text()
+check("analyze.py calls the same shared pipeline",
+      "pipeline.evaluate_audio" in _analyze_src)
 
 print("\nthresholds are strict by default")
 check("harmonic compatibility must beat chance by 2 sigma", gate.STRICT.min_harmony_z == 2.0)
@@ -139,28 +165,27 @@ check("the defaults are the documented ones",
       gate.STRICT.max_grid_median_cents == 25.0
       and gate.STRICT.max_drift_share_percent == 25.0
       and gate.STRICT.max_register_centre_cents == 30.0)
+check("octave errors are never accepted silently", gate.STRICT.accept_octave_errors is False)
 
 print("\nthe user's words cannot be edited mid-run")
 check("a changed sheet raises rather than sending it",
       issubclass(controller.LyricsChanged, RuntimeError))
 
-print("\nthe gate is never more permissive than the analyser")
-import re as _re
-_gate_src = Path(__file__).with_name("gate.py").read_text()
-_analyze_src = Path(__file__).with_name("analyze.py").read_text()
-check("the gate filters frames by formant energy, as the analyser does",
-      "formant > np.percentile(formant, FORMANT_PERCENTILE)" in _gate_src,
-      "gate.py counts every voiced frame")
-check("and at the same percentile",
-      f"np.percentile(formant_energy, {gate.FORMANT_PERCENTILE})" in _analyze_src,
-      f"analyze.py does not use p{gate.FORMANT_PERCENTILE}")
-# The reason, kept as a number so nobody 'simplifies' the filter away: on a real
-# 309-second ballad the same audio scored z = +2.30 unfiltered, +0.72 filtered
-# and +0.43 with a stricter filter. The more certainly the frames were voice,
-# the worse the fit — so the unfiltered figure was leaked accompaniment
-# agreeing with itself, and the gate was the tool holding it.
-check("the reason is written down where the filter is",
-      "z = +2.30" in _gate_src and "exactly backwards" in _gate_src)
+print("\nthere is only one implementation left to disagree with")
+import voice as voice_module
+_pipeline_src = Path(__file__).with_name("pipeline.py").read_text()
+check("the pipeline scores vocal frames rather than trusting the tracker",
+      "voice_module.analyse_frames" in _pipeline_src)
+check("and measures only the frames that survived",
+      "sung = vocal.usable" in _pipeline_src)
+# The defect that made this necessary, kept as numbers so nobody removes the
+# filter as an optimisation: on a real 309-second ballad the same audio scored
+# z = +2.30 over every voiced frame, +0.72 with the filter and +0.43 with a
+# stricter one. The more certainly the frames were voice, the worse the fit.
+check("the reason is written down where the model is",
+      "z = +2.30" in voice_module.__doc__ and "+0.43" in voice_module.__doc__)
+check("coverage is a gate, so a fragment cannot be passed off as a song",
+      voice_module.MIN_COVERAGE_RATIO > 0 and voice_module.MIN_USABLE_SECONDS >= 20)
 
 print()
 if FAILURES:

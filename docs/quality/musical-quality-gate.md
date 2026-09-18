@@ -200,6 +200,89 @@ That leaves step 1, which is what the generate → analyse → reject → regene
 loop is. Because the Space draws a fresh random seed on every request, each
 attempt is genuinely a new take without the studio having to ask for one.
 
+## Tempo
+
+### What ACE-Step can and cannot be told
+
+**ACE-Step has no tempo parameter.** Its endpoint takes a style string, a lyric
+sheet, a language, a vocal gender, an instrumental flag and a duration. A
+caption reading "72 BPM" is text the model may or may not act on, and on one
+real song it did not: the request was 72 and the result was 89.8 BPM, held to
+0.3 BPM across ten thirty-second windows. Steady, confident, and wrong.
+
+So tempo is **not enforced at generation time for the neural engine, and cannot
+be**. It is enforced at delivery time, which is the only kind of enforcement
+available here.
+
+The **offline engine is different**: it composes at the tempo it is given, so
+`score.bpm` *is* the tempo and the check against it is exact rather than
+estimated.
+
+### The requirement
+
+`TempoRequirement` (Python: `requirements.py`, TypeScript: `src/engine/quality/tempo.ts`)
+
+| Field | Default |
+| --- | --- |
+| `target_bpm` / `targetBpm` | — |
+| `tolerance_bpm` / `toleranceBpm` | **2.0 BPM** |
+
+Validated before anything is generated: positive, inside 40–220 BPM, with a
+positive tolerance. Nothing is rounded into range — a tempo nobody can play is a
+request to fix, not a number to adjust behind someone's back.
+
+Two BPM is 2.8% at 72: inside what a rhythm section drifts by, far outside what
+a generated track does. A tolerance loose enough to absorb 89.8 against 72 would
+be a formality, not a tolerance.
+
+**No tempo requested is not a tempo that passed.** `not_requested` is its own
+reason and says so.
+
+### Detection
+
+`tempo.detect_tempo` measures the pulse from the **autocorrelation of the onset
+envelope, with the peak interpolated parabolically**, then disambiguates the
+octave with a log-normal prior at 120 BPM, 0.9 octaves wide.
+
+This is not a preference. librosa's beat tracker reports from a fixed grid of
+candidate tempos and returns **117.45 for a 120 BPM click track and 143.55 for a
+140 one** — about 2.5 BPM out each, which against a 2 BPM tolerance would fail
+songs that were exactly right, and every failure would have been blamed on the
+model. Interpolated autocorrelation lands within **0.62 BPM across all eleven
+calibration tempos** (60, 66, 72, 80, 90, 100, 110, 120, 128, 140, 160).
+
+The prior width is the loosest that works: 1.1 octaves sends 140 BPM to 69.9.
+
+### What the tempo check reports
+
+| Reason | Meaning |
+| --- | --- |
+| `ok` | Inside tolerance |
+| `not_requested` | Nothing was asked for, nothing checked |
+| `tempo_mismatch` | Outside tolerance → `REGENERATION_REQUIRED` |
+| `half_time` / `double_time` | Measured at half or twice the request |
+| `unstable_tempo` | Windowed spread > 5 BPM → no single tempo exists |
+| `low_confidence` | Estimate below 0.25 confident |
+| `detection_failed` | No pulse found at all |
+
+**Octave errors are named, never silently accepted.** A song measured at 144
+against a requested 72 is either correctly written and miscounted, or genuinely
+twice as fast, and nothing in the audio says which. `accept_octave_errors` is
+off by default and says so in the report when a policy turns it on.
+
+`unstable_tempo`, `low_confidence` and `detection_failed` produce
+`ANALYSIS_UNAVAILABLE`, not `REGENERATION_REQUIRED` — a tempo that could not be
+measured has not failed, and sending someone to regenerate would be sending them
+to fix a broken analysis.
+
+### Time-stretching: deliberately not used
+
+**Strategy A (regenerate) is what is implemented.** `timeStretchAudio` exists in
+`src/engine/audio/pitchshift.ts`, but it is browser DSP and the analysis lives
+in Python, and — more to the point — stretching a finished mix by 24% to drag
+89.8 BPM onto 72 would put phase-vocoder artefacts through a vocal the gate then
+has to judge. A take at the wrong tempo is regenerated, never corrected.
+
 ## The live-generation switch
 
 A build only calls the Space when it has been told it may:
@@ -220,6 +303,93 @@ that is down, since the remedies are nothing alike.
 | Deployed site (`deploy.yml`) | **on** | The normal workflow: open the site, sign in, generate |
 | CI end-to-end (`ci.yml`) | **on** | Points at a fake Space the suite answers itself; nothing reaches Hugging Face |
 | Local checkout, `npm run dev` | **off** | Running this repo cannot spend a GPU allowance by accident |
+
+## One pipeline, two callers
+
+`gate.py` used to contain its own copy of the analysis, and the copy drifted. On
+a real 309-second ballad it reported **z = +2.30** where `analyze.py` reported
+**+0.72** on the same audio — and the permissive one was `gate.py`, the file
+that decides whether a song reaches a listener.
+
+The cause was frame selection. Running the same measurement at three
+strictnesses settles it:
+
+| Frames counted | Sung | z | weakest-4 | clashes >2 s |
+| --- | --- | --- | --- | --- |
+| Every voiced frame | 149.2 s | +2.30 | 31.8% | 9 |
+| + formant filter | 76.7 s | **+0.72** | 37.1% | 5 |
+| + stricter filter | 45.1 s | +0.43 | 39.3% | 3 |
+
+Monotonic, in the direction that settles it: the more certainly the frames were
+voice, the worse the fit. The permissive figure was leaked saxophone correlating
+with itself.
+
+**There is now one implementation.** `pipeline.evaluate_audio(path, requirements,
+thresholds)` does the whole thing; `gate.py` is 37 lines with no analysis left in
+it, and `analyze.py` calls the same function for its verdict. A test asserts
+that neither file reimplements `librosa`, `pyin`, `compatibility(` or `formant`.
+
+### Verdict precedence
+
+Explicit and ordered, because which check wins is a product decision:
+
+1. audio unreadable → `ANALYSIS_UNAVAILABLE`
+2. separation unreliable → `ANALYSIS_UNAVAILABLE`
+3. vocal analysis unreliable → `ANALYSIS_UNAVAILABLE`
+4. tempo unmeasurable → `ANALYSIS_UNAVAILABLE`
+5. tempo outside tolerance → `REGENERATION_REQUIRED`
+6. harmony fails → `REGENERATION_REQUIRED`
+7. severe conflicts → `REGENERATION_REQUIRED`
+8. pitch fails → `REGENERATION_REQUIRED`
+9. everything required passed → `PASS`
+10. otherwise → `REVIEW_REQUIRED`
+
+Unavailable outranks failure on purpose, and nothing outranks unavailable into a
+pass.
+
+Every report carries `accepted`, `delivery_allowed` and `rejection_reasons`.
+The controller requires **both** the policy verdict **and** `deliveryAllowed`,
+so a report whose own fields forbid delivery cannot get through on the strength
+of its label.
+
+## Vocal frames: which ones are actually a voice
+
+A separator hands back a "vocal" stem and a pitch tracker calls anything in it
+voiced. Neither is a claim about singing, and the thing Spleeter most often puts
+on the wrong side is a **saxophone** — pitched, continuous, vibrato-carrying, in
+exactly a male singer's register, and named in this project's own style prompts.
+
+`voice.analyse_frames` scores each frame on:
+
+- **formant energy** at 1.5–4 kHz, where the third formant and consonants live;
+- **consonant evidence** above 5 kHz, contextually — a held vowel has no
+  fricative in it and is still singing, so what matters is that consonants
+  happen *nearby*;
+- **range plausibility** — 70–1200 Hz;
+- **accompaniment dominance** — a frame whose spectrum looks like the other stem
+  is probably the other stem.
+
+Reported per track: `total_vocal_presence_seconds`,
+`usable_vocal_analysis_seconds`, `vocal_analysis_coverage_ratio`,
+`probable_instrumental_contamination_seconds`, and the discarded time by reason.
+
+**Coverage is a gate of its own.** Below 35% of the vocal's own active time, or
+below 20 usable seconds, the verdict is `ANALYSIS_UNAVAILABLE` — throwing away
+most of a song and passing it on what remains is its own failure.
+
+## Jazz tensions
+
+`pipeline.weigh_clashes` weighs rather than counts. A ninth, eleventh or
+thirteenth is the sound of the genre this project generates, and a passing or
+approach tone lasting a fraction of a beat is a line moving.
+
+A clash is **severe** only when it lasts longer than **two seconds** *and*
+longer than **one beat at the measured tempo**. The beat term matters: a beat at
+72 BPM is nearly twice a beat at 140, and the ear counts beats.
+
+Nothing here was loosened to let a particular song through. A jazz line that
+parks on the band's weakest pitch classes for over two seconds and more than a
+beat is not being subtle.
 
 ## Where each engine is judged
 

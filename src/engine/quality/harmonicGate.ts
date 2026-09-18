@@ -26,6 +26,8 @@ import type {
   QualityMeasurements, QualityReport, VocalNote,
 } from './types'
 import { STRICT_THRESHOLDS, type QualityThresholds } from './thresholds'
+import { checkTempo, type TempoCheck, type TempoRequirement } from './tempo'
+import type { RejectionReason } from './types'
 
 /** How much each relation counts towards the compatibility score, 0..1. */
 const RELATION_WEIGHT: Record<NoteRelation, number> = {
@@ -158,6 +160,12 @@ export interface GateOptions {
   thresholds?: QualityThresholds
   /** How many worst moments to list. */
   worstMoments?: number
+  /** The tempo that was asked for, when one was. */
+  tempo?: TempoRequirement | null
+  /** What the audio actually measured, when it was measured. */
+  measuredBpm?: number | null
+  /** Windowed tempo spread, when it was measured. */
+  tempoSpreadBpm?: number
 }
 
 /** Judges every note, in order, so each can see its neighbours. */
@@ -342,6 +350,9 @@ export function evaluate(evidence: MusicalEvidence, options: GateOptions = {}): 
 
   const unavailable = (reason: string): QualityReport => ({
     verdict: 'ANALYSIS_UNAVAILABLE',
+    accepted: false,
+    deliveryAllowed: false,
+    rejectionReasons: ['ANALYSIS_UNAVAILABLE'],
     reasons: [reason],
     failedChecks: [],
     measurements: null,
@@ -349,6 +360,17 @@ export function evaluate(evidence: MusicalEvidence, options: GateOptions = {}): 
     evidence: evidenceSummary,
     limitations: evidence.limitations,
   })
+
+  // Tempo first, because it is cheap and because a song at the wrong speed is
+  // wrong however well it is sung. `not-requested` passes and says it checked
+  // nothing, which is not the same as a tempo that was right.
+  const tempo: TempoCheck | undefined = options.tempo === undefined
+    ? undefined
+    : checkTempo(
+      { bpm: options.measuredBpm ?? null, ...(options.tempoSpreadBpm !== undefined
+        ? { spreadBpm: options.tempoSpreadBpm } : {}) },
+      options.tempo,
+    )
 
   // A measurement that cannot be attributed to the voice cannot clear the
   // voice. This is the one rule that is never traded against a good number.
@@ -372,52 +394,65 @@ export function evaluate(evidence: MusicalEvidence, options: GateOptions = {}): 
   const measurements = measure(evidence, judgements, thresholds)
   const reasons: string[] = []
   const failedChecks: string[] = []
+  const rejectionReasons: RejectionReason[] = []
 
-  const fail = (check: string, reason: string) => { failedChecks.push(check); reasons.push(reason) }
+  const fail = (check: string, reason: string, code: RejectionReason) => {
+    failedChecks.push(check)
+    reasons.push(reason)
+    if (!rejectionReasons.includes(code)) rejectionReasons.push(code)
+  }
+
+  // A song at the wrong speed is wrong however well it is sung, so this is
+  // checked before anything about the notes.
+  if (tempo && !tempo.passed) {
+    fail('tempo', tempo.detail,
+      tempo.reason === 'detection-failed' || tempo.reason === 'unstable-tempo'
+        ? 'TEMPO_UNMEASURABLE' : 'TEMPO_MISMATCH')
+  }
 
   if (measurements.severeConflicts > thresholds.maxSevereConflicts) {
     fail('severeConflicts',
       `${measurements.severeConflicts} severe harmonic conflict(s): a note against the chord, `
       + `held past ${thresholds.maxUnresolvedDissonanceBeats} beat(s) and `
       + `${thresholds.maxUnresolvedDissonanceSeconds}s, with nothing explaining it. `
-      + `At most ${thresholds.maxSevereConflicts} is tolerated.`)
+      + `At most ${thresholds.maxSevereConflicts} is tolerated.`, 'SEVERE_CONFLICT')
   }
   if (measurements.harmonicCompatibility < thresholds.minHarmonicCompatibility) {
     fail('harmonicCompatibility',
       `Harmonic compatibility ${measurements.harmonicCompatibility.toFixed(3)}, below the required `
       + `${thresholds.minHarmonicCompatibility.toFixed(2)}. The melody does not follow this chord `
-      + 'progression.')
+      + 'progression.', 'HARMONIC_MISMATCH')
   }
   if (measurements.strongChordConflictPercent > thresholds.maxStrongChordConflictPercent) {
     fail('strongChordConflict',
       `${measurements.strongChordConflictPercent.toFixed(1)}% of the notes a listener lands on `
-      + `clash with the chord underneath them, above the ${thresholds.maxStrongChordConflictPercent}% allowed.`)
+      + `clash with the chord underneath them, above the ${thresholds.maxStrongChordConflictPercent}% allowed.`, 'WEAKEST_FOUR')
   }
   if (measurements.strongOutOfKeyPercent > thresholds.maxStrongOutOfKeyPercent) {
     fail('strongOutOfKey',
       `${measurements.strongOutOfKeyPercent.toFixed(1)}% of the notes a listener lands on are outside `
-      + `${evidence.key.name}, above the ${thresholds.maxStrongOutOfKeyPercent}% allowed.`)
+      + `${evidence.key.name}, above the ${thresholds.maxStrongOutOfKeyPercent}% allowed.`, 'HARMONIC_MISMATCH')
   }
   if (measurements.longestUnresolvedDissonanceBeats > thresholds.maxUnresolvedDissonanceBeats) {
     fail('unresolvedDissonance',
       `A dissonance runs ${measurements.longestUnresolvedDissonanceBeats.toFixed(2)} beats without `
-      + `resolving, past the ${thresholds.maxUnresolvedDissonanceBeats} allowed.`)
+      + `resolving, past the ${thresholds.maxUnresolvedDissonanceBeats} allowed.`, 'SEVERE_CONFLICT')
   }
   if (measurements.rangeViolations > thresholds.maxRangeViolations) {
     fail('vocalRange',
-      `${measurements.rangeViolations} note(s) fall outside the requested vocal range.`)
+      `${measurements.rangeViolations} note(s) fall outside the requested vocal range.`, 'VOCAL_RANGE')
   }
   if (evidence.centsDeviations && evidence.centsDeviations.length > 0
       && measurements.seriousPitchDeviationPercent > thresholds.maxSeriousPitchDeviationPercent) {
     fail('pitchAccuracy',
       `${measurements.seriousPitchDeviationPercent.toFixed(1)}% of notes are more than `
       + `${thresholds.seriousPitchDeviationCents} cents out, above the `
-      + `${thresholds.maxSeriousPitchDeviationPercent}% allowed.`)
+      + `${thresholds.maxSeriousPitchDeviationPercent}% allowed.`, 'PITCH_PROBLEM')
   }
   if (measurements.timingProblemPercent > thresholds.maxTimingProblemPercent) {
     fail('timing',
       `${measurements.timingProblemPercent.toFixed(1)}% of notes sit further off the beat than the `
-      + `${thresholds.timingToleranceBeats} beat tolerance.`)
+      + `${thresholds.timingToleranceBeats} beat tolerance.`, 'TIMING')
   }
 
   // Said once, on any harmonic rejection, because it is the thing most likely
@@ -443,7 +478,9 @@ export function evaluate(evidence: MusicalEvidence, options: GateOptions = {}): 
 
   if (failedChecks.length > 0) {
     return {
-      verdict: 'REGENERATION_REQUIRED', reasons, failedChecks, measurements, worstMoments,
+      verdict: 'REGENERATION_REQUIRED', accepted: false, deliveryAllowed: false,
+      rejectionReasons, ...(tempo ? { tempo } : {}),
+      reasons, failedChecks, measurements, worstMoments,
       evidence: evidenceSummary, limitations: evidence.limitations,
     }
   }
@@ -458,6 +495,8 @@ export function evaluate(evidence: MusicalEvidence, options: GateOptions = {}): 
         + `confident, below the ${(thresholds.minConfidenceForPass * 100).toFixed(0)}% a PASS requires. `
         + 'Passing on this would be labelling an unverified song a verified one.',
       ],
+      accepted: false, deliveryAllowed: false, rejectionReasons: [],
+      ...(tempo ? { tempo } : {}),
       failedChecks: [], measurements, worstMoments,
       evidence: evidenceSummary, limitations: evidence.limitations,
     }
@@ -470,6 +509,8 @@ export function evaluate(evidence: MusicalEvidence, options: GateOptions = {}): 
         + 'the same place in the bar, which reads as deliberate writing rather than a slip — but this '
         + 'gate cannot tell a blue note from a wrong one, so it says so instead of guessing.',
       ],
+      accepted: false, deliveryAllowed: false, rejectionReasons: [],
+      ...(tempo ? { tempo } : {}),
       failedChecks: [], measurements, worstMoments,
       evidence: evidenceSummary, limitations: evidence.limitations,
     }
@@ -477,6 +518,10 @@ export function evaluate(evidence: MusicalEvidence, options: GateOptions = {}): 
 
   return {
     verdict: 'PASS',
+    accepted: true,
+    deliveryAllowed: true,
+    rejectionReasons: [],
+    ...(tempo ? { tempo } : {}),
     reasons: [
       `Harmonic compatibility ${measurements.harmonicCompatibility.toFixed(3)} against a required `
       + `${thresholds.minHarmonicCompatibility.toFixed(2)}, no severe conflicts, and every other `

@@ -42,7 +42,7 @@ import {
 } from '../../engine/providers'
 import {
   gateScoreTake, gateNeuralTake, describeAttempt, freshSeedSource,
-  OFFLINE_MAX_ATTEMPTS, type QualityReport,
+  OFFLINE_MAX_ATTEMPTS, tempoRequirement, InvalidTempoRequest, type QualityReport,
 } from '../../engine/quality'
 
 /**
@@ -546,6 +546,15 @@ export default function StudioPage() {
       notify('Describe the song you want, or pick a genre.', 'error')
       return
     }
+    // A tempo typed into the control is a requirement, not a hint. Zero means
+    // none was asked for, which is not the same as one that passed.
+    let wanted: ReturnType<typeof tempoRequirement> = null
+    try {
+      wanted = tempoRequirement(bpm > 0 ? bpm : null)
+    } catch (error) {
+      notify(error instanceof InvalidTempoRequest ? error.message : String(error), 'error')
+      return
+    }
     const requestedSeed = overrideSeed ?? seed.trim() ?? ''
     const nextSeed = freshSeedSource()
     const log: string[] = []
@@ -591,7 +600,9 @@ export default function StudioPage() {
         // take sitting in it is a rejected take that gets played — which is the
         // one thing this whole loop exists to prevent. Opening the right take
         // and leaving the wrong one one click away is not a gate.
-        const reports = output.takes.map((take) => gateScoreTake(take.score))
+        // The tempo the person asked for, checked against the tempo the engine
+        // wrote. The offline engine honours a requested BPM, so this is exact.
+        const reports = output.takes.map((take) => gateScoreTake(take.score, { tempo: wanted }))
         const passedHere = output.takes
           .map((take, index) => ({ take, report: reports[index]! }))
           .filter((candidate) => candidate.report.verdict === 'PASS')
@@ -656,6 +667,7 @@ export default function StudioPage() {
 
       setQualityReport({
         verdict: 'REGENERATION_REQUIRED',
+        accepted: false, deliveryAllowed: false, rejectionReasons: [],
         reasons: [`Generation failed the musical quality gate after ${OFFLINE_MAX_ATTEMPTS} `
           + 'attempts. No incorrect audio was delivered.'],
         failedChecks: [], measurements: null, worstMoments: [],
@@ -1233,6 +1245,50 @@ export default function StudioPage() {
                         : 'Not verified — review required'}
                 </span>
               </div>
+              <p className="text-[12.5px] font-medium" data-testid="quality-headline">
+                {qualityReport.accepted
+                  ? 'Audio generated and passed all required quality checks.'
+                  : qualityReport.verdict === 'REGENERATION_REQUIRED'
+                    ? 'Audio generated, but quality validation failed.'
+                    : 'Audio generated, but quality validation could not be completed.'}
+              </p>
+              {qualityReport.rejectionReasons.length > 0 && (
+                <ul className="flex flex-wrap gap-1" data-testid="quality-rejection-reasons">
+                  {qualityReport.rejectionReasons.map((code) => (
+                    <li key={code}
+                      className="rounded border px-1.5 py-0.5 text-[10.5px] tracking-wide"
+                      style={{ borderColor: 'var(--line)' }}>
+                      {code}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {qualityReport.tempo && qualityReport.tempo.requestedBpm !== null && (
+                <dl className="grid gap-0.5 text-[11.5px] text-[var(--text-faint)]"
+                  data-testid="quality-tempo">
+                  <div className="flex gap-2">
+                    <dt className="min-w-[13rem]">Requested tempo</dt>
+                    <dd className="t-num">{qualityReport.tempo.requestedBpm} BPM</dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="min-w-[13rem]">Detected tempo</dt>
+                    <dd className="t-num">
+                      {qualityReport.tempo.detectedBpm === null
+                        ? 'not measurable'
+                        : `${qualityReport.tempo.detectedBpm.toFixed(1)} BPM`}
+                    </dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="min-w-[13rem]">Difference</dt>
+                    <dd className="t-num">
+                      {qualityReport.tempo.differenceBpm === null
+                        ? '—'
+                        : `${qualityReport.tempo.differenceBpm.toFixed(1)} BPM `
+                          + `(${qualityReport.tempo.toleranceBpm ?? 0} allowed)`}
+                    </dd>
+                  </div>
+                </dl>
+              )}
               {qualityReport.reasons.map((reason) => (
                 <p key={reason} className="text-[12.5px] text-[var(--text-dim)]">{reason}</p>
               ))}
@@ -1259,6 +1315,14 @@ export default function StudioPage() {
                     <dt className="min-w-[13rem]">Notes outside the key</dt>
                     <dd className="t-num">
                       {qualityReport.measurements.strongOutOfKeyPercent.toFixed(1)}%
+                    </dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="min-w-[13rem]">Vocal analysis coverage</dt>
+                    <dd className="t-num">
+                      {qualityReport.evidence.source === 'score'
+                        ? 'exact — judged from the score'
+                        : `${(qualityReport.evidence.confidence * 100).toFixed(0)}%`}
                     </dd>
                   </div>
                 </dl>

@@ -35,6 +35,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import gate  # noqa: E402
+import pipeline  # noqa: E402
+from requirements import QualityRequirements, tempo_requirement  # noqa: E402
+
+#: Failure codes that another take might fix, and those it cannot.
+#:
+#: A tempo the model chose, a melody that did not fit, a clash, a pitch problem
+#: — all of those are properties of this take, and a different take may not have
+#: them. A separator that is not installed, an analysis that could not attribute
+#: the singing to a voice, audio that would not decode — those are properties of
+#: this machine or this file, and generating again arrives at the same sentence
+#: having spent another job on a free GPU.
+RETRYABLE = {
+    pipeline.TEMPO_MISMATCH,
+    pipeline.HARMONIC_MISMATCH,
+    pipeline.WEAKEST_FOUR,
+    pipeline.SEVERE_CONFLICT,
+    pipeline.PITCH_PROBLEM,
+}
 
 DEFAULT_ATTEMPTS = 5
 
@@ -47,8 +65,13 @@ class LyricsChanged(RuntimeError):
 class Attempt:
     attempt: int
     verdict: str
+    #: Whatever seed the backend reported using. The ZeroGPU Space draws its own
+    #: and reports it; nothing here asks for one, because its endpoint takes no
+    #: seed parameter. A run that shows different seeds is describing what the
+    #: Space did, not what this loop requested.
     seed: object = None
     reasons: list = field(default_factory=list)
+    rejection_reasons: list = field(default_factory=list)
     measurements: dict = field(default_factory=dict)
     seconds: float = 0.0
 
@@ -84,6 +107,7 @@ def generate_once(client, style: str, lyrics: str, language: str, vocal_gender: 
 def run(client, style: str, lyrics: str, *, language: str = "id",
         vocal_gender: str = "male", instrumental: bool = False, duration: int = -1,
         attempts: int = DEFAULT_ATTEMPTS, thresholds: gate.Thresholds = gate.STRICT,
+        target_bpm: float | None = None, bpm_tolerance: float | None = None,
         workspace: Path | None = None, log=print) -> Outcome:
     """The loop. Returns a passing take or nothing — never a rejected one."""
     original_style, original_lyrics = style, lyrics
@@ -103,19 +127,27 @@ def run(client, style: str, lyrics: str, *, language: str = "id",
         started = time.perf_counter()
         path, metadata = generate_once(
             client, style, lyrics, language, vocal_gender, instrumental, duration, scratch)
-        report = gate.judge(path, thresholds)
+        requirements = QualityRequirements(
+            tempo=(tempo_requirement(target_bpm, bpm_tolerance) if bpm_tolerance is not None
+                   else tempo_requirement(target_bpm)))
+        report = gate.judge(path, thresholds, requirements)
         seed = (metadata or {}).get("seed") if isinstance(metadata, dict) else None
-        entry = Attempt(attempt, report.verdict, seed, report.reasons, report.measurements,
+        entry = Attempt(attempt, report.verdict, seed, report.reasons,
+                        list(report.rejection_reasons), report.measurements,
                         round(time.perf_counter() - started, 1))
         record.append(entry)
         log(entry.line())
         for reason in report.reasons:
             log(f"    {reason}")
 
-        if report.verdict == "PASS":
+        # `delivery_allowed` is the single question, asked of the report rather
+        # than re-derived from the verdict here. A second place deciding what may
+        # be delivered is a second place to get it wrong.
+        if report.delivery_allowed:
             return Outcome(True, record, path, report)
 
-        if report.verdict == "REGENERATION_REQUIRED":
+        if report.verdict == "REGENERATION_REQUIRED" and (
+                set(report.rejection_reasons) & RETRYABLE):
             # Deleted, not shelved. A rejected take that stays on disk is a
             # rejected take somebody eventually plays.
             path.unlink(missing_ok=True)

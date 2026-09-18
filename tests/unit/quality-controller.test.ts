@@ -24,6 +24,9 @@ const request: MusicGenerationRequest = { style: STYLE, lyrics: LYRICS, language
 function report(verdict: QualityVerdict, reason = 'because'): QualityReport {
   return {
     verdict,
+    accepted: verdict === 'PASS',
+    deliveryAllowed: verdict === 'PASS',
+    rejectionReasons: verdict === 'REGENERATION_REQUIRED' ? ['HARMONIC_MISMATCH'] : [],
     reasons: [reason],
     failedChecks: verdict === 'REGENERATION_REQUIRED' ? ['harmonicCompatibility'] : [],
     measurements: null,
@@ -265,5 +268,78 @@ describe('the delivery policy', () => {
     const outcome = await runGatedGeneration({ provider: recordingProvider(), request, judge })
     expect(outcome.delivered).toBe(true)
     expect(judge).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('nothing that failed a hard gate can be delivered', () => {
+  /** A report shaped as the gate really produces them, with a named failure. */
+  function rejected(reasons: QualityReport['rejectionReasons']): QualityReport {
+    return {
+      verdict: 'REGENERATION_REQUIRED',
+      accepted: false,
+      deliveryAllowed: false,
+      rejectionReasons: reasons,
+      reasons: [`failed: ${reasons.join(', ')}`],
+      failedChecks: ['tempo'],
+      measurements: null,
+      worstMoments: [],
+      evidence: { source: 'audio', confidence: 0.9, isolated: true },
+      limitations: [],
+    }
+  }
+
+  it('refuses to deliver a tempo mismatch, however good the notes are', async () => {
+    const outcome = await runGatedGeneration({
+      provider: recordingProvider(), request,
+      judge: () => rejected(['TEMPO_MISMATCH']), maxAttempts: 3,
+    })
+    expect(outcome.delivered).toBe(false)
+    if (!outcome.delivered) expect(outcome.unverified).toBeUndefined()
+  })
+
+  it('refuses to deliver a harmonic mismatch', async () => {
+    const outcome = await runGatedGeneration({
+      provider: recordingProvider(), request,
+      judge: () => rejected(['HARMONIC_MISMATCH']), maxAttempts: 3,
+    })
+    expect(outcome.delivered).toBe(false)
+  })
+
+  it('refuses to deliver when both fail, and keeps both reasons', async () => {
+    const seen: QualityReport[] = []
+    const outcome = await runGatedGeneration({
+      provider: recordingProvider(), request,
+      judge: () => { const r = rejected(['TEMPO_MISMATCH', 'HARMONIC_MISMATCH']); seen.push(r); return r },
+      maxAttempts: 2,
+    })
+    expect(outcome.delivered).toBe(false)
+    expect(seen[0]!.rejectionReasons).toEqual(['TEMPO_MISMATCH', 'HARMONIC_MISMATCH'])
+  })
+
+  it('delivers once a later attempt clears every gate', async () => {
+    const script = [rejected(['TEMPO_MISMATCH']), rejected(['TEMPO_MISMATCH']), report('PASS')]
+    const outcome = await runGatedGeneration({
+      provider: recordingProvider(), request, judge: () => script.shift()!,
+    })
+    expect(outcome.delivered).toBe(true)
+    if (outcome.delivered) {
+      expect(outcome.result.id).toBe('take-3')
+      expect(outcome.report.accepted).toBe(true)
+      expect(outcome.report.deliveryAllowed).toBe(true)
+    }
+  })
+
+  it('never delivers a report whose own fields forbid it', async () => {
+    // The belt-and-braces case: a verdict that says PASS while the delivery
+    // fields say no. The controller must believe the fields, because they are
+    // the ones every other caller reads.
+    const contradictory: QualityReport = {
+      ...report('PASS'), accepted: false, deliveryAllowed: false,
+      rejectionReasons: ['TEMPO_MISMATCH'],
+    }
+    const outcome = await runGatedGeneration({
+      provider: recordingProvider(), request, judge: () => contradictory, maxAttempts: 1,
+    })
+    expect(outcome.delivered).toBe(false)
   })
 })

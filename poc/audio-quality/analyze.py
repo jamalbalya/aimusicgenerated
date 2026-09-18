@@ -50,7 +50,9 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).parent))
 import harmony  # noqa: E402
 import intonation  # noqa: E402
+import pipeline  # noqa: E402
 import separate_vocals  # noqa: E402
+from requirements import QualityRequirements, tempo_requirement  # noqa: E402
 
 PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
@@ -89,6 +91,8 @@ class Report:
     path: str
     #: Set by the harmonic pass so the verdict can require both conditions.
     harmony_result: object = None
+    #: The shared pipeline's report — the one that decides delivery.
+    quality_report: object = None
     measurements: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
 
@@ -699,7 +703,36 @@ def section_map(report: Report, mono) -> None:
                "In a song that builds to a final chorus this should be late, not early.")
 
 
-def analyse(path: Path, require_demucs: bool) -> Report:
+def quality(report: Report, path: Path, target_bpm: float | None = None) -> None:
+    """The verdict, from the one pipeline that produces verdicts.
+
+    Everything above this line is description — loudness, balance, where the
+    arrangement builds — and none of it decides anything. The decision is
+    `pipeline.evaluate_audio`, which is the same call `gate.py` makes, so the
+    report and the gate cannot disagree about a song the way they once did.
+    """
+    result = pipeline.evaluate_audio(
+        path, QualityRequirements(tempo=tempo_requirement(target_bpm)))
+    report.quality_report = result
+    report.add("verdict", result.verdict, "measured", "pipeline.evaluate_audio",
+               " ".join(result.reasons))
+    report.add("accepted", result.accepted, "measured", "whether this take cleared every gate")
+    report.add("delivery_allowed", result.delivery_allowed, "measured",
+               "whether this take may be handed to a listener")
+    report.add("rejection_reasons", result.rejection_reasons, "measured",
+               "stable codes the regeneration loop branches on")
+    for name, value in result.measurements.items():
+        report.add(f"q_{name}", value, "estimated", "shared quality pipeline")
+    for name, check in result.validation.items():
+        report.add(f"check_{name}", check["passed"], "measured", check["detail"])
+    if result.worst_moments:
+        report.add("worst_moments", result.worst_moments, "estimated",
+                   "clash stretches, severe first", "Where a listener hears it go wrong.")
+    report.add("quality_limitations", result.limitations, "measured",
+               "what this verdict cannot support")
+
+
+def analyse(path: Path, require_demucs: bool, target_bpm: float | None = None) -> Report:
     report = Report(path=str(path))
     stereo, native_sr, mono, info = load(path)
     report.add("duration_s", round(float(info.duration), 3), "measured", "container header")
@@ -711,6 +744,7 @@ def analyse(path: Path, require_demucs: bool) -> Report:
     harmony_of_mix(report, mono)
     section_map(report, mono)
     vocals(report, mono, require_demucs, stereo=stereo, native_sr=native_sr)
+    quality(report, path, target_bpm)
     return report
 
 
@@ -749,6 +783,10 @@ def main() -> int:
     parser.add_argument("--json", type=Path, help="write the full report here")
     parser.add_argument("--require-demucs", action="store_true",
                         help="refuse to report vocal numbers without a real source separator")
+    parser.add_argument("--target-bpm", type=float, default=None,
+                        help="the tempo the song was asked for; checked against the audio. "
+                             "Omitted means no tempo was requested, which is not the same as "
+                             "a tempo that passed.")
     args = parser.parse_args()
 
     reports = []
@@ -756,13 +794,21 @@ def main() -> int:
         if not path.exists():
             print(f"no such file: {path}", file=sys.stderr)
             return 2
-        report = analyse(path, args.require_demucs)
+        report = analyse(path, args.require_demucs, args.target_bpm)
         render(report)
         reports.append(report)
     compare(reports)
 
     if args.json:
-        args.json.write_text(json.dumps([asdict(r) for r in reports], indent=2))
+        def serialisable(report: Report) -> dict:
+            out = asdict(report)
+            out.pop("harmony_result", None)
+            quality = out.pop("quality_report", None)
+            out["quality"] = quality if isinstance(quality, dict) else (
+                report.quality_report.as_dict() if report.quality_report else None)
+            return out
+
+        args.json.write_text(json.dumps([serialisable(r) for r in reports], indent=2))
         print(f"\nwritten: {args.json}")
     return 0
 

@@ -165,9 +165,39 @@ export interface QualityMeasurements {
   intentionalChromaticNotes: number
 }
 
+/**
+ * Stable codes for why a take was refused.
+ *
+ * An interface, not a message: the regeneration loop branches on these and a
+ * report prints them, so they are spelled once and never reworded in place.
+ */
+export type RejectionReason =
+  | 'TEMPO_MISMATCH'
+  | 'TEMPO_UNMEASURABLE'
+  | 'HARMONIC_MISMATCH'
+  | 'WEAKEST_FOUR'
+  | 'SEVERE_CONFLICT'
+  | 'PITCH_PROBLEM'
+  | 'VOCAL_RANGE'
+  | 'TIMING'
+  | 'ANALYSIS_UNAVAILABLE'
+
 /** The gate's full answer. Every field is something a person can check. */
 export interface QualityReport {
   verdict: QualityVerdict
+  /** True only on PASS. Never inferred from the verdict by a caller. */
+  accepted: boolean
+  /**
+   * Whether this take may reach a listener.
+   *
+   * Asked of the report rather than re-derived from the verdict at each call
+   * site, because a second place deciding what may be delivered is a second
+   * place to get it wrong.
+   */
+  deliveryAllowed: boolean
+  rejectionReasons: RejectionReason[]
+  /** The tempo check, when a tempo was requested. */
+  tempo?: import('./tempo').TempoCheck
   /** One sentence per reason, in the order they were decided. */
   reasons: string[]
   /** Which checks failed, by name, for a machine to branch on. */

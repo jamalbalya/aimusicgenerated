@@ -165,6 +165,34 @@ opinion, but it no longer decides anything.
 
 ---
 
+## Checking a requested tempo
+
+ACE-Step has no tempo parameter — its endpoint takes a style, a lyric sheet, a
+language, a vocal gender, an instrumental flag and a duration, and none of those
+is a tempo. A caption saying "72 BPM" is text the model may ignore, and on one
+real song it did: the request was 72 and the result was 89.8 BPM, held to 0.3
+BPM across ten windows.
+
+So pass the requested tempo and it is checked against the audio:
+
+```
+python3 analyze.py song.mp3 --target-bpm 72
+```
+
+```python
+import gate
+report = gate.judge_with_tempo(Path("song.wav"), target_bpm=72)
+print(report.verdict, report.rejection_reasons)
+```
+
+Default tolerance is 2 BPM. Half- and double-time measurements are **named**
+(`half_time`, `double_time`) and refused rather than silently accepted: a song
+measured at 144 against a requested 72 is either correctly written and miscounted
+or genuinely twice as fast, and the audio does not say which.
+
+A tempo that could not be measured — unstable, low confidence, no pulse — gives
+`ANALYSIS_UNAVAILABLE`, not `REGENERATION_REQUIRED`. It has not failed.
+
 ## Enforcing the gate on a real generation
 
 `analyze.py` measures a file you already have. `generate_gated.py` is the loop
@@ -219,9 +247,10 @@ The thresholds, and why each is where it is, are in `gate.Thresholds` and in
 ## Running the tests
 
 ```
-python3 test_intonation.py
-python3 test_separation.py
-python3 test_gate.py
+python3 test_intonation.py    # 72 checks
+python3 test_separation.py    # 38 checks
+python3 test_gate.py          # 26 checks
+python3 test_tempo.py         # 53 checks, 11 calibration tempos
 ```
 
 `test_gate.py` needs neither a GPU nor a network: the backend is a stub and the
