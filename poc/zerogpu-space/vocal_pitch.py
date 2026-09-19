@@ -238,6 +238,10 @@ PHRASE_CONFIDENCE_FLOOR = 0.55
 CORRECTION_AUTHORIZED = "PITCH_CORRECTION_AUTHORIZED"
 CORRECTION_NOT_AUTHORIZED = "PITCH_CORRECTION_NOT_AUTHORIZED"
 ALIGNMENT_UNTRUSTWORTHY = "ALIGNMENT_UNTRUSTWORTHY"
+#: Its opposite, which exists so a report never has to say "not untrustworthy".
+#: A run reports one of the two by name; the absence of the negative is not
+#: evidence of the positive and must never be printed as if it were.
+ALIGNMENT_TRUSTWORTHY = "ALIGNMENT_TRUSTWORTHY"
 
 
 def authorize_correction(tempo_reading, targets: Sequence["TargetNote"]) -> tuple[str, list[str]]:
@@ -1653,10 +1657,20 @@ class CorrectionReport:
     trust: str = "UNVERIFIED"
     trust_reasons: list[str] = field(default_factory=list)
     #: Tempo, and whether it invalidates the plan's timeline.
+    #:
+    #: Four numbers, and all four are reported. `raw_bpm` is what the detectors
+    #: found; `canonical_bpm` is the same pulse read at the octave that compares
+    #: with the request. A ballad detected at 49 and one detected at 99 can be
+    #: the same recording, so printing one number without the other has already
+    #: caused a reading of this report to be wrong once.
     tempo_verdict: str = "TEMPO_UNMEASURABLE"
-    measured_bpm: float = 0.0
     requested_bpm: float = 0.0
+    raw_bpm: float = 0.0
+    canonical_bpm: float = 0.0
     tempo_ratio: Optional[float] = None
+    tempo_folded: bool = False
+    #: The four numbers on one line, with the folding shown when it happened.
+    tempo_line: str = ""
     tempo_local_drift: float = 0.0
     #: Whether correcting against this plan was allowed at all, and why.
     authorization: str = CORRECTION_NOT_AUTHORIZED
@@ -1933,6 +1947,17 @@ def correct_vocal(vocal: np.ndarray, sample_rate: int,
     # "should not happen" is not a guarantee, and returning the vocal ACE-Step
     # made is always an available and honest outcome.
     assess_trust(report)
+
+    # The per-phrase scores belong to the run that produced them, so they are
+    # attached here rather than by each caller. `process_song` used to copy
+    # them across afterwards and the real-run harness did not, which left the
+    # harness reporting a song as unalignable when in fact nobody had asked
+    # the scores for their verdict.
+    report.phrase_alignments = [
+        {"phrase": p.phrase, "planned": p.planned_notes, "matched": p.matched_notes,
+         "t0": p.start_seconds, "t1": p.end_seconds, "confidence": p.confidence,
+         "trusted": p.trusted, "reason": p.reason}
+        for p in _LAST_PHRASE_SCORES]
 
     if (report.notes_corrected > 0
             and report.anchors_examined > 0
@@ -2319,9 +2344,14 @@ def process_song(mix: np.ndarray, sample_rate: int, targets: Sequence[TargetNote
     tempo_seconds = time.perf_counter() - tempo_started
 
     report.tempo_verdict = reading.verdict if reading else "TEMPO_UNMEASURABLE"
-    report.measured_bpm = round(reading.comparable_bpm, 2) if reading else 0.0
     report.requested_bpm = float(requested_bpm) if requested_bpm else 0.0
+    report.raw_bpm = round(reading.raw_bpm, 2) if reading else 0.0
+    report.canonical_bpm = round(reading.canonical_bpm, 2) if reading else 0.0
     report.tempo_ratio = round(reading.ratio, 4) if (reading and reading.ratio) else None
+    report.tempo_folded = bool(reading.folded) if reading else False
+    report.tempo_line = reading.describe() if reading else (
+        f"requested {report.requested_bpm:.2f} BPM | raw unmeasured | "
+        f"canonical unmeasured | ratio n/a")
     report.tempo_local_drift = round(reading.local_drift, 4) if reading else 0.0
 
     authorized, why = authorize_correction(reading, targets)
@@ -2372,11 +2402,6 @@ def process_song(mix: np.ndarray, sample_rate: int, targets: Sequence[TargetNote
         "measure_align_correct": round(time.perf_counter() - corrected_started, 3),
         "tempo": round(tempo_seconds, 3),
     }
-    report.phrase_alignments = [
-        {"phrase": p.phrase, "planned": p.planned_notes, "matched": p.matched_notes,
-         "t0": p.start_seconds, "t1": p.end_seconds, "confidence": p.confidence,
-         "trusted": p.trusted, "reason": p.reason}
-        for p in _LAST_PHRASE_SCORES]
     if report.unavailable is not None:
         return mix, report
     if report.notes_corrected == 0:

@@ -80,32 +80,90 @@ TEMPO_UNMEASURABLE = "TEMPO_UNMEASURABLE"
 TEMPO_NOT_REQUESTED = "TEMPO_NOT_REQUESTED"
 
 
+#: The band a canonical musical tempo is folded into when nothing was requested.
+#:
+#: A ballad detected at 49.3 BPM and one detected at 98.7 are the same music —
+#: half-time and double-time are a reading, not a fact. With a requested tempo
+#: there is an obvious octave to prefer; without one there is not, so the raw
+#: value is folded by powers of two into the range most music is counted in.
+#: Both numbers are always reported, so 49 is never mistaken for a different
+#: song from 99.
+CANONICAL_BAND = (60.0, 160.0)
+
+
 @dataclass
 class TempoReading:
-    """What the song's tempo is, measured several ways, and what follows."""
+    """What the song's tempo is, measured several ways, and what follows.
 
-    #: The agreed tempo, or 0.0 when the methods could not agree.
-    bpm: float = 0.0
+    Four numbers, always, and they are not interchangeable:
+
+      `requested_bpm`  what was asked for, or None
+      `raw_bpm`        what the detectors actually found, unfolded
+      `canonical_bpm`  the same performance read at the octave that compares
+                       with the request (or, with no request, at the octave
+                       music is normally counted in)
+      `ratio`          canonical / requested
+
+    Reporting only one of them is how a 49 gets mistaken for a different song
+    from a 99 when they are the same recording.
+    """
+
+    #: What the detectors found, unfolded. 0.0 when they could not agree.
+    raw_bpm: float = 0.0
     #: Every method's answer, by name, so a reader can see the disagreement.
     methods: dict[str, float] = field(default_factory=dict)
     #: Other tempi the evidence also supports — usually 2x and 1/2x.
     harmonics: list[float] = field(default_factory=list)
     #: The tempo that was asked for, or None.
     requested_bpm: Optional[float] = None
-    #: The measured tempo folded to the octave nearest the request.
+    #: The same performance at the octave that compares with the request.
     #:
-    #: Half-time and double-time are the same music, and a detector may report
-    #: either. A ballad measured at 49.2 BPM is the same performance as one
-    #: measured at 98.4. Which one is printed does not matter; which one the
-    #: *timeline* is compared against does, because the plan's note times scale
-    #: by this ratio and getting the octave wrong inverts the sign of the drift.
-    comparable_bpm: float = 0.0
-    #: comparable_bpm / requested. 1.0 when they agree.
+    #: Which octave is printed does not matter; which one the *timeline* is
+    #: compared against does, because the plan's note times scale by this ratio
+    #: and getting the octave wrong inverts the sign of the drift.
+    canonical_bpm: float = 0.0
+    #: canonical_bpm / requested. 1.0 when they agree.
     ratio: Optional[float] = None
     #: How much the local tempo wanders, as a fraction of the global tempo.
     local_drift: float = 0.0
     verdict: str = TEMPO_UNMEASURABLE
     reasons: list[str] = field(default_factory=list)
+
+    @property
+    def folded(self) -> bool:
+        """Whether raw and canonical are different readings of the same pulse."""
+        return self.raw_bpm > 0 and abs(self.canonical_bpm - self.raw_bpm) >= 0.01
+
+    def four_values(self) -> dict[str, Optional[float]]:
+        """The four tempo numbers, always together, never one of them alone.
+
+        Requested, raw, canonical and ratio. A report that prints one number is
+        how a 49 gets read as a different song from a 99 when they are the same
+        recording at half-time and double-time.
+        """
+        return {
+            "requested_bpm": (round(float(self.requested_bpm), 2)
+                              if self.requested_bpm else None),
+            "raw_bpm": round(self.raw_bpm, 2) if self.raw_bpm else None,
+            "canonical_bpm": (round(self.canonical_bpm, 2)
+                              if self.canonical_bpm else None),
+            "tempo_ratio": round(self.ratio, 4) if self.ratio else None,
+        }
+
+    def describe(self) -> str:
+        """The four values on one line, with the folding shown when it happened."""
+        values = self.four_values()
+        requested = f"{values['requested_bpm']:.2f}" if values["requested_bpm"] else "none"
+        raw = f"{values['raw_bpm']:.2f}" if values["raw_bpm"] else "unmeasured"
+        canonical = f"{values['canonical_bpm']:.2f}" if values["canonical_bpm"] else "unmeasured"
+        ratio = f"{values['tempo_ratio']:.4f}" if values["tempo_ratio"] else "n/a"
+        line = (f"requested {requested} BPM | raw {raw} BPM | "
+                f"canonical {canonical} BPM | ratio {ratio}")
+        if self.folded:
+            factor = self.canonical_bpm / self.raw_bpm
+            line += (f"  [folded x{factor:g}: raw {raw} and canonical {canonical} are the "
+                     f"same pulse counted at different octaves, not two tempi]")
+        return line
 
     @property
     def usable_for_alignment(self) -> bool:
@@ -115,7 +173,7 @@ class TempoReading:
         for or differs by a single stable ratio the alignment can undo. An
         unstable tempo is not correctable by one ratio and is not authorised.
         """
-        return self.verdict in (TEMPO_OK, TEMPO_MISMATCH) and self.bpm > 0
+        return self.verdict in (TEMPO_OK, TEMPO_MISMATCH) and self.raw_bpm > 0
 
 
 def _onset_envelope(audio: np.ndarray, sample_rate: int,
@@ -222,6 +280,22 @@ def _interval_bpm(flux: np.ndarray, rate: float) -> float:
     return float(60.0 / ((edges[top] + edges[top + 1]) / 2))
 
 
+def _fold_into_band(bpm: float, band: tuple[float, float] = CANONICAL_BAND) -> float:
+    """Halves or doubles a tempo until it sits in the band music is counted in."""
+    if bpm <= 0:
+        return 0.0
+    low, high = band
+    value = float(bpm)
+    for _ in range(6):
+        if value < low:
+            value *= 2.0
+        elif value >= high:
+            value /= 2.0
+        else:
+            break
+    return value
+
+
 def _fold_to(reference: float, candidate: float) -> float:
     """Brings a candidate onto the reference's octave, so 2x and 1/2x agree.
 
@@ -293,21 +367,25 @@ def measure_tempo(audio: np.ndarray, sample_rate: int,
             f"the methods disagree by {spread * 100:.1f}% ({reading.methods}), so no single "
             f"tempo is established and none may be used to judge the song")
         return reading
-    reading.bpm = float(np.median(agreeing))
+    reading.raw_bpm = float(np.median(agreeing))
 
     local = measure_local_tempo(audio, sample_rate)
     if len(local) >= 2:
-        folded = [_fold_to(reading.bpm, v) for v in local]
+        folded = [_fold_to(reading.raw_bpm, v) for v in local]
         reading.local_drift = float(max(folded) / min(folded) - 1.0)
 
     if requested_bpm is None or requested_bpm <= 0:
+        # No request, so no octave is privileged: fold into the band music is
+        # normally counted in, and say plainly that both readings are the same
+        # performance.
+        reading.canonical_bpm = _fold_into_band(reading.raw_bpm)
         reading.verdict = TEMPO_NOT_REQUESTED
         reading.reasons.append(
             "no tempo was requested, so there is nothing for the measurement to disagree with")
         return reading
 
-    reading.comparable_bpm = _fold_to(float(requested_bpm), reading.bpm)
-    reading.ratio = reading.comparable_bpm / float(requested_bpm)
+    reading.canonical_bpm = _fold_to(float(requested_bpm), reading.raw_bpm)
+    reading.ratio = reading.canonical_bpm / float(requested_bpm)
     folded_ratio = reading.ratio
 
     if reading.local_drift > LOCAL_DRIFT_TOLERANCE:
@@ -320,15 +398,15 @@ def measure_tempo(audio: np.ndarray, sample_rate: int,
     if abs(folded_ratio - 1.0) <= TEMPO_TOLERANCE:
         reading.verdict = TEMPO_OK
         reading.reasons.append(
-            f"measured {reading.comparable_bpm:.2f} against {requested_bpm:.0f} requested, "
-            f"within {TEMPO_TOLERANCE * 100:.0f}%")
+            f"canonical {reading.canonical_bpm:.2f} (raw {reading.raw_bpm:.2f}) against "
+            f"{requested_bpm:.0f} requested, within {TEMPO_TOLERANCE * 100:.0f}%")
         return reading
 
     reading.verdict = TEMPO_MISMATCH
-    same = "" if abs(reading.comparable_bpm - reading.bpm) < 0.01 else \
-        f" (detected as {reading.bpm:.2f}; the same performance read at the octave nearest the request)"
+    same = "" if abs(reading.canonical_bpm - reading.raw_bpm) < 0.01 else \
+        f" (raw {reading.raw_bpm:.2f}; the same performance read at the octave nearest the request)"
     reading.reasons.append(
-        f"measured {reading.comparable_bpm:.2f} BPM against {requested_bpm:.0f} requested"
+        f"canonical {reading.canonical_bpm:.2f} BPM against {requested_bpm:.0f} requested"
         f"{same}, ratio {reading.ratio:.4f}. The target melody is laid out on the requested "
         f"tempo's timeline, so plan and performance drift apart by "
         f"{abs(1 - 1 / reading.ratio) * 100:.0f}% of elapsed time.")

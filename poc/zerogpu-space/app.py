@@ -353,9 +353,14 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
                 "separator": report.separator,
                 "trust": report.trust,
                 "tempo_verdict": report.tempo_verdict,
-                "measured_bpm": report.measured_bpm,
+                # All four, always. Raw and canonical are the same pulse at
+                # different octaves; one of them alone reads as a different song.
                 "requested_bpm": report.requested_bpm,
+                "raw_bpm": report.raw_bpm,
+                "canonical_bpm": report.canonical_bpm,
                 "tempo_ratio": report.tempo_ratio,
+                "tempo_folded": report.tempo_folded,
+                "tempo": report.tempo_line,
                 "tempo_local_drift": report.tempo_local_drift,
                 "authorization": report.authorization,
                 "authorization_reasons": report.authorization_reasons,

@@ -130,18 +130,26 @@ def fetch_audio(base: str, reference: object, token: str | None, out: Path) -> P
     return path
 
 
-def analyse_locally(audio_path: Path, melody_json: str, out: Path) -> dict:
+def analyse_locally(audio_path: Path, melody_json: str, out: Path,
+                    requested_bpm: float | None = None) -> dict:
     """Runs the vocal pipeline here, on the audio that came back.
 
     The Space runs this too, inside the same GPU call, and its report is the one
     that matters for the deployed product. This second pass exists because it
     gives per-note detail the metadata does not carry, and because it confirms
     the two agree. A disagreement between them is itself a finding.
+
+    The tempo gate runs here first, exactly as `process_song` runs it, and for
+    the same reason: this harness used to call `correct_vocal` directly, which
+    skipped the gate entirely. A song whose tempo does not match the plan would
+    have been pitch-corrected here and reported as corrected, while the deployed
+    Space refused the same song. The harness must not be the lenient path.
     """
     try:
         import numpy as np
         import wave
 
+        import tempo as tempo_module
         import vocal_pitch
     except Exception as error:
         return {"ran": False, "reason": f"local analysis unavailable: {error}"}
@@ -159,6 +167,92 @@ def analyse_locally(audio_path: Path, melody_json: str, out: Path) -> dict:
                if isinstance(row, (list, tuple)) and len(row) >= 3]
     if not targets:
         return {"ran": False, "reason": "no target melody was sent, so nothing to measure against"}
+
+    # ---- the tempo, all four numbers, before anything is corrected ----------
+    #
+    # Requested, raw, canonical and ratio, always together. Raw and canonical
+    # are the same pulse counted at different octaves: a ballad the detectors
+    # read at 49.3 and one they read at 98.7 can be the same recording, and a
+    # report that prints one of them without the other has already been
+    # misread once.
+    duration_seconds = samples.size / sample_rate
+    try:
+        reading = tempo_module.measure_tempo(samples, sample_rate,
+                                             requested_bpm=requested_bpm)
+    except Exception as error:  # noqa: BLE001 - a missing measurement is a refusal
+        reading = None
+        tempo_error = str(error)
+    else:
+        tempo_error = ""
+
+    tempo_block: dict = {
+        "requested_bpm": round(float(requested_bpm), 2) if requested_bpm else None,
+        "raw_bpm": round(reading.raw_bpm, 2) if reading and reading.raw_bpm else None,
+        "canonical_bpm": (round(reading.canonical_bpm, 2)
+                          if reading and reading.canonical_bpm else None),
+        "tempo_ratio": round(reading.ratio, 4) if (reading and reading.ratio) else None,
+        "folded": bool(reading.folded) if reading else False,
+        "verdict": reading.verdict if reading else "TEMPO_UNMEASURABLE",
+        "methods": reading.methods if reading else {},
+        "local_drift": round(reading.local_drift, 4) if reading else None,
+        "line": (reading.describe() if reading
+                 else f"tempo could not be measured: {tempo_error}"),
+        "reasons": reading.reasons if reading else [tempo_error],
+    }
+
+    authorization, why = vocal_pitch.authorize_correction(reading, targets)
+
+    # Bars, both ways, because a plan and a performance that disagree about the
+    # bar count are not describing the same arrangement.
+    planned_bars = (duration_seconds / (4 * 60 / float(requested_bpm))
+                    if requested_bpm else None)
+    actual_bars = (duration_seconds / (4 * 60 / reading.canonical_bpm)
+                   if reading and reading.canonical_bpm else None)
+    structure = {
+        "duration_seconds": round(duration_seconds, 3),
+        "bars_planned_at_requested_bpm": (round(planned_bars, 1)
+                                          if planned_bars else None),
+        "bars_in_the_performance": round(actual_bars, 1) if actual_bars else None,
+        "phrases_planned": len({t.phrase for t in targets
+                                if getattr(t, "phrase", None) is not None}) or None,
+    }
+
+    if authorization != vocal_pitch.CORRECTION_AUTHORIZED:
+        # The safe outcome, and the one this fixture produces. The song is
+        # returned exactly as ACE-Step made it. Nothing measured afterwards can
+        # upgrade this to a pass, and no field below is filled in with a zero
+        # that would read as "no errors found".
+        return {
+            "ran": True,
+            "corrected": False,
+            "tempo": tempo_block,
+            "structure": structure,
+            "authorization": authorization,
+            "authorization_reasons": why,
+            "alignment_trust": vocal_pitch.ALIGNMENT_UNTRUSTWORTHY,
+            "trust": "UNVERIFIED",
+            "trust_reasons": why,
+            "planned_notes": len([t for t in targets if not t.is_rest]),
+            "alignment_coverage": None,
+            "notes_corrected": None,
+            "octave_corrections": None,
+            "max_residual_cents": None,
+            "median_residual_cents": None,
+            "unverified_notes": None,
+            "notes_reverted": None,
+            "final_verification": "PITCH_CORRECTION_NOT_AUTHORIZED / NO AUDIBLE FALS: UNVERIFIED",
+            "decisions": [
+                "The target melody is laid out on the requested tempo's timeline. "
+                "Correcting against a plan that does not describe this performance "
+                "would move the vocal toward notes belonging to a different part of "
+                "the song, so the audio was returned unchanged.",
+            ],
+        }
+
+    # Authorised: the ratio is small and stable enough that re-timing the plan
+    # is a re-timing and not a reinterpretation. Times move; pitches never do.
+    if reading and reading.ratio and abs(reading.ratio - 1.0) > 1e-6:
+        targets = vocal_pitch.warp_targets(targets, reading.ratio)
 
     # The same three stages `process_song` runs, run here so the corrected vocal
     # *stem* is in hand and not only the remixed song.
@@ -239,9 +333,46 @@ def analyse_locally(audio_path: Path, melody_json: str, out: Path) -> dict:
         clipped = np.clip(corrected, -1.0, 1.0)
         handle.writeframes((clipped * 32767.0).astype("<i2").tobytes())
 
+    # The residuals: how far each note still sits from its target *after*
+    # correction. Measured only on notes whose pitch could be read at all; a
+    # note nobody could measure is counted as unverified, never as zero.
+    residuals = [abs(row["after_cents"]) for row in per_note
+                 if row["after_cents"] is not None]
+    unverified_notes = len([row for row in per_note if row["after_cents"] is None])
+
     return {
         "ran": True,
+        "corrected": True,
         "seconds": round(seconds, 3),
+        "tempo": tempo_block,
+        "structure": structure,
+        "authorization": authorization,
+        "authorization_reasons": why,
+        "alignment_coverage": round(report.measurement_coverage, 3),
+        # Read off the phrase scores, never asserted. A run in which no phrase
+        # could be scored is untrustworthy, not trustworthy by default.
+        "alignment_trust": (
+            vocal_pitch.ALIGNMENT_TRUSTWORTHY
+            if (report.phrase_alignments
+                and all(row.get("trusted") for row in report.phrase_alignments))
+            else vocal_pitch.ALIGNMENT_UNTRUSTWORTHY),
+        # Per phrase, because that is the grain the decision is taken at: an
+        # untrusted line has its notes left exactly as performed while the rest
+        # of the song is corrected. The aggregate above is the strict reading —
+        # trustworthy only if every scored line was — and the counts say how
+        # far from it a run sits, so one weak line does not read as a whole
+        # song nobody could align.
+        "phrases_scored": len(report.phrase_alignments),
+        "phrases_trusted": len([row for row in report.phrase_alignments
+                                if row.get("trusted")]),
+        "phrase_alignments": report.phrase_alignments,
+        "octave_corrections": report.octave_errors - report.octave_errors_after,
+        "max_residual_cents": round(max(residuals), 1) if residuals else None,
+        "median_residual_cents": (round(float(sorted(residuals)[len(residuals) // 2]), 1)
+                                  if residuals else None),
+        "unverified_notes": unverified_notes,
+        "final_verification": (
+            "NO AUDIBLE FALS: UNVERIFIED — this script writes audio, it does not listen"),
         "separator": report.separator,
         "trust": report.trust,
         "trust_reasons": report.trust_reasons,
@@ -289,7 +420,64 @@ def render(record: dict) -> str:
         got = stages.get(key)
         return "not measured" if got is None else f"{got}s"
 
+    tempo = local.get("tempo", {}) or {}
+    structure = local.get("structure", {}) or {}
+
+    def four(key: str, unit: str = " BPM") -> str:
+        got = tempo.get(key)
+        return "not measured" if got is None else f"{got}{unit}"
+
+    def shown(source: dict, key: str, unit: str = "") -> str:
+        """A missing measurement says so. It never prints as a bare None.
+
+        A `None` in a column of numbers reads as a value, and the one thing
+        this report must not do is let an unavailable measurement pass for a
+        measured zero.
+        """
+        got = source.get(key)
+        return "not measured" if got is None else f"{got}{unit}"
+
+    fold = ""
+    if tempo.get("folded"):
+        fold = ("      NOTE: raw and canonical are the same pulse counted at different\n"
+                "            octaves — one recording, two readings, not two tempi.\n")
+
     lines = [
+        "Tempo (all four values, always):",
+        f"  1. requested BPM:        {four('requested_bpm')}",
+        f"  2. raw detected BPM:     {four('raw_bpm')}",
+        f"  3. canonical/folded BPM: {four('canonical_bpm')}",
+        f"  4. tempo ratio:          {four('tempo_ratio', '')}"
+        f"  (canonical / requested)",
+        fold + f"  verdict:                 {tempo.get('verdict', 'not measured')}",
+        f"  per-method readings:     {tempo.get('methods', {})}",
+        f"  local drift:             {four('local_drift', '')}",
+        "",
+        "Structure:",
+        f"  duration:                {structure.get('duration_seconds', '-')}s",
+        f"  bars planned at the requested BPM: "
+        f"{structure.get('bars_planned_at_requested_bpm', '-')}",
+        f"  bars in the performance:           "
+        f"{structure.get('bars_in_the_performance', '-')}",
+        f"  phrases planned:         {structure.get('phrases_planned', '-')}",
+        "",
+        "Alignment:",
+        f"  coverage:                {shown(local, 'alignment_coverage')}",
+        f"  trust:                   {local.get('alignment_trust', 'not measured')}"
+        + (f"  ({local['phrases_trusted']} of {local['phrases_scored']} phrases trusted)"
+           if local.get("phrases_scored") else ""),
+        f"  authorization:           {local.get('authorization', 'not measured')}",
+        *[f"    - {reason}" for reason in local.get("authorization_reasons", [])],
+        "",
+        "Correction:",
+        f"  notes pitch-corrected:   {shown(local, 'notes_corrected')}",
+        f"  octave corrections:      {shown(local, 'octave_corrections')}",
+        f"  max residual deviation:  {shown(local, 'max_residual_cents', ' cents')}",
+        f"  median residual:         {shown(local, 'median_residual_cents', ' cents')}",
+        f"  unverified notes:        {shown(local, 'unverified_notes')}",
+        f"  correction reversions:   {shown(local, 'notes_reverted')}",
+        f"  final verification:      {local.get('final_verification', 'not measured')}",
+        "",
         "Generation:",
         f"  one request / one ticket / no regeneration: {record.get('one_request', 'unknown')}",
         f"  requests posted: {record.get('requests_posted', 0)}",
@@ -317,8 +505,8 @@ def render(record: dict) -> str:
         f"  octave errors before:     {local.get('octave_errors_before', '-')}",
         f"  octave errors after:      {local.get('octave_errors_after', '-')}",
         f"  large deviations:         {local.get('large_corrections', '-')}",
-        f"  corrections applied:      {local.get('notes_corrected', '-')}",
-        f"  corrections reverted:     {local.get('notes_reverted', '-')}",
+        f"  corrections applied:      {shown(local, 'notes_corrected')}",
+        f"  corrections reverted:     {shown(local, 'notes_reverted')}",
         f"  per-note regressions:     {len(local.get('per_note_regressions', []))}",
         "",
         "Melody:",
@@ -403,6 +591,12 @@ def main() -> int:
         "duration": request.get("duration"),
     }
 
+    # The one tempo every later number is compared against. It comes from the
+    # planner, which read it out of the style text, so the figure in the report
+    # is the figure the melody was actually laid out on — not a flag that could
+    # disagree with it.
+    requested_bpm = float(request["bpm"]) if request.get("bpm") else None
+
     if arguments.audio_file:
         # Someone already has the song. Analyse it with exactly the code a
         # generated song goes through — the report then describes a real vocal,
@@ -429,7 +623,8 @@ def main() -> int:
             (out / "report.json").write_text(json.dumps(record, indent=2))
             print(render(record))
             return 6
-        record["local_analysis"] = analyse_locally(audio_path, request["melody"], out)
+        record["local_analysis"] = analyse_locally(audio_path, request["melody"], out,
+                                                 requested_bpm=requested_bpm)
         if (out / "corrected.wav").exists():
             record["corrected_path"] = str(out / "corrected.wav")
         # `real_audio` stays false unless the caller says this came from
@@ -516,7 +711,8 @@ def main() -> int:
             record["ace_step"]["audio_seconds"] = round(
                 handle.getnframes() / handle.getframerate(), 2)
 
-        record["local_analysis"] = analyse_locally(audio_path, request["melody"], out)
+        record["local_analysis"] = analyse_locally(audio_path, request["melody"], out,
+                                                 requested_bpm=requested_bpm)
         if (out / "corrected.wav").exists():
             record["corrected_path"] = str(out / "corrected.wav")
     except Exception as error:  # noqa: BLE001 - every failure is a result

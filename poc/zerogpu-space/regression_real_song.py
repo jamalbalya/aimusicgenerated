@@ -24,11 +24,13 @@ Needs numpy, scipy and a decoder for MP3 (soundfile, or ffmpeg on the path).
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import wave
+from pathlib import Path
 
 import numpy as np
 
@@ -91,15 +93,20 @@ def main() -> int:
     check(f"duration is {EXPECTED_DURATION_S}s", abs(duration - EXPECTED_DURATION_S) < 0.5,
           f"{duration:.3f}s")
     reading = T.measure_tempo(audio, rate, requested_bpm=REQUESTED_BPM)
-    print(f"       requested {REQUESTED_BPM:.0f} BPM")
-    print(f"       measured  {reading.comparable_bpm:.2f} BPM   (detected {reading.bpm:.2f}; "
-          f"the same performance at the octave nearest the request)")
+    print(f"       {reading.describe()}")
     print(f"       methods   {reading.methods}")
     print(f"       harmonics {reading.harmonics[:4]}")
-    check("the tempo is measurable", reading.comparable_bpm > 0, f"{reading.comparable_bpm:.2f}")
-    check(f"and measures {EXPECTED_BPM} BPM",
-          abs(reading.comparable_bpm - EXPECTED_BPM) < BPM_TOLERANCE,
-          f"{reading.comparable_bpm:.2f}")
+    check("the tempo is measurable", reading.canonical_bpm > 0, f"{reading.canonical_bpm:.2f}")
+    check(f"and measures {EXPECTED_BPM} BPM canonical",
+          abs(reading.canonical_bpm - EXPECTED_BPM) < BPM_TOLERANCE,
+          f"{reading.canonical_bpm:.2f}")
+    check("all four tempo values are reported together",
+          all(v is not None for v in reading.four_values().values()),
+          str(reading.four_values()))
+    check("raw and canonical are stated separately when folding was used",
+          (not reading.folded) or ("raw" in reading.describe()
+                                   and "canonical" in reading.describe()),
+          reading.describe())
     check("the three methods agree", len(reading.methods) == 3 and
           max(reading.methods.values()) / min(reading.methods.values()) - 1 <= T.METHOD_AGREEMENT,
           str(reading.methods))
@@ -126,7 +133,7 @@ def main() -> int:
           f"{T.drift_seconds(reading, 60.0):.1f}s at plan t=60s against a "
           f"{V.OFFSET_SEARCH_SECONDS:.0f}s search window")
     planned_bars = duration / (4 * 60 / REQUESTED_BPM)
-    actual_bars = duration / (4 * 60 / reading.comparable_bpm)
+    actual_bars = duration / (4 * 60 / reading.canonical_bpm)
     print(f"       the plan budgets {planned_bars:.0f} bars; the song has {actual_bars:.0f}")
     check("the plan and the song do not even have the same number of bars",
           abs(planned_bars - actual_bars) > 20, f"{planned_bars:.0f} against {actual_bars:.0f}")
@@ -160,9 +167,57 @@ def main() -> int:
           report.authorization == V.CORRECTION_NOT_AUTHORIZED, report.authorization)
     check("trust is UNVERIFIED and is never upgraded", report.trust == "UNVERIFIED",
           report.trust)
-    check("the requested and measured tempi are both in the report",
-          report.requested_bpm == REQUESTED_BPM and report.measured_bpm > 90,
-          f"requested {report.requested_bpm}, measured {report.measured_bpm}")
+    check("all four tempo values are in the report",
+          report.requested_bpm == REQUESTED_BPM and report.raw_bpm > 0
+          and report.canonical_bpm > 90 and report.tempo_ratio is not None,
+          report.tempo_line)
+
+    print("\n=== 6: the real-run harness is not a laxer path than the Space ===")
+    # This harness used to call `correct_vocal` directly, which skips the tempo
+    # gate `process_song` enforces. A song the deployed Space refuses would have
+    # been corrected here and reported as corrected. The gate is checked on the
+    # same audio, through the harness's own entry point, so the two cannot drift
+    # apart again.
+    import real_run
+    melody = json.dumps({"notes": [
+        [t.start_seconds, t.end_seconds, t.midi, t.role, t.phrase, t.onset_seconds]
+        for t in plan]})
+    with tempfile.TemporaryDirectory() as scratch:
+        scratch_dir = Path(scratch)
+        wav = scratch_dir / "fixture.wav"
+        with wave.open(str(wav), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(rate)
+            handle.writeframes(
+                (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2").tobytes())
+        harness = real_run.analyse_locally(wav, melody, scratch_dir,
+                                           requested_bpm=REQUESTED_BPM)
+        rendered = real_run.render({"local_analysis": harness, "request_summary": {},
+                                    "ace_step": {}, "melody": {"usable": True,
+                                                               "checksPassed": []}})
+        check("the harness refuses the same song the Space refuses",
+              harness.get("authorization") == V.CORRECTION_NOT_AUTHORIZED,
+              str(harness.get("authorization")))
+        check("and corrects nothing", harness.get("corrected") is False,
+              str(harness.get("corrected")))
+        check("and writes no corrected audio it is not authorised to write",
+              not (scratch_dir / "corrected.wav").exists())
+        check("the harness reports all four tempo values",
+              all(harness["tempo"].get(k) is not None
+                  for k in ("requested_bpm", "raw_bpm", "canonical_bpm", "tempo_ratio")),
+              str({k: harness["tempo"][k] for k in
+                   ("requested_bpm", "raw_bpm", "canonical_bpm", "tempo_ratio")}))
+        check("and says in words that raw and canonical are one pulse, not two",
+              "same pulse" in harness["tempo"]["line"], harness["tempo"]["line"])
+        for label in ("1. requested BPM", "2. raw detected BPM",
+                      "3. canonical/folded BPM", "4. tempo ratio"):
+            check(f"the rendered report shows {label}", label in rendered)
+        check("an unavailable measurement is never printed as a number",
+              "not measured" in rendered and ": None" not in rendered)
+        check("and the report does not claim a listening result",
+              "UNVERIFIED" in harness["final_verification"],
+              harness["final_verification"])
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

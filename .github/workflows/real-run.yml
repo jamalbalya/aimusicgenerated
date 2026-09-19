@@ -22,6 +22,14 @@ on:
         description: "male | female | auto"
         required: false
         default: "male"
+      style_file:
+        description: "Style fixture to send verbatim. The Phase 7 run uses the Tetap Memilihmu style."
+        required: false
+        default: "poc/zerogpu-space/fixtures/tetap-memilihmu-style.txt"
+      lyrics_file:
+        description: "Lyrics fixture to send verbatim. Never rewritten, never translated."
+        required: false
+        default: "poc/zerogpu-space/fixtures/real-run-lyrics.txt"
       demucs:
         description: "Install torchaudio for Hybrid Demucs (slower setup, better separation)"
         required: false
@@ -120,6 +128,8 @@ jobs:
           # here re-runs it, and the job has no retry either.
           python3 poc/zerogpu-space/real_run.py \
             --out ./real-run \
+            --style-file "${{ inputs.style_file }}" \
+            --lyrics-file "${{ inputs.lyrics_file }}" \
             --vocal-gender "${{ inputs.vocal_gender }}" \
             $duration_arg | tee ./real-run/console.txt
 

@@ -109,21 +109,40 @@ print("\n=== PHASE 2: the tempo actually generated is measured independently ===
 
 for bpm in (72.0, 96.0, 120.0):
     reading = T.measure_tempo(click_track(bpm, 40.0), SR, requested_bpm=bpm)
-    error = abs(reading.comparable_bpm - bpm) / bpm * 100 if reading.comparable_bpm else 999
+    error = abs(reading.canonical_bpm - bpm) / bpm * 100 if reading.canonical_bpm else 999
     check(f"a {bpm:.0f} BPM track measures {bpm:.0f}", error < 3.0,
-          f"{reading.comparable_bpm:.2f} BPM, {error:.1f}% out, methods {reading.methods}")
+          f"{reading.describe()}, {error:.1f}% out, methods {reading.methods}")
     check(f"  ... and is classified TEMPO_OK", reading.verdict == T.TEMPO_OK,
           f"{reading.verdict}")
 
 print("\n--- a tempo that is not what was asked for ---")
 mismatch = T.measure_tempo(click_track(99.0, 40.0), SR, requested_bpm=72)
 check("99 against a requested 72 is TEMPO_MISMATCH", mismatch.verdict == T.TEMPO_MISMATCH,
-      f"{mismatch.verdict}, measured {mismatch.comparable_bpm:.1f}, ratio {mismatch.ratio}")
+      mismatch.describe())
 check("and the ratio is reported", mismatch.ratio is not None and mismatch.ratio > 1.3,
       f"ratio {mismatch.ratio}")
 check("and the drift it implies is computable",
       T.drift_seconds(mismatch, 60) > 10,
       f"a note planned at 60s belongs {T.drift_seconds(mismatch, 60):.1f}s earlier")
+
+print("\n--- all four numbers, so 49 is never mistaken for 99 ---")
+half = T.measure_tempo(click_track(49.2, 60.0), SR, requested_bpm=99.0)
+values = half.four_values()
+check("requested, raw, canonical and ratio are all present",
+      set(values) == {"requested_bpm", "raw_bpm", "canonical_bpm", "tempo_ratio"}
+      and all(v is not None for v in values.values()), str(values))
+check("a 49.2 BPM pulse against a requested 99 folds to the 99 octave",
+      abs(values["canonical_bpm"] - 98.4) < 3.0, str(values))
+check("and the raw reading is still reported, not overwritten",
+      abs(values["raw_bpm"] - 49.2) < 2.0 or abs(values["raw_bpm"] - 98.4) < 3.0,
+      f"raw {values['raw_bpm']}")
+check("the one-line description names both when they differ",
+      (not half.folded) or ("raw" in half.describe() and "canonical" in half.describe()
+                            and "same pulse" in half.describe()),
+      half.describe())
+steady = T.measure_tempo(click_track(96.0, 40.0), SR, requested_bpm=96)
+check("an unfolded reading says so rather than inventing a second number",
+      not steady.folded and "same pulse" not in steady.describe(), steady.describe())
 
 print("\n--- three methods, so one opinion is not a measurement ---")
 reading = T.measure_tempo(click_track(84.0, 40.0), SR, requested_bpm=84)
@@ -157,7 +176,7 @@ check("a tempo that runs away is refused", wild.verdict == T.TEMPO_UNMEASURABLE,
 # A mild drift: slow enough that the global methods still agree on a number, so
 # the local-drift test is the only thing standing between it and a warp.
 mild = T.measure_tempo(click_track(90.0, 120.0, drift_to=99.0), SR, requested_bpm=90)
-check("a mild drift is still measured globally", mild.bpm > 0, f"{mild.bpm:.2f} BPM")
+check("a mild drift is still measured globally", mild.raw_bpm > 0, f"{mild.raw_bpm:.2f} BPM")
 check("but the local drift is seen", mild.local_drift > T.LOCAL_DRIFT_TOLERANCE,
       f"{mild.local_drift * 100:.1f}% across the song, tolerance "
       f"{T.LOCAL_DRIFT_TOLERANCE * 100:.0f}%")
