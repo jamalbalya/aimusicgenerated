@@ -15,8 +15,9 @@ import {
   mintRequestTicket, resetRequestTickets, RequestTicketSpentError, MissingRequestTicketError,
   verifyLiveResult, planLyrics, parseLyricScript, CONSTRAINTS, constraintsOf, constraint,
   parameterControls, descriptiveControls, channelOf, aceStepKeyscale, aceStepBpm,
-  ACE_STEP_BPM_RANGE, buildTargetMelody, anchorNotes, melodyPayload,
-  midiToHz, hzToMidi, centsBetween, VOCAL_RANGES,
+  ACE_STEP_BPM_RANGE, buildTargetMelody, anchorNotes, sungNotes, melodyPayload,
+  midiToHz, hzToMidi, centsBetween, VOCAL_RANGES, ROLE_CODES,
+  planSongHarmony, BEATS_PER_BAR,
   MAX_SUSTAINED_SYLLABLES_PER_SECOND,
   type LiveGenerationInput,
 } from '../../src/engine/live'
@@ -677,9 +678,17 @@ describe('the vocal is given something to be measured against', () => {
     expect(melody.unavailable).toBeUndefined()
     expect(melody.notes.length).toBeGreaterThan(10)
     for (const note of melody.notes) {
-      expect(note.midi).toBeGreaterThanOrEqual(VOCAL_RANGES.male!.low)
-      expect(note.midi).toBeLessThanOrEqual(VOCAL_RANGES.male!.high)
-      expect(note.frequencyHz).toBeGreaterThan(0)
+      if (note.role === 'rest') {
+        // Rests are silence, not notes. They carry no pitch and must not be
+        // read as one — a rest with a frequency would be a target the
+        // correction stage could try to hit.
+        expect(note.midi).toBe(0)
+        expect(note.frequencyHz).toBe(0)
+      } else {
+        expect(note.midi).toBeGreaterThanOrEqual(VOCAL_RANGES.male!.low)
+        expect(note.midi).toBeLessThanOrEqual(VOCAL_RANGES.male!.high)
+        expect(note.frequencyHz).toBeGreaterThan(0)
+      }
       expect(note.endSeconds).toBeGreaterThan(note.startSeconds)
     }
   })
@@ -734,10 +743,216 @@ describe('the vocal is given something to be measured against', () => {
     const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
     const payload = melodyPayload(melody)
     expect(payload.notes).toHaveLength(melody.notes.length)
-    // [start, end, midi, anchor] — four numbers, so a few hundred notes stay
-    // small enough to sit in an HTTP body beside a 4096-character lyric sheet.
-    expect(payload.notes[0]).toHaveLength(4)
+    // [start, end, midi, role, phrase, onsetMs] — six numbers, so a few hundred
+    // notes stay small enough to sit in an HTTP body beside a 4096-character
+    // lyric sheet. It was four; `phrase` and `onsetMs` were added because the
+    // correction stage could not do phrase-level alignment or skip a consonant
+    // without them, and both are review findings rather than nice-to-haves.
+    expect(payload.notes[0]).toHaveLength(6)
     expect(JSON.stringify(payload).length).toBeLessThan(64_000)
+  })
+
+  it('carries the real syllables, not a count of them', () => {
+    // The first version divided a section's syllable total by its line count
+    // and used the average, so a three-syllable line and a twelve-syllable line
+    // got the same number of notes — and `note.syllable` was the empty string
+    // on every note of every song it ever wrote.
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
+    const sung = sungNotes(melody)
+    expect(sung.length).toBeGreaterThan(20)
+    expect(sung.every((note) => note.syllable.length > 0)).toBe(true)
+    // Every note names the line it came from, exactly as the person wrote it.
+    const lines = new Set(sung.map((note) => note.lyricLine))
+    for (const line of lines) expect(SHEET).toContain(line)
+  })
+
+  it('writes a different chord under different bars', () => {
+    // The defect this replaces: one tonic triad for the whole song, so
+    // "resolve to a chord tone" meant the same three notes over every bar,
+    // including the bars whose chord was something else entirely.
+    const harmony = planSongHarmony(planLiveGeneration(input()))
+    const shapes = new Set(harmony.bars.map((bar) => bar.pitchClasses.join(',')))
+    expect(harmony.bars.length).toBeGreaterThan(8)
+    expect(shapes.size).toBeGreaterThan(1)
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
+    const chords = new Set(sungNotes(melody).map((note) => note.chordPitchClasses.join(',')))
+    expect(chords.size).toBeGreaterThan(1)
+  })
+
+  it('lands every structural note on a tone of the chord under it', () => {
+    // The whole point of an anchor: it is the note the ear uses to hear the
+    // harmony, so it must belong to the chord *sounding at that moment*, not to
+    // the key in general.
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'auto')
+    const anchors = anchorNotes(melody)
+    expect(anchors.length).toBeGreaterThan(0)
+    for (const note of anchors) {
+      const chord = note.chordPitchClasses.map((pitchClass) => ((pitchClass % 12) + 12) % 12)
+      expect(`${note.sectionName} bar ${note.bar} ${note.chordLabel}: ${note.midi % 12} in ${chord}`)
+        .toBe(`${note.sectionName} bar ${note.bar} ${note.chordLabel}: ${note.midi % 12} in ${chord}`)
+      expect(chord).toContain(((note.midi % 12) + 12) % 12)
+    }
+  })
+
+  it('does not make most of the song structural', () => {
+    // An anchor is a note the correction stage may move. When the first
+    // rewrite called 59% of a ballad's notes anchors, that was licence to
+    // machine the whole vocal — which the requirement forbids in the same
+    // breath as it forbids the wrong notes.
+    //
+    // Measured at a length the sheet is actually sung at. `SHEET` over 210
+    // seconds is about one syllable a bar, and there every syllable genuinely
+    // is on a downbeat and genuinely is structural — the share approaches 1
+    // and that is the right answer for that song, not a defect.
+    const melody = buildTargetMelody(planLiveGeneration(input({ durationSeconds: 75 })), 'male')
+    const sung = sungNotes(melody)
+    const structural = anchorNotes(melody).length / sung.length
+    expect(structural).toBeGreaterThan(0.1)
+    expect(structural).toBeLessThan(0.45)
+  })
+
+  it('sings the chorus higher than the verse', () => {
+    // Section contrast, which the first version had only as a two-semitone
+    // shift of a centre that the note-choice rule then outweighed.
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
+    const average = (kind: string) => {
+      const notes = sungNotes(melody).filter((note) => note.section === kind)
+      return notes.reduce((total, note) => total + note.midi, 0) / Math.max(1, notes.length)
+    }
+    expect(average('chorus')).toBeGreaterThan(average('verse') + 2)
+  })
+
+  it('sings the same chorus the same way both times', () => {
+    // A chorus is a chorus because it repeats. Keyed on the line's position in
+    // its section, so the second chorus's first line reuses the first
+    // chorus's first line and not some other one.
+    const melody = buildTargetMelody(planLiveGeneration(input({ durationSeconds: 75 })), 'male')
+    const choruses = new Map<number, number[]>()
+    for (const note of sungNotes(melody)) {
+      if (note.section !== 'chorus') continue
+      const bucket = choruses.get(note.phrase) ?? []
+      bucket.push(note.midi)
+      choruses.set(note.phrase, bucket)
+    }
+    const phrases = [...choruses.values()]
+    expect(phrases.length).toBeGreaterThanOrEqual(4)
+    // The first line of the first chorus against the first line of the second.
+    //
+    // As an array of signs, not a joined string. Joining is what the first
+    // version of this did, and `Math.sign` returns -1, which is two characters:
+    // the comparison then read one string's "-1" against the other's "-" and
+    // "1" and reported agreement of 11% on two lines that differ in one note.
+    const shape = (notes: number[]) =>
+      notes.slice(1).map((midi, index) => Math.sign(midi - notes[index]!))
+    const half = phrases.length / 2
+    const first = shape(phrases[0]!)
+    const repeat = shape(phrases[half]!)
+    // Not identical note for note — the chords underneath differ, and the last
+    // chorus is deliberately lifted for the climax — but the same rise and fall.
+    const length = Math.min(first.length, repeat.length)
+    const agree = first.slice(0, length).filter((step, index) => step === repeat[index]).length
+    expect(agree / Math.max(1, length)).toBeGreaterThan(0.5)
+  })
+
+  it('holds a syllable across more than one note sometimes', () => {
+    // Melisma. The first version had exactly one note per syllable, always,
+    // which is a syllable-to-note algorithm and not a vocal melody.
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
+    const melismas = melody.notes.filter((note) => note.isMelisma)
+    expect(melismas.length).toBeGreaterThan(0)
+    for (const note of melismas) {
+      expect(note.syllable.length).toBeGreaterThan(0)
+      // A melisma carries no consonant: the syllable already started.
+      expect(note.onsetSeconds).toBe(0)
+    }
+    // And never so many that the line is unsingable.
+    expect(melismas.length / sungNotes(melody).length).toBeLessThan(0.3)
+  })
+
+  it('breathes between phrases', () => {
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
+    const rests = melody.notes.filter((note) => note.role === 'rest')
+    expect(rests.length).toBeGreaterThan(0)
+    for (const rest of rests) {
+      expect(rest.midi).toBe(0)
+      expect(rest.frequencyHz).toBe(0)
+      expect(rest.syllable).toBe('')
+    }
+  })
+
+  it('writes suspensions that resolve', () => {
+    const melody = buildTargetMelody(planLiveGeneration(input({ durationSeconds: 75 })), 'male')
+    const suspensions = melody.notes.filter((note) => note.role === 'suspension')
+    expect(suspensions.length).toBeGreaterThan(0)
+    for (const suspension of suspensions) {
+      // A suspension is a dissonance by definition, and the note after it
+      // resolves onto the chord.
+      expect(suspension.isChordTone).toBe(false)
+      const next = melody.notes[suspension.index + 1]
+      expect(next?.role).toBe('resolution')
+      expect(next?.isChordTone).toBe(true)
+    }
+  })
+
+  it('never holds a note through a chord change', () => {
+    // A note written as a chord tone of the bar it began in, still sounding
+    // after the chord has moved, is a sustained dissonance — exactly the
+    // audible wrong note the requirement names.
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
+    const bars = melody.harmony.bars
+    for (const note of sungNotes(melody)) {
+      const first = bars[Math.floor(note.startBeat / BEATS_PER_BAR)]
+      const lastIndex = Math.floor((note.startBeat + note.durationBeats - 1e-9) / BEATS_PER_BAR)
+      const last = bars[Math.min(bars.length - 1, lastIndex)]
+      if (!first || !last) continue
+      expect(`${note.syllable}@${note.bar}: ${first.chordLabel} -> ${last.chordLabel}`)
+        .toBe(`${note.syllable}@${note.bar}: ${first.chordLabel} -> ${first.chordLabel}`)
+    }
+  })
+
+  it('keeps every note on the sixteenth-note grid', () => {
+    // Without this there are no downbeats, and without downbeats the rule that
+    // puts chord tones on them never fires — which is what happened for every
+    // note after the first line of every song the first version wrote.
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
+    for (const note of melody.notes) {
+      expect(Math.abs(note.startBeat * 4 - Math.round(note.startBeat * 4))).toBeLessThan(1e-9)
+      expect(Math.abs(note.durationBeats * 4 - Math.round(note.durationBeats * 4)))
+        .toBeLessThan(1e-9)
+    }
+    expect(sungNotes(melody).some((note) => note.beatInBar === 0)).toBe(true)
+  })
+
+  it('marks the consonant at the start of a syllable', () => {
+    // So the correction stage can start measuring at the vowel. Shifting a
+    // plosive is the single most recognisable sound of autotune.
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
+    const withOnset = sungNotes(melody).filter((note) => note.onsetSeconds > 0)
+    expect(withOnset.length).toBeGreaterThan(0)
+    for (const note of withOnset) {
+      expect(note.onsetSeconds).toBeLessThan((note.endSeconds - note.startSeconds) * 0.5)
+    }
+    expect(sungNotes(melody).some((note) => note.onsetUnvoiced)).toBe(true)
+  })
+
+  it('gives a passing note more room than an anchor', () => {
+    // Expression. One tolerance for every note buys nothing a listener can
+    // hear and costs the performance its phrasing.
+    const melody = buildTargetMelody(planLiveGeneration(input({ durationSeconds: 75 })), 'male')
+    const tolerance = (role: string) =>
+      melody.notes.find((note) => note.role === role)?.toleranceCents ?? 0
+    expect(tolerance('anchor')).toBeGreaterThan(0)
+    expect(tolerance('passing')).toBeGreaterThan(tolerance('anchor'))
+  })
+
+  it('numbers the phrases the Space groups by', () => {
+    const payload = melodyPayload(buildTargetMelody(planLiveGeneration(input()), 'male'))
+    const phrases = new Set(payload.notes.map((note) => note[4]))
+    expect(phrases.size).toBeGreaterThan(1)
+    // Role codes travel as small integers the Space reads back.
+    const roles = new Set(payload.notes.map((note) => note[3]))
+    expect(roles.has(ROLE_CODES.anchor)).toBe(true)
+    expect(roles.has(ROLE_CODES.rest)).toBe(true)
   })
 
   it('converts between notes and frequencies the way the Space does', () => {

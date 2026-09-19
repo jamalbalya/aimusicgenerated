@@ -43,10 +43,16 @@ export {
 } from './promptCompiler'
 
 export {
-  buildTargetMelody, anchorNotes, melodyPayload, midiToHz, hzToMidi, centsBetween,
-  VOCAL_RANGES,
+  buildTargetMelody, anchorNotes, sungNotes, melodyPayload,
+  midiToHz, hzToMidi, centsBetween, VOCAL_RANGES, ROLE_CODES,
   type TargetMelody, type TargetNote, type MelodyPayload,
+  type NoteRole, type Transition,
 } from './targetMelody'
+
+export {
+  planSongHarmony, barAtBeat, BEATS_PER_BAR, SECTION_INTENSITY,
+  type SongHarmony, type HarmonyBar, type HarmonySection,
+} from './songHarmony'
 
 export {
   compileStyle, splitClauses, scoreClause,

@@ -247,6 +247,12 @@ export default defineConfig(({ mode }) => ({
     globals: true,
     environment: 'node',
     include: ['tests/unit/**/*.test.ts'],
-    testTimeout: 30_000,
+    // Two of the architecture tests render a whole song through the offline
+    // engine — real synthesis, real mixing — and take 30 to 34 seconds on their
+    // own. At a 30 second limit they passed when run alone and timed out when
+    // run beside the other 28 files, which is a gate that reports the machine's
+    // load rather than the code's correctness. Raised to sixty so it measures
+    // what it is for: a render that has actually hung.
+    testTimeout: 60_000,
   },
 }))

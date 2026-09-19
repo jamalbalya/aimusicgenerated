@@ -331,9 +331,15 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
             import vocal_pitch
 
             plan = _json.loads(melody)
+            # `from_row` reads whichever payload shape arrived. A Space deployed
+            # ahead of the browser, or behind it, still runs: an older four-field
+            # row loses the phrase grouping and the consonant onsets and is
+            # corrected without them, which is worse than the current build and
+            # far better than refusing a song over a payload it could read.
             targets = [
-                vocal_pitch.TargetNote(float(a), float(b), int(c), bool(d))
-                for a, b, c, d in plan.get("notes", [])
+                vocal_pitch.TargetNote.from_row(row)
+                for row in plan.get("notes", [])
+                if isinstance(row, (list, tuple)) and len(row) >= 3
             ]
             pitch_started = time.perf_counter()
             corrected, report = vocal_pitch.process_song(mono, sample_rate, targets)
@@ -350,6 +356,16 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
                 "median_deviation_before_cents": round(report.median_deviation_before_cents, 1),
                 "median_deviation_after_cents": round(report.median_deviation_after_cents, 1),
                 "largest_correction_cents": round(report.largest_correction_cents, 1),
+                # The limits, reported rather than hidden. A note an octave out
+                # is not something this stage can fix, and a run with many of
+                # them is a run whose plan and performance disagree about the
+                # song — which the caller needs to be told, not spared.
+                "octave_errors": report.octave_errors,
+                "beyond_correction": report.beyond_correction,
+                "unmatched_sung": report.unmatched_sung,
+                "unmatched_planned": report.unmatched_planned,
+                "phrases_measured": report.phrases_measured,
+                "phrases_matched": report.phrases_matched,
                 "unavailable": report.unavailable,
             }
             if report.notes_corrected > 0 and corrected.size:

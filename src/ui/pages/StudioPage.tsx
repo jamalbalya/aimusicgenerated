@@ -31,7 +31,7 @@ import { linkProps } from '../../lib/router'
 import { useNeuralEngine } from '../useNeuralEngine'
 import {
   planLiveGeneration, compilePrompt, mintRequestTicket, aceStepKeyscale,
-  buildTargetMelody, melodyPayload,
+  buildTargetMelody, melodyPayload, anchorNotes,
   type LivePlan, type CompiledPrompt, type LiveVerification,
 } from '../../engine/live'
 import { useAuth } from '../useAuth'
@@ -182,6 +182,18 @@ function hostOf(url: string): string {
 }
 
 /** Two lines of a lyric, to show the shape rather than to be sung. */
+/**
+ * A MIDI note as a musician would say it: "A3", "C#4".
+ *
+ * Spelled with sharps throughout, which is wrong in a flat key and right
+ * enough here — this labels the two ends of a vocal range, not a chord chart.
+ * `songHarmony.ts` spells chords in the key's own accidentals, where it
+ * matters.
+ */
+const NOTE_NAME = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+const noteLabel = (midi: number): string =>
+  `${NOTE_NAME[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}`
+
 const LYRIC_PLACEHOLDER = `Aku masih di sini menunggu
 Sampai malam berganti pagi`
 
@@ -371,6 +383,18 @@ export default function StudioPage() {
   const [liveStage, setLiveStage] = useState<LiveStage>('idle')
   const [livePlan, setLivePlan] = useState<LivePlan | null>(null)
   const [compiledPrompt, setCompiledPrompt] = useState<CompiledPrompt | null>(null)
+  /**
+   * What the vocal will be measured against, summarised for the panel.
+   *
+   * Shown because it is the one part of this pipeline that is easiest to
+   * mistake for a control. ACE-Step has no melody input; this is a reference
+   * the Space corrects the *returned* vocal against, and the panel says so in
+   * those words rather than letting a row of notes imply otherwise.
+   */
+  const [melodySummary, setMelodySummary] = useState<{
+    notes: number; anchors: number; phrases: number; key: string
+    progressions: string; bars: number; lowest: number; highest: number
+  } | null>(null)
   const [liveVerification, setLiveVerification] = useState<LiveVerification | null>(null)
   /** Which press of Generate authorised the request in flight. */
   const [ticketId, setTicketId] = useState<string | null>(null)
@@ -484,6 +508,7 @@ export default function StudioPage() {
 
     setLiveVerification(null)
     setCompiledPrompt(null)
+    setMelodySummary(null)
     setLiveStage('planning')
 
     // ---------------------------------------------------- 1 and 2: plan ---
@@ -517,6 +542,17 @@ export default function StudioPage() {
     // from the plan, never from the audio: the audio is the thing being
     // judged, so it cannot also be the standard.
     const melody = buildTargetMelody(plan, vocalGender)
+    const sung = melody.notes.filter((note) => note.role !== 'rest')
+    setMelodySummary(sung.length === 0 ? null : {
+      notes: sung.length,
+      anchors: anchorNotes(melody).length,
+      phrases: new Set(sung.map((note) => note.phrase)).size,
+      key: `${plan.music.keyName}`,
+      progressions: [...new Set(melody.harmony.progressionIds)].join(', '),
+      bars: melody.harmony.bars.length,
+      lowest: Math.min(...sung.map((note) => note.midi)),
+      highest: Math.max(...sung.map((note) => note.midi)),
+    })
     const compiled = compilePrompt(plan, style)
     setCompiledPrompt(compiled)
     const controller = new AbortController()
@@ -1463,6 +1499,29 @@ export default function StudioPage() {
                     </p>
                   </div>
                 </details>
+              )}
+
+              {melodySummary && (
+                <div className="grid gap-0.5 text-[11px]" data-testid="live-melody">
+                  <span className="t-label text-[10px] text-[var(--text-faint)]">
+                    The vocal reference
+                  </span>
+                  <p className="text-[var(--text-faint)]">
+                    {melodySummary.notes} notes across {melodySummary.phrases} sung lines, over
+                    {' '}{melodySummary.bars} bars of {melodySummary.key}
+                    {melodySummary.progressions ? ` (${melodySummary.progressions})` : ''}, from
+                    {' '}{noteLabel(melodySummary.lowest)} to {noteLabel(melodySummary.highest)}.
+                    {' '}{melodySummary.anchors} of them are structural: the notes that have to be
+                    right for the song to be in tune.
+                  </p>
+                  <p className="text-[var(--text-faint)]">
+                    ACE-Step never sees this. It has no melody input, so this is not a request —
+                    it is the reference the vocal that comes back is measured and corrected
+                    against. Without it, "correct the pitch" would mean snapping every note to
+                    its own nearest semitone, which leaves a wrong note exactly where it was and
+                    reports success.
+                  </p>
+                </div>
               )}
 
               {liveVerification && (
