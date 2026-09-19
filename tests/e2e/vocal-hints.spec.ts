@@ -93,14 +93,22 @@ test.describe('vocal hints', () => {
     await expect(page.getByLabel('Style')).toHaveValue(STYLE)
   })
 
-  test('count against the 512 limit, because the Space counts them', async ({ page }) => {
+  test('count towards the caption budget, because they are part of the style', async ({ page }) => {
     await space(page)
     await studio(page)
     await page.getByLabel('Style').fill('b'.repeat(460))
     await expect(page.getByTestId('style-length')).toHaveText('460/512')
     await page.getByTestId('vocal-hint-baritone').click()
-    // 460 + ", " + the hint. The counter must follow what is actually sent.
-    await expect(page.getByTestId('style-length')).toHaveText(`${460 + 2 + BARITONE.length}/512`)
+
+    // 460 + ", " + the hint = 542, which is past the caption. The counter still
+    // follows what the style actually contains — that is the property this test
+    // is for — but past the limit it reads as a compilation rather than an
+    // overshoot, because a long style is now compiled down to a caption instead
+    // of being refused. The hint competes for caption space; it no longer
+    // trips a limit.
+    const total = 460 + 2 + BARITONE.length
+    expect(total).toBeGreaterThan(512)
+    await expect(page.getByTestId('style-length')).toHaveText(`${total} → 512`)
   })
 
   test('are not offered by the offline engine, which cannot use them', async ({ page }) => {
