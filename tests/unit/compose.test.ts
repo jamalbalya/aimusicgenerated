@@ -16,6 +16,31 @@ describe('prompt parsing', () => {
     expect(detectGenre(' lofi chill study music ')?.id).toBe('lofi')
     expect(detectGenre(' heavy metal guitar ')?.id).toBe('metal')
     expect(detectGenre(' epic cinematic trailer ')?.id).toBe('cinematic')
+  })
+
+  it('prefers the genre someone named over one inferred from stray words', () => {
+    // Found while preparing a real end-to-end run. Tag scoring alone chose
+    // Classical for this, on `piano` and `romantic`, over the Jazz the person
+    // actually wrote — and the caption went out asking for both. "Piano"
+    // appears in almost every ballad description and "romantic" here is a mood,
+    // not a period.
+    expect(detectGenre(
+      ' romantic melancholic jazz ballad at 72 bpm, delicate piano, soft saxophone ')?.id)
+      .toBe('jazz')
+    // The same shape in the other direction: a named genre wins even when a
+    // rival matches more tags.
+    expect(detectGenre(' romantic piano chamber orchestra, a little bit of swing ')?.id)
+      .toBe('classical')
+  })
+
+  it('still infers a genre when nobody named one', () => {
+    // The fallback has to keep working: most descriptions name no genre at all.
+    // Which one it lands on is the tag tables' business — this asserts only
+    // that naming nothing still gets you something, and that naming nothing
+    // musical still gets you nothing.
+    expect(detectGenre(' 808s, hi-hat rolls, dark and menacing ')).not.toBeNull()
+    expect(detectGenre(' shimmering pads, wide reverb, slow and weightless ')).not.toBeNull()
+    expect(detectGenre(' nothing musical here whatsoever ')).toBeNull()
     expect(detectGenre(' something nice ')).toBeNull()
   })
 

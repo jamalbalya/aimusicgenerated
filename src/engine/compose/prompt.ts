@@ -180,13 +180,40 @@ export function detectGenreDetailed(text: string): GenreDetection | null {
   return { genre, matches, namedDirectly: text.includes(genre.label.toLowerCase()) }
 }
 
+/**
+ * The genre the text is asking for.
+ *
+ * A genre the person *named* beats one merely inferred from tags, and that is
+ * not a tuning preference — it is the difference between reading somebody's
+ * description and overruling it. Scoring alone got this wrong on an ordinary
+ * request:
+ *
+ *     "Romantic melancholic jazz ballad at 72 BPM, ... delicate piano, ..."
+ *
+ * Classical scored 3.08 on the tags `piano` and `romantic`; Jazz scored 2.67 on
+ * the word `jazz`. The caption then went out reading "jazz ballad ... Classical,
+ * score" — two genres in one sentence, one of them nobody asked for — and the
+ * plan chose classical progressions and instruments to match. "Piano" appears in
+ * almost every ballad ever described, and "romantic" here is a mood and not a
+ * period.
+ *
+ * So: any genre whose own name appears in the text is considered first, and the
+ * tag scores only break ties among those. Tag scoring is the fallback for a
+ * description that names no genre at all, which is most of them.
+ */
 export function detectGenre(text: string): GenreDef | null {
+  const score = (genre: GenreDef): number =>
+    scoreTags(text, genre.tags) + scoreTags(text, [genre.label.toLowerCase()])
+
+  const named = GENRES.filter((genre) => text.includes(genre.label.toLowerCase()))
+  const pool = named.length > 0 ? named : GENRES
+
   let best: GenreDef | null = null
   let bestScore = 0
-  for (const genre of GENRES) {
-    const score = scoreTags(text, genre.tags) + scoreTags(text, [genre.label.toLowerCase()])
-    if (score > bestScore) {
-      bestScore = score
+  for (const genre of pool) {
+    const value = score(genre)
+    if (value > bestScore) {
+      bestScore = value
       best = genre
     }
   }

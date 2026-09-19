@@ -23,9 +23,10 @@ import numpy as np
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
+from vocal_pitch import CorrectionReport  # noqa: E402
 from vocal_pitch import (  # noqa: E402
     AUDIBLE_ERROR_CENTS, CORRECTION_METHOD_SPLIT_CENTS, IMPLAUSIBLE_DEVIATION_CENTS,
-    PHRASE_GAP_SECONDS,
+    PHRASE_GAP_SECONDS, assess_trust, estimate_time_offset,
     ROLE_ANCHOR, ROLE_PASSING, ROLE_REST, TargetNote, align, cents_between,
     correct_vocal, detect_f0, group_measured_phrases, group_target_phrases,
     hz_to_midi, midi_to_hz, remix, segment_notes,
@@ -566,6 +567,79 @@ check("and what it isolates is the lead, not the accompaniment",
       _closest(isolated_notes, lead_hz) < 100.0,
       f"nearest note to the lead: {_closest(isolated_notes, lead_hz):.0f} cents "
       f"in the isolated stem, {_closest(mix_notes, lead_hz):.0f} cents in the mix")
+
+print("\n=== a performance that runs late is realigned, not mismatched ===")
+# The plan's absolute times are an estimate: the melody writer spreads syllables
+# across bars without a forced aligner, and ACE-Step has never seen the plan. An
+# intro half a bar longer than planned puts every note of the song out of step,
+# and each one then becomes a target this pipeline would correct a vocal
+# *towards*. One global offset fixes all of them at once.
+LATE_BY = 1.6
+late_plan = [TargetNote(index * 0.6, index * 0.6 + 0.5, 57 + (index % 5), ROLE_ANCHOR, index // 4)
+             for index in range(12)]
+late_song = [silence(LATE_BY)]
+for target in late_plan:
+    late_song.append(voice(midi_to_hz(target.midi), 0.5))
+    late_song.append(silence(0.1))
+late_audio = np.concatenate(late_song)
+late_notes = segment_notes(detect_f0(late_audio, SR))
+
+offset = estimate_time_offset(late_notes, late_plan)
+check("the offset is found", abs(offset - LATE_BY) < 0.25,
+      f"estimated {offset:+.2f}s against a real {LATE_BY:+.2f}s")
+
+late_aligned = align(late_notes, late_plan)
+late_matched = [a for a in late_aligned if a.target is not None]
+check("and most of the plan is matched after realigning",
+      len(late_matched) >= len(late_plan) * 0.7,
+      f"{len(late_matched)} of {len(late_plan)} planned notes matched")
+# Every matched pair should now agree on pitch, because the song is in tune and
+# only its timing was off. A mismatched alignment shows up as pitch error.
+worst = max((abs(a.deviation_cents) for a in late_matched), default=999.0)
+check("and the matched pairs agree on pitch", worst < 60.0,
+      f"worst matched deviation {worst:.0f} cents")
+
+print("\n=== the report says whether its own numbers can be trusted ===")
+# An alignment failure must not quietly become a corrected vocal presented as
+# finished. Three states, and the strongest is deliberately weak.
+verified = CorrectionReport()
+verified.planned_notes, verified.planned_notes_measured = 10, 10
+verified.anchors_examined, verified.anchors_within_tolerance_after = 6, 6
+assess_trust(verified)
+check("a fully measured song with nothing left is VERIFIED", verified.trust == "VERIFIED",
+      f"{verified.trust}: {verified.trust_reasons[0]}")
+
+partial = CorrectionReport()
+partial.planned_notes, partial.planned_notes_measured = 10, 10
+partial.anchors_examined = 6
+partial.octave_errors_after = 1
+assess_trust(partial)
+check("an octave error that survived makes it PARTIAL", partial.trust == "PARTIAL",
+      f"{partial.trust}: {partial.trust_reasons[0]}")
+
+thin = CorrectionReport()
+thin.planned_notes, thin.planned_notes_measured = 10, 3
+thin.anchors_examined = 2
+assess_trust(thin)
+check("a song mostly not found is UNVERIFIED, never upgraded", thin.trust == "UNVERIFIED",
+      f"{thin.trust}: {thin.trust_reasons[0]}")
+
+missing = CorrectionReport()
+missing.unavailable = "The vocal stem is silent."
+assess_trust(missing)
+check("and a stem that could not be analysed is UNVERIFIED", missing.trust == "UNVERIFIED",
+      f"{missing.trust}: {missing.trust_reasons[0]}")
+
+# The rule that matters most: a good correction run on a barely-measured song is
+# still UNVERIFIED. An aggregate success must not buy a verdict.
+lucky = CorrectionReport()
+lucky.planned_notes, lucky.planned_notes_measured = 20, 4
+lucky.anchors_examined, lucky.anchors_within_tolerance_after = 4, 4
+lucky.notes_corrected = 4
+assess_trust(lucky)
+check("corrections going well does not upgrade an unmeasured song",
+      lucky.trust == "UNVERIFIED",
+      f"{lucky.trust}: {lucky.trust_reasons[0]}")
 
 print("\n=== the synthetic song: a whole performance, end to end ===")
 # The review's §15. One signal carrying every case the pipeline has to handle

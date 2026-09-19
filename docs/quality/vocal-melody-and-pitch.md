@@ -293,12 +293,44 @@ Eight is what the free-lunch argument would have chosen, and it loses 8.6 dB and
 a quarter of the notes. A 210-second song now separates in 22.6 seconds on CPU
 (9.3× realtime); on the deployed Space, Demucs runs on the GPU instead.
 
+## Alignment: three strategies, then a verdict
+
+An alignment failure must not become a corrected vocal presented as finished.
+There are three strategies, tried in order, and the best is kept — judged on how
+much of the song it matched and how closely, so a later attempt can only help.
+
+1. **Phrase-structured, where the plan says it is.** Usually right.
+2. **Phrase-structured, at a global time offset** found by cross-correlating the
+   two sets of note onsets. The plan's absolute times are an estimate — the
+   melody writer spreads syllables across bars without a forced aligner, and
+   ACE-Step has never seen the plan — so a whole performance sitting a second or
+   two late is ordinary. One FFT finds the offset; trying every candidate offset
+   would mean running the whole alignment once per candidate.
+3. **Flat, ignoring phrase structure.** Phrase matching is the better tool when
+   the performance's breaths line up with the plan's lines and the worse one
+   when they do not: a singer who takes no breath where the plan has one leaves
+   the whole song as a single measured phrase against a dozen planned ones.
+   Measured on exactly that case: **4 of 12 notes matched with phrases, 12 of 12
+   without.** Monotonicity still holds, so this cannot cross two notes.
+
+Afterwards the report carries a trust verdict:
+
+| verdict | meaning |
+| --- | --- |
+| `UNVERIFIED` | Not enough of the song was measurable to say anything about it. Never upgraded because the corrections that *did* happen went well |
+| `PARTIAL` | Measured, with something left in it: an octave error that survived, a match that could not be trusted, a correction that had to be undone |
+| `VERIFIED` | Separated, most of the plan found, every structural note that could be measured inside its tolerance |
+
+**`VERIFIED` is the weakest strong word available on purpose.** It says the
+measurement found nothing wrong — not that there is nothing wrong, and not that
+anybody has listened.
+
 ## Status, in four categories that are never merged
 
 | | |
 | --- | --- |
 | **Implemented** | Harmony-first target melody; 14-check melody validator; monotonic phrase and note alignment; tiered correction (hybrid / PSOLA / phrase re-anchoring); per-note and per-song do-no-harm; consonant-aware shifting; numpy fallback separator; coverage and stage-time reporting |
-| **Tested on synthetic / control signals** | 78 DSP checks against signals whose pitch is known to the cent, including a no-shift control that sets each metric's noise floor; 882 unit tests on the planner side; one end-to-end render producing real `.wav` files |
+| **Tested on synthetic / control signals** | 86 DSP checks against signals whose pitch is known to the cent, including a no-shift control that sets each metric's noise floor; 882 unit tests on the planner side; one end-to-end render producing real `.wav` files |
 | **Tested on real ACE-Step audio** | **Nothing.** The gateway returns `CONNECT tunnel failed, response 403` for `huggingface.co` and `*.hf.space`. No credentials used, no GPU spent |
 | **Listening verified** | **Nothing. REAL AUDIO LISTENING NOT VERIFIED.** `render_synthetic_song.py` writes four `.wav` files; nobody has heard them |
 
@@ -307,7 +339,7 @@ a quarter of the notes. A 210-second song now separates in 22.6 seconds on CPU
 **OFFLINE DSP VERIFIED ≠ REAL ACE-STEP SONG VERIFIED.** This distinction is not
 a formality and it has not changed.
 
-What is verified, by 78 checks in `poc/zerogpu-space/test_vocal_pitch.py`
+What is verified, by 86 checks in `poc/zerogpu-space/test_vocal_pitch.py`
 against signals whose pitch is known to the cent:
 
 - F0 detection from 98 Hz to 659 Hz, within 0.5 cents
@@ -372,7 +404,7 @@ octave-low note lands at −5.5 in the right octave.
 ## Running the evidence yourself
 
 ```
-python3 poc/zerogpu-space/test_vocal_pitch.py    # 78 checks, no GPU, no network
+python3 poc/zerogpu-space/test_vocal_pitch.py    # 86 checks, no GPU, no network
 python3 poc/zerogpu-space/render_synthetic_song.py  # end to end, writes real .wav files
 python3 poc/zerogpu-space/bench_shifters.py --large # the same bench at octave-sized shifts
 python3 poc/zerogpu-space/test_guard.py          # the Space's request gate

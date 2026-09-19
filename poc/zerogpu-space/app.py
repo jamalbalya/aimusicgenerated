@@ -361,6 +361,9 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
                 # them is a run whose plan and performance disagree about the
                 # song — which the caller needs to be told, not spared.
                 "separator": report.separator,
+                "trust": report.trust,
+                "trust_reasons": report.trust_reasons,
+                "time_offset_seconds": report.time_offset_seconds,
                 "planned_notes": report.planned_notes,
                 "planned_notes_measured": report.planned_notes_measured,
                 "measurement_coverage": round(report.measurement_coverage, 3),

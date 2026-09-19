@@ -860,8 +860,184 @@ def _role_name(role: int) -> str:
     }.get(role, "unknown")
 
 
+#: How far the performance may sit from the plan before a global offset is
+#: searched for, in seconds.
+#:
+#: The plan's absolute times are an estimate — the melody writer spreads
+#: syllables across bars without a forced aligner, and ACE-Step has never seen
+#: the plan — so a whole performance sitting a second or two from where the plan
+#: expects it is ordinary, not a failure. What is a failure is treating that as
+#: hundreds of individually mismatched notes.
+OFFSET_SEARCH_SECONDS = 12.0
+
+#: Resolution of the onset cross-correlation, in seconds.
+OFFSET_RESOLUTION_SECONDS = 0.02
+
+
+def _onset_signal(times: Sequence[float], span: float, resolution: float) -> np.ndarray:
+    """A sparse time series with a bump at each note start."""
+    length = max(2, int(round(span / resolution)) + 1)
+    signal = np.zeros(length)
+    for value in times:
+        index = int(round(value / resolution))
+        if 0 <= index < length:
+            signal[index] += 1.0
+    return signal
+
+
+def estimate_time_offset(notes: Sequence[MeasuredNote], targets: Sequence[TargetNote],
+                         limit: float = OFFSET_SEARCH_SECONDS) -> float:
+    """How far the performance sits from the plan, in seconds.
+
+    By cross-correlating the two sets of note onsets. The peak of the
+    correlation is the shift that makes the most starts line up, and it is found
+    with one FFT rather than by trying every offset — trying every offset means
+    running the whole alignment once per candidate, which for a four-minute song
+    is minutes of work to answer a question worth milliseconds.
+
+    Returns 0.0 when there is nothing to go on. A zero offset is always a valid
+    answer and is what the caller falls back to.
+    """
+    sung = [note.start_seconds for note in notes]
+    planned = [target.start_seconds for target in targets if not target.is_rest]
+    if len(sung) < 3 or len(planned) < 3:
+        return 0.0
+
+    span = max(max(sung), max(planned)) + limit
+    resolution = OFFSET_RESOLUTION_SECONDS
+    measured_signal = _onset_signal(sung, span, resolution)
+    planned_signal = _onset_signal(planned, span, resolution)
+
+    size = 1 << int(np.ceil(np.log2(max(4, measured_signal.size + planned_signal.size))))
+    correlation = np.fft.irfft(
+        np.fft.rfft(measured_signal, size) * np.conj(np.fft.rfft(planned_signal, size)), size)
+
+    # Only offsets inside the limit, in either direction.
+    reach = int(round(limit / resolution))
+    forward = correlation[: reach + 1]
+    backward = correlation[-reach:] if reach > 0 else np.zeros(0)
+    best_forward = int(np.argmax(forward)) if forward.size else 0
+    best_backward = int(np.argmax(backward)) if backward.size else 0
+    if backward.size and backward[best_backward] > forward[best_forward]:
+        return -(reach - best_backward) * resolution
+    return best_forward * resolution
+
+
+def _alignment_quality(aligned: Sequence[Alignment], planned_count: int) -> tuple[int, float]:
+    """How well an alignment did: how many notes it matched, and how closely.
+
+    Two numbers rather than one, compared in that order, because a match that
+    covers more of the song is better than a tighter match over less of it.
+    """
+    matched = [a for a in aligned if a.target is not None and not a.target.is_rest]
+    if not matched:
+        return 0, float("inf")
+    distances = [
+        abs((a.measured.start_seconds + a.measured.end_seconds) / 2
+            - (a.target.start_seconds + a.target.end_seconds) / 2)
+        for a in matched if a.target is not None
+    ]
+    return len(matched), float(np.median(distances))
+
+
 def align(notes: Sequence[MeasuredNote], targets: Sequence[TargetNote]) -> list[Alignment]:
-    """Matches sung notes to planned notes, phrase by phrase.
+    """Matches sung notes to planned notes, with a second strategy if the first does badly.
+
+    The first attempt aligns the plan where the plan says it is. That is usually
+    right and sometimes badly wrong, because the plan's absolute times are an
+    estimate: the melody writer spreads syllables across bars without a forced
+    aligner, and ACE-Step has never seen the plan, so an intro half a bar longer
+    than planned puts every note of the song out of step.
+
+    Rather than let that become hundreds of individually mismatched notes — each
+    one a target this pipeline would then correct a vocal *towards* — the whole
+    performance is cross-correlated against the whole plan, the dominant offset
+    is applied to the targets, and the alignment is run again. The better of the
+    two is kept, judged on how much of the song it matched and how closely, so
+    the retry can only help.
+
+    Not a loop and not a search: one extra attempt, decided by a measurement.
+    An alignment that still cannot be trusted afterwards is reported as such by
+    `assess_trust`, never silently corrected against.
+    """
+    planned_count = sum(1 for target in targets if not target.is_rest)
+    if planned_count == 0 or not notes:
+        return _align_once(notes, targets)
+
+    def quality(aligned: list[Alignment]) -> tuple[int, float]:
+        count, distance = _alignment_quality(aligned, planned_count)
+        return count, -distance
+
+    best = _align_once(notes, targets)
+    best_score = quality(best)
+
+    def good_enough(score: tuple[int, float]) -> bool:
+        return score[0] >= planned_count * 0.9 and -score[1] < 0.5
+
+    if good_enough(best_score):
+        return best
+
+    # Strategy two: one global time offset, found by cross-correlating the two
+    # sets of onsets. Fixes a whole performance sitting late or early, which is
+    # ordinary rather than exceptional.
+    offset = estimate_time_offset(notes, targets)
+    shifted = targets
+    if abs(offset) >= OFFSET_RESOLUTION_SECONDS:
+        shifted = [
+            replace(target,
+                    start_seconds=target.start_seconds + offset,
+                    end_seconds=target.end_seconds + offset)
+            for target in targets
+        ]
+        candidate = _align_once(notes, shifted)
+        if quality(candidate) > best_score:
+            best, best_score = candidate, quality(candidate)
+        if good_enough(best_score):
+            return best
+
+    # Strategy three: ignore the phrase structure entirely and match every note
+    # against every note, monotonically.
+    #
+    # Phrase matching is the better tool when the performance's breaths line up
+    # with the plan's lines, and it is the worse one when they do not — a singer
+    # who takes no breath where the plan has one leaves the whole song as a
+    # single measured phrase against a dozen planned ones, and eleven twelfths of
+    # the plan goes unmatched. Measured on exactly that case: 4 of 12 notes
+    # matched with phrases, 12 of 12 without.
+    #
+    # Monotonicity still holds, so this cannot cross two notes. What it loses is
+    # the phrase structure's protection against a drifting match, which is why
+    # it is tried last and only kept if it is measurably better.
+    candidates = [targets] if shifted is targets else [shifted, targets]
+    for candidate_targets in candidates:
+        candidate = _align_flat(notes, candidate_targets)
+        if quality(candidate) > best_score:
+            best, best_score = candidate, quality(candidate)
+    return best
+
+
+def _align_flat(notes: Sequence[MeasuredNote], targets: Sequence[TargetNote]) -> list[Alignment]:
+    """Aligns every sung note against every planned note, ignoring phrases."""
+    planned = [target for target in targets if not target.is_rest]
+    if not planned:
+        return [Alignment(note, None, 0.0, "no planned note overlaps this one", False)
+                for note in notes]
+    pairs = dict(_monotonic_match(
+        [_phrase_of(note) for note in notes],
+        [(target.start_seconds + target.end_seconds) / 2 for target in planned],
+        SKIP_COST_SECONDS,
+    ))
+    out: list[Alignment] = []
+    for position, note in enumerate(notes):
+        if position not in pairs:
+            out.append(Alignment(note, None, 0.0, "no planned note matches this one", False))
+            continue
+        out.append(_judge(note, planned[pairs[position]]))
+    return out
+
+
+def _align_once(notes: Sequence[MeasuredNote], targets: Sequence[TargetNote]) -> list[Alignment]:
+    """One alignment pass: phrase by phrase, monotonic at both levels.
 
     ACE-Step does not sing the planned melody — it has never seen it — so this
     is not a lookup. It asks which planned note a sung note *corresponds* to,
@@ -1144,7 +1320,7 @@ def _shift_note(audio: np.ndarray, start: int, end: int, ratio: float,
     if cents > CORRECTION_METHOD_SPLIT_CENTS and f0_hz > 0:
         shifted = _shift_psola_cascaded(audio[start:end], ratio, f0_hz, sample_rate)
         if shifted.size == length:
-            return shifted
+            return _match_level(audio[start:end], shifted)
         # PSOLA declined — too few periods in the note. Fall through rather than
         # leave the note wrong, because a formant-shifted correction is still a
         # correction and an uncorrected note is the thing being forbidden.
@@ -1164,7 +1340,27 @@ def _shift_note(audio: np.ndarray, start: int, end: int, ratio: float,
         available = np.concatenate([available, np.tile(tail, repeats)])[:needed]
 
     shifted = resample(available, length).astype(np.float64)
-    return _restore_formants(audio[start:end], shifted, ratio)
+    return _match_level(audio[start:end], _restore_formants(audio[start:end], shifted, ratio))
+
+
+def _match_level(original: np.ndarray, shifted: np.ndarray) -> np.ndarray:
+    """Stops a correction from making a note louder. Never makes one quieter.
+
+    A correction changes pitch and nothing else. PSOLA's overlap-add breaks that
+    on its own: for an upward shift the grains are packed closer together, and
+    at the very edges of a segment the accumulated Hann weight ramps from zero,
+    so dividing by it amplifies. Measured as a corrected song peaking above the
+    song that went into it, which the remix stage would then have to pull back —
+    quietly changing the master because a note was retuned.
+
+    Only downward. Scaling a quiet correction up would be inventing level that
+    the singer did not produce.
+    """
+    before = float(np.max(np.abs(original))) if original.size else 0.0
+    after = float(np.max(np.abs(shifted))) if shifted.size else 0.0
+    if before > 1e-9 and after > before:
+        return shifted * (before / after)
+    return shifted
 
 
 def _restore_formants(original: np.ndarray, shifted: np.ndarray, ratio: float) -> np.ndarray:
@@ -1251,6 +1447,18 @@ class CorrectionReport:
     #: harm rule actually fired, and a run with many of them is a run whose
     #: vocal stem was not clean enough to correct against.
     notes_reverted: int = 0
+    #: How far the plan had to be shifted to match the performance, in seconds.
+    time_offset_seconds: float = 0.0
+    #: Whether the numbers above can be trusted, and why.
+    #:
+    #: Three states, and the strongest of them is deliberately weak. VERIFIED
+    #: means: the vocal was separated, most of the planned melody was found in
+    #: it, the melody itself passed its checks, and every structural note this
+    #: pipeline could measure is inside its tolerance. It does **not** mean the
+    #: song has no audible out-of-tune note, and it is not a listening result.
+    #: Nothing in this file can produce one.
+    trust: str = "UNVERIFIED"
+    trust_reasons: list[str] = field(default_factory=list)
     #: Which separator produced the vocal stem this report describes.
     #:
     #: Never inferred by a reader. Hybrid Demucs and the numpy fallback are not
@@ -1336,6 +1544,7 @@ def correct_vocal(vocal: np.ndarray, sample_rate: int,
 
     notes = segment_notes(track)
     alignments = align(notes, targets)
+    report.time_offset_seconds = round(estimate_time_offset(notes, targets), 3)
     report.notes_examined = len(alignments)
 
     matched = [a for a in alignments if a.target is not None and not a.target.is_rest]
@@ -1519,6 +1728,8 @@ def correct_vocal(vocal: np.ndarray, sample_rate: int,
     # It should not happen — every shift is measured before and after — but
     # "should not happen" is not a guarantee, and returning the vocal ACE-Step
     # made is always an available and honest outcome.
+    assess_trust(report)
+
     if (report.notes_corrected > 0
             and report.anchors_examined > 0
             and report.anchors_within_tolerance_after < report.anchors_within_tolerance_before):
@@ -1530,6 +1741,72 @@ def correct_vocal(vocal: np.ndarray, sample_rate: int,
         report.median_deviation_after_cents = report.median_deviation_before_cents
         return vocal, report
     return output, report
+
+
+def assess_trust(report: "CorrectionReport") -> None:
+    """Decides whether this report's numbers are worth believing, and says why.
+
+    The requirement is a finished song with no audible out-of-tune note. This
+    pipeline cannot certify that, and the point of this function is to stop the
+    absence of a detected error being read as the presence of a guarantee.
+
+    Three states:
+
+      UNVERIFIED  Not enough of the song was measurable to say anything about
+                  it. The vocal is returned — corrected where it could be — and
+                  the caller is told the result is not verified. This is the
+                  honest outcome for a stem the separator could not open up, and
+                  it is never upgraded because the corrections that *did* happen
+                  went well.
+      PARTIAL     Measured, with something left in it: an octave error that
+                  survived, a note whose match could not be trusted, or a
+                  correction that had to be undone.
+      VERIFIED    Separated, most of the plan found, every structural note that
+                  could be measured inside its tolerance.
+
+    VERIFIED is the weakest strong word available on purpose. It says the
+    measurement found nothing wrong, not that there is nothing wrong, and not
+    that anybody has listened.
+    """
+    reasons: list[str] = []
+    if report.unavailable is not None:
+        report.trust = "UNVERIFIED"
+        report.trust_reasons = [report.unavailable]
+        return
+
+    coverage = report.measurement_coverage
+    if report.anchors_examined == 0:
+        reasons.append("no structural note of the planned melody was found in the vocal")
+    if coverage < 0.5:
+        reasons.append(
+            f"only {coverage * 100:.0f}% of the planned melody was found in the vocal, "
+            f"so most of the song is unmeasured rather than confirmed")
+    if reasons:
+        report.trust = "UNVERIFIED"
+        report.trust_reasons = reasons
+        return
+
+    if coverage < 0.85:
+        reasons.append(f"{coverage * 100:.0f}% of the planned melody was measured; the rest "
+                       f"was not found and is neither confirmed nor corrected")
+    if report.octave_errors_after > 0:
+        reasons.append(f"{report.octave_errors_after} note(s) are still an octave from the plan "
+                       f"after correction")
+    if report.implausible > 0:
+        reasons.append(f"{report.implausible} sung note(s) could not be matched to a planned "
+                       f"note at all, and were left exactly as generated")
+    if report.notes_reverted > 0:
+        reasons.append(f"{report.notes_reverted} correction(s) did not land and were undone, "
+                       f"so those notes are still as generated")
+    if report.unmatched_sung > 0:
+        reasons.append(f"{report.unmatched_sung} sung note(s) had no planned counterpart and "
+                       f"were left untouched")
+
+    report.trust = "PARTIAL" if reasons else "VERIFIED"
+    report.trust_reasons = reasons or [
+        "every structural note that could be measured is inside its tolerance — "
+        "which is a measurement, not a listening result"
+    ]
 
 
 # ------------------------------------------------------------------ mix --------
@@ -1815,6 +2092,7 @@ def process_song(mix: np.ndarray, sample_rate: int, targets: Sequence[TargetNote
     report = CorrectionReport()
     if not targets:
         report.unavailable = "No target melody was supplied, so there is nothing to correct against."
+        assess_trust(report)
         return mix, report
 
     started = time.perf_counter()
@@ -1831,6 +2109,7 @@ def process_song(mix: np.ndarray, sample_rate: int, targets: Sequence[TargetNote
             report.unavailable = problem or "The separator returned no vocal."
             report.separator = "none"
             report.stage_seconds = {"separate": round(time.perf_counter() - started, 3)}
+            assess_trust(report)
             return mix, report
     separation_seconds = time.perf_counter() - started
 
