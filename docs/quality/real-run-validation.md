@@ -16,7 +16,38 @@ It does **not** prove the song has no audible out-of-tune note. Nothing that
 analyses audio can prove that. `analysis != listening`, and the script says so
 in its own output every time it runs.
 
-## One command
+## Option A: the repository's own CI runner
+
+A GitHub runner has open egress and `ACE_STEP_SPACE_URL` is already configured
+for the deploy, so the nearest environment that can do this is the repository's
+own Actions.
+
+**Actions → Real ACE-Step run → Run workflow.**
+
+It is `workflow_dispatch` only: no push trigger, no schedule. Adding the file
+spends nothing; pressing the button spends exactly one generation.
+
+One thing has to be added first, and only the owner can add it:
+
+> **Settings → Secrets and variables → Actions → Secrets → `HF_TOKEN`**
+> A Hugging Face access token for an account in the Space's `ALLOWED_HF_USERS`.
+> Read scope is enough — it is only used to prove who is calling.
+
+The Space is private to its own allow-list and refuses any request carrying no
+verified account, so without this the run cannot start. The workflow checks for
+it in its first step and stops there, because discovering it after the queue
+would cost the generation.
+
+Inputs: `duration` (seconds, or `auto`), `vocal_gender`, and `demucs` — set
+`demucs: true` to install torchaudio so Hybrid Demucs runs instead of the numpy
+fallback. It is slower to set up and the separation is much better, and
+`report.separator` names which one ran either way.
+
+The report goes to the run summary; the audio and `report.json` are uploaded as
+an artifact kept for 14 days. **That WAV is the only copy** — there is no second
+generation to make another.
+
+## Option B: one command, anywhere else
 
 ```
 export ACE_STEP_SPACE_URL=https://<owner>-<space>.hf.space
@@ -58,7 +89,7 @@ outro, `[End]`, and an explicit 72 BPM. As compiled by the engine:
 | caption | 498 of 512 characters |
 | lyric sheet sent | 826 characters, `[End]` the only line withheld |
 
-## If you already have a real ACE-Step render
+## Option C: if you already have a real ACE-Step render
 
 The analysis half runs on a file, without generating anything:
 

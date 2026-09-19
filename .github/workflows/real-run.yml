@@ -1,0 +1,146 @@
+# ONE real ACE-Step generation, from a runner that can actually reach the Space.
+#
+# This exists because the development environment cannot: its gateway answers
+# "CONNECT tunnel failed, response 403" for huggingface.co and every *.hf.space
+# host. A GitHub runner has open egress, and ACE_STEP_SPACE_URL is already
+# configured for the deploy, so this is the nearest environment that can do it.
+#
+# It NEVER runs on its own. `workflow_dispatch` only: no push trigger, no
+# schedule, no `workflow_run`. Adding this file spends nothing. Pressing the
+# button spends exactly one ZeroGPU generation, which is the whole point and
+# the whole cost.
+name: Real ACE-Step run
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Song length in seconds, or 'auto' to let ACE-Step choose"
+        required: false
+        default: "210"
+      vocal_gender:
+        description: "male | female | auto"
+        required: false
+        default: "male"
+      demucs:
+        description: "Install torchaudio for Hybrid Demucs (slower setup, better separation)"
+        required: false
+        default: "false"
+
+# One at a time. Two concurrent runs would be two generations, and the product
+# guarantee is one.
+concurrency:
+  group: real-ace-step-run
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: One generation, one report
+    runs-on: ubuntu-latest
+    # Generous: a three-and-a-half minute song plus a ZeroGPU queue plus CPU
+    # separation. Not a retry budget — there is no retry.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse early if there is no credential
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          ACE_STEP_SPACE_URL: ${{ vars.ACE_STEP_SPACE_URL }}
+        run: |
+          missing=0
+          if [ -z "$ACE_STEP_SPACE_URL" ]; then
+            echo "::error::ACE_STEP_SPACE_URL repository variable is not set."
+            missing=1
+          fi
+          if [ -z "$HF_TOKEN" ]; then
+            {
+              echo "### HF_TOKEN is not set"
+              echo
+              echo "The Space is private to its own \`ALLOWED_HF_USERS\` and refuses any"
+              echo "request that carries no verified account, so the run cannot even start."
+              echo
+              echo "**Settings → Secrets and variables → Actions → Secrets → HF_TOKEN**"
+              echo
+              echo "A Hugging Face access token belonging to an account the Space allows."
+              echo "Read scope is enough — the token is only used to prove who is calling."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::HF_TOKEN secret is not set; the Space would refuse the request."
+            missing=1
+          fi
+          # Refusing here costs nothing. Discovering it after the queue would
+          # cost the one generation.
+          exit $missing
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the DSP dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install numpy scipy
+          if [ "${{ inputs.demucs }}" = "true" ]; then
+            # CPU wheels only: this runner has no GPU, and the CUDA build is
+            # gigabytes of download for nothing.
+            python3 -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio
+          fi
+
+      - name: Readiness
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          sys.path.insert(0, "poc/zerogpu-space")
+          import vocal_pitch
+          print(json.dumps(vocal_pitch.readiness(device="cpu"), indent=2, default=str))
+          PY
+
+      - name: One generation
+        env:
+          ACE_STEP_SPACE_URL: ${{ vars.ACE_STEP_SPACE_URL }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -o pipefail
+          # `tee` opens the log when the pipeline starts, which is before the
+          # script has created its own output directory. Without this the step
+          # dies on "No such file or directory" — after the generation.
+          mkdir -p ./real-run
+          duration_arg="--duration ${{ inputs.duration }}"
+          # One invocation. The script posts once and never retries; nothing
+          # here re-runs it, and the job has no retry either.
+          python3 poc/zerogpu-space/real_run.py \
+            --out ./real-run \
+            --vocal-gender "${{ inputs.vocal_gender }}" \
+            $duration_arg | tee ./real-run/console.txt
+
+      - name: Put the report in the run summary
+        if: always()
+        run: |
+          {
+            echo '## Real ACE-Step run'
+            echo
+            echo '```'
+            cat ./real-run/console.txt 2>/dev/null || echo "no console output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the audio and the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-ace-step-run
+          path: ./real-run
+          # Long enough to download and listen to. The WAV is the only copy:
+          # there is no second generation to produce another.
+          retention-days: 14
+          if-no-files-found: warn

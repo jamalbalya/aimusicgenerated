@@ -351,7 +351,11 @@ def main() -> int:
     parser.add_argument("--token", default=os.environ.get("HF_TOKEN", ""))
     parser.add_argument("--style-file", default=str(HERE / "fixtures" / "real-run-style.txt"))
     parser.add_argument("--lyrics-file", default=str(HERE / "fixtures" / "real-run-lyrics.txt"))
-    parser.add_argument("--duration", type=float, default=210.0)
+    parser.add_argument(
+        "--duration", default="210",
+        help="Seconds, or 'auto' for ACE-Step's own choice. 'auto' is not 0: "
+             "zero is a length, it is below the ten-second minimum, and the "
+             "Space refuses it.")
     parser.add_argument("--vocal-gender", default="male")
     parser.add_argument("--language", default="auto")
     parser.add_argument("--timeout", type=int, default=1800)
@@ -376,8 +380,10 @@ def main() -> int:
     import vocal_pitch
     record["readiness"] = vocal_pitch.readiness(device="cpu")
 
+    raw_duration = str(arguments.duration).strip().lower()
+    duration = None if raw_duration in ("auto", "", "0", "-1") else float(raw_duration)
     built = build_request(Path(arguments.style_file), Path(arguments.lyrics_file),
-                          arguments.duration, arguments.vocal_gender, arguments.language)
+                          duration, arguments.vocal_gender, arguments.language)
     record["melody"] = built["melody"]
     record["plan"] = built["plan"]
     if not built["valid"]:
