@@ -15,9 +15,9 @@ on:
   workflow_dispatch:
     inputs:
       duration:
-        description: "Song length in seconds, or 'auto' to let ACE-Step choose"
+        description: "Song length in seconds, or 'auto' to let ACE-Step choose. 267 matches the Tetap Memilihmu fixture (267.024s), so the two are directly comparable."
         required: false
-        default: "210"
+        default: "267"
       vocal_gender:
         description: "male | female | auto"
         required: false

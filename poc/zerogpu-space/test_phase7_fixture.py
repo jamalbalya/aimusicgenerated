@@ -61,6 +61,15 @@ REQUESTED_BPM = 72
 #: comes back Pop unfalsifiable.
 CAPTION_MODE = "bare"
 
+#: The forensic run's length, matched to the existing real fixture.
+#:
+#: `fixtures/real/tetap-memilihmu.mp3` is 267.024 seconds. A new song of a
+#: different length compares with it only loosely — bar counts, phrase budgets
+#: and the drift a tempo mismatch accumulates all scale with duration — and
+#: sitting beside that fixture is the whole reason for this run.
+FORENSIC_DURATION = 267
+FIXTURE_DURATION_SECONDS = 267.024
+
 #: Lines that identify this sheet and no other. The title line is the hook and
 #: appears in both choruses; the opening image appears once.
 SIGNATURE_LINES = [
@@ -161,6 +170,10 @@ def main() -> int:
           "--style-file" in workflow)
     check("the run step passes the caption mode through",
           "--caption-mode" in workflow)
+    check(f"the workflow's duration default is {FORENSIC_DURATION}",
+          f'default: "{FORENSIC_DURATION}"' in workflow)
+    check("and 210 is no longer the default anywhere in the workflow",
+          'default: "210"' not in workflow)
     check(f"and the forensic run defaults to {CAPTION_MODE!r}",
           f'default: "{CAPTION_MODE}"' in workflow)
     check("and it still cannot start itself",
@@ -177,7 +190,7 @@ def main() -> int:
         "--lyrics-file", str(LYRICS),
         "--vocal-gender", "male",
         "--language", "auto",
-        "--duration", "210",
+        "--duration", str(FORENSIC_DURATION),
         # The forensic run's mode. Checking `compiled` here would prove the
         # wrong thing: what matters is what the one real generation sends.
         "--caption-mode", CAPTION_MODE,
@@ -281,8 +294,14 @@ def main() -> int:
             check("and the planner read it from the style rather than guessing",
                   built["plan"].get("bpmStated") is True,
                   str(built["plan"].get("bpmStated")))
-            check("duration reaches the payload", request.get("duration") == 210,
+            check(f"duration reaches the payload as {FORENSIC_DURATION}",
+                  request.get("duration") == FORENSIC_DURATION,
                   str(request.get("duration")))
+            check("and it is within a second of the real fixture it is compared against",
+                  abs(FORENSIC_DURATION - FIXTURE_DURATION_SECONDS) < 1.0,
+                  f"{FORENSIC_DURATION} against {FIXTURE_DURATION_SECONDS}")
+            check("and inside ACE-Step's documented 10-600 second range",
+                  10 <= FORENSIC_DURATION <= 600, str(FORENSIC_DURATION))
             check("the sheet is recognised as Indonesian",
                   request.get("language") == "id", str(request.get("language")))
             check("it is not sent as an instrumental",
@@ -301,13 +320,84 @@ def main() -> int:
                   len(payload) == 11, str(len(payload)))
             check("  field 1 is the style", payload[0] == request["style"])
             check("  field 2 is the lyrics", payload[1] == request["lyrics"])
-            check("  field 6 is the duration", payload[5] == 210, str(payload[5]))
+            check(f"  field 6 is the duration ({FORENSIC_DURATION})",
+                  payload[5] == FORENSIC_DURATION, str(payload[5]))
             check(f"  field 7 is bpm {REQUESTED_BPM}", payload[6] == REQUESTED_BPM,
                   str(payload[6]))
             check("  field 11 is the target melody",
                   bool(payload[10]) and payload[10] == request["melody"])
             check("no field of the payload carries the other song",
                   not any(line in json.dumps(payload) for line in FOREIGN_LINES))
+
+    print("\n=== 4: user-specified and engine-selected are kept apart ===")
+    # A report that lists eleven values in one column reads as eleven decisions
+    # the person made. Four of them are. The key this run turns on was picked
+    # by the planner from a Style that names no key.
+    import real_run
+    rows = real_run.provenance(request, built, explicit={"duration", "caption_mode"})
+    by_field = {row["field"]: row for row in rows}
+    check("every payload field has a recorded origin",
+          set(by_field) == {"style", "lyrics", "language", "vocal_gender",
+                            "instrumental", "duration", "bpm", "keyscale",
+                            "timesignature", "seed", "melody"},
+          str(sorted(by_field)))
+    check("every origin is one of the two labels, never blank",
+          all(row["origin"] in (real_run.USER, real_run.ENGINE) for row in rows))
+    check("every origin carries its evidence",
+          all(row["why"].strip() for row in rows))
+
+    for field in ("style", "lyrics", "bpm"):
+        check(f"{field} is USER-SPECIFIED",
+              by_field[field]["origin"] == real_run.USER, by_field[field]["why"])
+    check("bpm is user-specified because the Style states it, not by assertion",
+          built["plan"].get("bpmStated") is True
+          and by_field["bpm"]["origin"] == real_run.USER)
+    check("duration is USER-SPECIFIED when it was passed explicitly",
+          by_field["duration"]["origin"] == real_run.USER, by_field["duration"]["why"])
+
+    for field in ("keyscale", "timesignature", "seed", "melody",
+                  "instrumental", "language"):
+        check(f"{field} is ENGINE-SELECTED, not presented as the user's",
+              by_field[field]["origin"] == real_run.ENGINE, by_field[field]["why"])
+    check("the key in particular is not claimed as the user's",
+          by_field["keyscale"]["origin"] == real_run.ENGINE
+          and "A Major" not in style_text,
+          f"planner chose {request['keyscale']}; the Style names no key")
+
+    # A default is the engine's choice even when it is a good one.
+    bare = real_run.provenance(request, built, explicit=set())
+    bare_by_field = {row["field"]: row for row in bare}
+    for field in ("duration", "vocal_gender", "language"):
+        check(f"{field} is ENGINE-SELECTED when it came from a default",
+              bare_by_field[field]["origin"] == real_run.ENGINE,
+              bare_by_field[field]["why"])
+
+    check("ACE-Step's conditioning set excludes the melody",
+          "melody" not in real_run.ACE_STEP_CONDITIONS_ON
+          and len(real_run.ACE_STEP_CONDITIONS_ON) == 10,
+          str(sorted(real_run.ACE_STEP_CONDITIONS_ON)))
+    check("and the melody row says so in words",
+          "never sees it" in by_field["melody"]["why"],
+          by_field["melody"]["why"])
+
+    rendered = real_run.render({
+        "provenance": rows,
+        "ace_step_conditions_on": sorted(real_run.ACE_STEP_CONDITIONS_ON),
+        "request_summary": {}, "ace_step": {}, "local_analysis": {},
+        "melody": {"usable": True, "checksPassed": []},
+    })
+    check("the rendered report separates the two headings",
+          "USER-SPECIFIED" in rendered and "ENGINE-SELECTED" in rendered)
+    check("and marks what ACE-Step never sees",
+          "[ACE-Step never sees this]" in rendered)
+    user_at = rendered.index("USER-SPECIFIED")
+    engine_at = rendered.index("ENGINE-SELECTED")
+    check("with the user's own parameters listed first",
+          user_at < engine_at)
+    check("the key is under the engine heading, not the user's",
+          rendered.index("keyscale") > engine_at)
+    check("the Style is under the user heading",
+          rendered.index("style") < engine_at)
 
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

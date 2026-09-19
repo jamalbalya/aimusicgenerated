@@ -56,6 +56,36 @@ AUTO_DURATION = -1
 sys.path.insert(0, str(HERE))
 
 
+#: Length of the forensic run, in seconds.
+#:
+#: 267, because the existing real fixture — the Tetap Memilihmu render already
+#: in `fixtures/real/` — is 267.024 seconds long. A new song of a different
+#: length is comparable with it only loosely: bar counts, phrase budgets and
+#: the drift a tempo mismatch accumulates all scale with duration, and the
+#: whole point of this run is to sit beside that fixture and be read against
+#: it. ACE-Step accepts 10–600, so this is well inside range.
+#:
+#: The fractional 0.024 is dropped because the field is a whole number of
+#: seconds. That is a 24-millisecond difference across four and a half minutes
+#: and it changes no measurement this harness makes.
+FORENSIC_DURATION_SECONDS = 267
+
+#: What ACE-Step's generation actually reads, of the eleven fields sent.
+#:
+#: `melody` is not among them, and that is not an oversight. ACE-Step has no
+#: melody or reference-audio input — `constraints.ts` files it under
+#: NOT_CONTROLLED_BY_ACE_STEP — so field 11 travels to the Space and is
+#: consumed *after* generation, by the pitch stage, as the reference to correct
+#: against. Calling it "melody conditioning" would describe a mechanism that
+#: does not exist and would make the run's result unreadable: if the vocal does
+#: not follow the planned melody, that is the expected behaviour of a model
+#: that was never given it, not a finding.
+ACE_STEP_CONDITIONS_ON = frozenset({
+    "style", "lyrics", "language", "vocal_gender", "instrumental",
+    "duration", "bpm", "keyscale", "timesignature", "seed",
+})
+
+
 def build_request(style_file: Path, lyrics_file: Path, duration: float | None,
                   vocal_gender: str, language: str,
                   caption_mode: str = "bare") -> dict:
@@ -87,6 +117,73 @@ def build_request(style_file: Path, lyrics_file: Path, duration: float | None,
     if finished.returncode != 0:
         raise RuntimeError(f"building the request failed:\n{finished.stderr[-2000:]}")
     return json.loads(finished.stdout)
+
+
+USER = "USER-SPECIFIED"
+ENGINE = "ENGINE-SELECTED"
+
+
+def provenance(request: dict, built: dict, explicit: set[str]) -> list[dict]:
+    """Where each field's value came from: the person, or the engine.
+
+    Written because a report that lists eleven values in one column reads as
+    eleven decisions the person made. Four of them are. The key this run turns
+    on — A Major — was picked by the planner from a Style that names no key,
+    and presenting it beside the Style as though it were asked for would be a
+    quiet lie about what the experiment controls.
+
+    `explicit` is the set of flags actually passed on the command line, so a
+    value is only called USER-SPECIFIED when a person really supplied it; a
+    default that happens to be sensible is still the engine's choice.
+    """
+    plan = built.get("plan", {})
+    bpm_stated = plan.get("bpmStated") is True
+
+    def origin(condition: bool) -> str:
+        return USER if condition else ENGINE
+
+    return [
+        {"field": "style", "origin": USER,
+         "why": "the Style file, byte for byte. Caption mode is bare, so nothing "
+                "the planner derived was appended."},
+        {"field": "lyrics", "origin": USER,
+         "why": "the Lyrics file, verbatim. [End] was consumed as a terminator "
+                "and nothing after it is sent."},
+        {"field": "language", "origin": origin("language" in explicit),
+         "why": ("passed on the command line"
+                 if "language" in explicit else
+                 "detected from the lyrics; the harness was asked for 'auto'. "
+                 "Nobody typed 'id'.")},
+        {"field": "vocal_gender", "origin": origin("vocal_gender" in explicit),
+         "why": ("passed on the command line"
+                 if "vocal_gender" in explicit else
+                 "this run's configured vocal intent, from the harness default "
+                 "rather than from the Style text")},
+        {"field": "instrumental", "origin": ENGINE,
+         "why": "false because the sheet has lyrics. Never asked for either way."},
+        {"field": "duration", "origin": origin("duration" in explicit),
+         "why": ("passed on the command line"
+                 if "duration" in explicit else
+                 f"the harness default of {FORENSIC_DURATION_SECONDS}s, chosen to "
+                 f"match the 267.024s Tetap Memilihmu fixture")},
+        {"field": "bpm", "origin": origin(bpm_stated),
+         "why": ("read out of the Style text, which states a tempo. It reaches "
+                 "GenerationParams.bpm as a dedicated integer, not as prose."
+                 if bpm_stated else
+                 "the Style states no tempo, so the planner chose one")},
+        {"field": "keyscale", "origin": ENGINE,
+         "why": "the planner picked it. The Style names no key, and nobody asked "
+                "for this one."},
+        {"field": "timesignature", "origin": ENGINE,
+         "why": "the harness sends 4 for every run. Not derived from the song."},
+        {"field": "seed", "origin": ENGINE,
+         "why": "-1 means the model picks its own. This run is therefore not "
+                "reproducible: a second generation would differ."},
+        {"field": "melody", "origin": ENGINE,
+         "why": "generated by the planner from the lyrics and the chosen key. "
+                "ACE-Step never sees it — the Space consumes it after generation, "
+                "as the pitch stage's reference."},
+    ]
 
 
 def post(url: str, payload: dict, token: str | None, timeout: int = 180):
@@ -457,7 +554,31 @@ def render(record: dict) -> str:
         fold = ("      NOTE: raw and canonical are the same pulse counted at different\n"
                 "            octaves — one recording, two readings, not two tempi.\n")
 
+    rows = record.get("provenance") or []
+    conditions_on = set(record.get("ace_step_conditions_on") or [])
+    user_rows = [row for row in rows if row["origin"] == USER]
+    engine_rows = [row for row in rows if row["origin"] == ENGINE]
+
+    def block(title: str, source: list[dict]) -> list[str]:
+        out = [title]
+        if not source:
+            out.append("  (none recorded)")
+        for row in source:
+            seen = "" if row["field"] in conditions_on else "   [ACE-Step never sees this]"
+            out.append(f"  {row['field']:<14} {seen}")
+            out.append(f"      {row['why']}")
+        return out
+
     lines = [
+        *block("USER-SPECIFIED — the person supplied these:", user_rows),
+        "",
+        *block("ENGINE-SELECTED / DEFAULT — the person did not ask for these:",
+               engine_rows),
+        "",
+        "  The two lists are not interchangeable. A value in the second list is",
+        "  a decision this pipeline made, and a result that follows it is the",
+        "  pipeline agreeing with itself, not the model following the request.",
+        "",
         "Caption (what reached ACE-Step's text field):",
         f"  mode:                    {request.get('caption_mode', 'not recorded')}",
         f"  caption === user Style:  {request.get('caption_is_exactly_the_user_style')}",
@@ -563,7 +684,7 @@ def main() -> int:
     parser.add_argument("--style-file", default=str(HERE / "fixtures" / "real-run-style.txt"))
     parser.add_argument("--lyrics-file", default=str(HERE / "fixtures" / "real-run-lyrics.txt"))
     parser.add_argument(
-        "--duration", default="210",
+        "--duration", default=str(FORENSIC_DURATION_SECONDS),
         help="Seconds, or 'auto' for ACE-Step's own choice. 'auto' is not 0: "
              "zero is a length, it is below the ten-second minimum, and the "
              "Space refuses it.")
@@ -586,6 +707,14 @@ def main() -> int:
              "script runs unchanged, and the report says the audio was supplied "
              "rather than generated here.")
     arguments = parser.parse_args()
+
+    # Which flags a person actually typed, as opposed to which ones have a
+    # default. Provenance is only honest if it is read off the command line
+    # rather than assumed from the value that came out.
+    explicit = {
+        name.lstrip("-").replace("-", "_")
+        for name in sys.argv[1:] if name.startswith("--")
+    }
 
     out = Path(arguments.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -614,6 +743,8 @@ def main() -> int:
         return 2
 
     request = built["request"]
+    record["provenance"] = provenance(request, built, explicit)
+    record["ace_step_conditions_on"] = sorted(ACE_STEP_CONDITIONS_ON)
     record["request_summary"] = {
         "caption_mode": arguments.caption_mode,
         "caption_is_exactly_the_user_style": (
