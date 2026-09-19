@@ -442,6 +442,48 @@ function buildLadder(tonic: PitchClass, scale: ScaleName, range: { low: number; 
   return ladder.length > 0 ? ladder : [range.low, range.high]
 }
 
+/**
+ * Stops a breath running into the line it precedes.
+ *
+ * A phrase's trailing rest is sized to fill the phrase's slot, but it is given
+ * at least `shape.breath` beats even when the words already used the slot up.
+ * The next phrase then starts at `Math.round(beat)`, which rounds *down* when
+ * that overrun is under half a beat — and a rest that ends at 4.25 sits across
+ * a line that starts at 4.
+ *
+ * On most sheets the arithmetic happens to work out. On the Tetap Memilihmu
+ * sheet it did not, in seven places, and the melody validator rejected the
+ * whole melody for `OVERLAPPING_NOTES`. A rejected melody is not sent at all,
+ * so the consequence was not a slightly wrong reference: it was no reference,
+ * silently, with the failure only visible in a validator report nobody reads
+ * before pressing the button.
+ *
+ * The repair trims the silence rather than moving the song. A rest is cut back
+ * to where the next note begins, and a rest with nothing left is dropped. No
+ * sung note changes pitch, start or length, so the melody is the one the
+ * planner laid out — it simply no longer claims two notes sound at once.
+ * Trimming only ever shortens a rest; a sung note that overlapped would be a
+ * different defect and is deliberately left for the validator to catch.
+ */
+function trimRestsToNextNote(notes: TargetNote[], secondsPerBeat: number): TargetNote[] {
+  const kept: TargetNote[] = []
+  for (let index = 0; index < notes.length; index++) {
+    const note = notes[index]!
+    const next = notes[index + 1]
+    if (note.role === 'rest' && next !== undefined) {
+      const room = next.startBeat - note.startBeat
+      if (room <= 1e-9) continue
+      if (note.durationBeats > room + 1e-9) {
+        note.durationBeats = room
+        note.endSeconds = note.startSeconds + room * secondsPerBeat
+      }
+    }
+    kept.push(note)
+  }
+  for (let index = 0; index < kept.length; index++) kept[index]!.index = index
+  return kept
+}
+
 /** The rung nearest a MIDI note. */
 function rungNear(ladder: number[], midi: number): number {
   let best = 0
@@ -897,7 +939,8 @@ export function buildTargetMelody(plan: LivePlan, vocalGender: 'male' | 'female'
   }
 
   return {
-    notes, bpm, beatsPerBar: BEATS_PER_BAR, tonic, scale: harmony.scale, range, harmony,
+    notes: trimRestsToNextNote(notes, secondsPerBeat),
+    bpm, beatsPerBar: BEATS_PER_BAR, tonic, scale: harmony.scale, range, harmony,
   }
 }
 

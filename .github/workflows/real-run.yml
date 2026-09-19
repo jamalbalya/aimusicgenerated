@@ -29,7 +29,7 @@ on:
       lyrics_file:
         description: "Lyrics fixture to send verbatim. Never rewritten, never translated."
         required: false
-        default: "poc/zerogpu-space/fixtures/real-run-lyrics.txt"
+        default: "poc/zerogpu-space/fixtures/tetap-memilihmu-lyrics.txt"
       demucs:
         description: "Install torchaudio for Hybrid Demucs (slower setup, better separation)"
         required: false
@@ -103,6 +103,39 @@ jobs:
             # gigabytes of download for nothing.
             python3 -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio
           fi
+
+      - name: The fixtures are the Tetap Memilihmu sheet, and the payload carries it
+        env:
+          STYLE_FILE: ${{ inputs.style_file }}
+          LYRICS_FILE: ${{ inputs.lyrics_file }}
+        run: |
+          # Before the queue, not after. A wrong lyric fixture is not
+          # recoverable by re-running: the quota is spent and the song is of
+          # some other words.
+          #
+          # The suite checks the fixtures the Phase 7 run is defined by. This
+          # first check is separate and covers the other way to get it wrong:
+          # dispatching with the inputs pointed somewhere else, which the suite
+          # would not see.
+          expected_style="poc/zerogpu-space/fixtures/tetap-memilihmu-style.txt"
+          expected_lyrics="poc/zerogpu-space/fixtures/tetap-memilihmu-lyrics.txt"
+          if [ "$STYLE_FILE" != "$expected_style" ] || [ "$LYRICS_FILE" != "$expected_lyrics" ]; then
+            {
+              echo "### This run is not the Tetap Memilihmu run"
+              echo
+              echo "| input | dispatched | expected |"
+              echo "| --- | --- | --- |"
+              echo "| style_file | \`$STYLE_FILE\` | \`$expected_style\` |"
+              echo "| lyrics_file | \`$LYRICS_FILE\` | \`$expected_lyrics\` |"
+              echo
+              echo "Refusing before the generation rather than after it. Clear the"
+              echo "inputs to use the defaults, or change this check in the same commit"
+              echo "that changes which song the run is for."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Dispatched with fixtures that are not the Tetap Memilihmu sheet."
+            exit 1
+          fi
+          python3 poc/zerogpu-space/test_phase7_fixture.py
 
       - name: Readiness
         run: |
