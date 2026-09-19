@@ -205,6 +205,105 @@ SKIP_COST_SECONDS = 0.30
 #: noise. So: hybrid under, PSOLA over.
 CORRECTION_METHOD_SPLIT_CENTS = 200.0
 
+#: How far the song's tempo may differ from the planned tempo and still leave
+#: the target melody usable, as a fraction.
+#:
+#: Beyond this the plan is not the same song. The melody writer lays notes out
+#: on the requested tempo's grid and allocates bars per section from it: at
+#: 72 BPM a four-and-a-half minute song is about 80 bars. A real generation
+#: came back at 98.4 BPM, which is 110 bars. Stretching the plan by 1.37 puts
+#: its notes at plausible *times*, but phrase 12 of an 80-bar plan is simply not
+#: the line the singer is on at that moment in a 110-bar song — so the notes are
+#: in the right place and wrong. A warp fixes a timeline; it cannot fix a
+#: structure.
+#:
+#: Fifteen per cent is where a warp stops being a correction of timing and
+#: starts being a reinterpretation of the song. Inside it, a stable ratio is
+#: applied and alignment proceeds with the drift removed. Outside it, correction
+#: is refused — which is the safe answer, because correcting against a
+#: mis-structured plan makes a vocal worse in a way nothing downstream can
+#: detect.
+TEMPO_WARP_LIMIT = 0.15
+
+#: Below this, a phrase's alignment is not trusted and its notes are not moved.
+#:
+#: Confidence is the share of the phrase's planned notes that found a partner,
+#: scaled down when the partners sit far from where the plan expects them. A
+#: phrase that matched two notes out of eleven has not been aligned; it has been
+#: guessed at, and guessing is what produces a correction toward a target from
+#: somewhere else in the song.
+PHRASE_CONFIDENCE_FLOOR = 0.55
+
+#: Verdicts for whether correcting this song against this plan is allowed.
+CORRECTION_AUTHORIZED = "PITCH_CORRECTION_AUTHORIZED"
+CORRECTION_NOT_AUTHORIZED = "PITCH_CORRECTION_NOT_AUTHORIZED"
+ALIGNMENT_UNTRUSTWORTHY = "ALIGNMENT_UNTRUSTWORTHY"
+
+
+def authorize_correction(tempo_reading, targets: Sequence["TargetNote"]) -> tuple[str, list[str]]:
+    """Decides whether the target melody may be used to correct this song.
+
+    Called before any audio is touched. The question is not "is the vocal in
+    tune" — it is "does this plan describe this performance at all". A plan that
+    does not is worse than no plan: every note it supplies is a target the
+    correction stage would move a vocal towards.
+
+    Returns a verdict and the reasons for it. `PITCH_CORRECTION_NOT_AUTHORIZED`
+    is a safe, expected outcome and never an error: the song is returned exactly
+    as generated, which is what this Space did before correction existed.
+    """
+    reasons: list[str] = []
+    if not targets:
+        return CORRECTION_NOT_AUTHORIZED, ["no target melody was supplied"]
+    if tempo_reading is None:
+        # No tempo was measured. The plan's timeline is unverified rather than
+        # known-wrong, so this is a refusal and not a failure.
+        return CORRECTION_NOT_AUTHORIZED, [
+            "the song's tempo was not measured, so the plan's timeline is unverified"]
+
+    verdict = tempo_reading.verdict
+    if verdict == "TEMPO_UNMEASURABLE":
+        return CORRECTION_NOT_AUTHORIZED, list(tempo_reading.reasons)
+    if verdict == "TEMPO_UNSTABLE":
+        return CORRECTION_NOT_AUTHORIZED, list(tempo_reading.reasons) + [
+            "a wandering tempo cannot be undone by one ratio, so no warp makes the plan fit"]
+    if verdict == "TEMPO_NOT_REQUESTED":
+        # Nothing was asked for, so nothing is contradicted. The plan was laid
+        # out on the planner's own tempo and there is no evidence either way;
+        # alignment's own confidence decides from here.
+        return CORRECTION_AUTHORIZED, list(tempo_reading.reasons)
+
+    ratio = tempo_reading.ratio or 1.0
+    if abs(ratio - 1.0) > TEMPO_WARP_LIMIT:
+        return CORRECTION_NOT_AUTHORIZED, list(tempo_reading.reasons) + [
+            f"the tempo ratio {ratio:.3f} exceeds the {TEMPO_WARP_LIMIT:.0%} limit past which a "
+            f"warp reinterprets the song rather than re-times it: the plan's bar count and the "
+            f"performance's do not describe the same arrangement",
+            "correcting against this plan would move the vocal toward notes belonging to a "
+            "different part of the song",
+        ]
+    if verdict == "TEMPO_MISMATCH":
+        reasons.append(
+            f"tempo differs by {abs(ratio - 1.0):.1%}, inside the {TEMPO_WARP_LIMIT:.0%} limit; "
+            f"the plan is re-timed by {ratio:.4f} before alignment")
+    return CORRECTION_AUTHORIZED, reasons + list(tempo_reading.reasons)
+
+
+def warp_targets(targets: Sequence["TargetNote"], ratio: float) -> list["TargetNote"]:
+    """Re-times a planned melody onto the tempo the song actually came out at.
+
+    Only the times move. The notes do not: a plan written in D minor is still in
+    D minor at a different tempo, and changing the pitches would be inventing a
+    melody rather than re-timing one.
+    """
+    if not ratio or ratio <= 0 or abs(ratio - 1.0) < 1e-6:
+        return list(targets)
+    return [replace(target,
+                    start_seconds=target.start_seconds / ratio,
+                    end_seconds=target.end_seconds / ratio)
+            for target in targets]
+
+
 #: Beyond this, the *alignment* is wrong, not the singing.
 #:
 #: Two octaves is not a mistuned note. A deviation this large means a sung note
@@ -940,6 +1039,10 @@ def _alignment_quality(aligned: Sequence[Alignment], planned_count: int) -> tupl
     return len(matched), float(np.median(distances))
 
 
+#: Phrase scores from the most recent `_align_once`, for the report.
+_LAST_PHRASE_SCORES: list["PhraseAlignment"] = []
+
+
 def align(notes: Sequence[MeasuredNote], targets: Sequence[TargetNote]) -> list[Alignment]:
     """Matches sung notes to planned notes, with a second strategy if the first does badly.
 
@@ -1057,6 +1160,7 @@ def _align_once(notes: Sequence[MeasuredNote], targets: Sequence[TargetNote]) ->
     and under the greedy matcher this replaced, that is what happened whenever
     the timing drifted.
     """
+    _LAST_PHRASE_SCORES.clear()
     if not notes:
         return []
     target_phrases = group_target_phrases(targets)
@@ -1089,6 +1193,17 @@ def _align_once(notes: Sequence[MeasuredNote], targets: Sequence[TargetNote]) ->
             SKIP_COST_SECONDS,
         ))
         planned = _reanchor_octave(phrase, planned, pairs)
+        score = score_phrase(phrase, planned, pairs)
+        _LAST_PHRASE_SCORES.append(score)
+        if not score.trusted:
+            # Matched, but not well enough to act on. Reported, and every note
+            # left exactly as performed.
+            aligned.extend(
+                Alignment(note, None, 0.0,
+                          f"phrase alignment not trusted ({score.confidence:.2f}): {score.reason}",
+                          False)
+                for note in phrase)
+            continue
         for position, note in enumerate(phrase):
             if position not in pairs:
                 aligned.append(
@@ -1096,6 +1211,84 @@ def _align_once(notes: Sequence[MeasuredNote], targets: Sequence[TargetNote]) ->
                 continue
             aligned.append(_judge(note, planned[pairs[position]]))
     return aligned
+
+
+@dataclass
+class PhraseAlignment:
+    """How well one sung line matched one planned line, and whether to trust it."""
+
+    phrase: int
+    planned_notes: int
+    matched_notes: int
+    #: Median seconds between a matched pair's midpoints.
+    median_time_error: float
+    start_seconds: float
+    end_seconds: float
+    confidence: float
+    trusted: bool
+    reason: str
+
+
+def score_phrase(phrase: Sequence[MeasuredNote], planned: Sequence[TargetNote],
+                 pairs: dict) -> PhraseAlignment:
+    """Confidence that this measured line is the planned line it was matched to.
+
+    Two things decide it, and neither is pitch — pitch is what the correction
+    stage is about to judge, so using it here would be circular.
+
+      * **Coverage.** How much of the planned line found a partner. A line that
+        matched two notes of eleven has not been aligned, it has been guessed
+        at.
+      * **Timing.** How far the partners sit from where the plan expects them,
+        in units of the planned line's own length, so a slow ballad and a fast
+        verse are judged the same way.
+
+    A phrase below `PHRASE_CONFIDENCE_FLOOR` has its notes left exactly as
+    performed. That is the rule that stops a mis-matched line being "corrected"
+    onto the pitches of a different line.
+    """
+    singable = [t for t in planned if not t.is_rest]
+    if not singable or not phrase:
+        return PhraseAlignment(
+            phrase=singable[0].phrase if singable else -1,
+            planned_notes=len(singable), matched_notes=0, median_time_error=0.0,
+            start_seconds=phrase[0].start_seconds if phrase else 0.0,
+            end_seconds=phrase[-1].end_seconds if phrase else 0.0,
+            confidence=0.0, trusted=False, reason="nothing to match")
+
+    errors = []
+    for position, target_index in pairs.items():
+        if position >= len(phrase) or target_index >= len(planned):
+            continue
+        note, target = phrase[position], planned[target_index]
+        errors.append(abs((note.start_seconds + note.end_seconds) / 2
+                          - (target.start_seconds + target.end_seconds) / 2))
+    matched = len(errors)
+    coverage = matched / len(singable)
+    span = max(0.5, singable[-1].end_seconds - singable[0].start_seconds)
+    median_error = float(np.median(errors)) if errors else span
+    # Perfect at zero error, zero once the error reaches half the line's length
+    # — by then the match is as likely to be the neighbouring line.
+    timing = max(0.0, 1.0 - (median_error / (span * 0.5)))
+    confidence = coverage * timing
+
+    if matched == 0:
+        reason = "no note of this line found a partner"
+    elif coverage < 0.5:
+        reason = f"only {matched} of {len(singable)} planned notes matched"
+    elif timing < 0.5:
+        reason = f"matched notes sit {median_error:.2f}s from where the plan expects them"
+    else:
+        reason = (f"{matched} of {len(singable)} notes matched, median timing error "
+                  f"{median_error:.2f}s")
+
+    return PhraseAlignment(
+        phrase=singable[0].phrase, planned_notes=len(singable), matched_notes=matched,
+        median_time_error=round(median_error, 3),
+        start_seconds=round(phrase[0].start_seconds, 3),
+        end_seconds=round(phrase[-1].end_seconds, 3),
+        confidence=round(confidence, 3),
+        trusted=confidence >= PHRASE_CONFIDENCE_FLOOR, reason=reason)
 
 
 def _reanchor_octave(phrase: Sequence[MeasuredNote], planned: Sequence[TargetNote],
@@ -1459,6 +1652,17 @@ class CorrectionReport:
     #: Nothing in this file can produce one.
     trust: str = "UNVERIFIED"
     trust_reasons: list[str] = field(default_factory=list)
+    #: Tempo, and whether it invalidates the plan's timeline.
+    tempo_verdict: str = "TEMPO_UNMEASURABLE"
+    measured_bpm: float = 0.0
+    requested_bpm: float = 0.0
+    tempo_ratio: Optional[float] = None
+    tempo_local_drift: float = 0.0
+    #: Whether correcting against this plan was allowed at all, and why.
+    authorization: str = CORRECTION_NOT_AUTHORIZED
+    authorization_reasons: list[str] = field(default_factory=list)
+    #: One row per sung line: how well it matched, and whether it was trusted.
+    phrase_alignments: list[dict] = field(default_factory=list)
     #: Which separator produced the vocal stem this report describes.
     #:
     #: Never inferred by a reader. Hybrid Demucs and the numpy fallback are not
@@ -2049,7 +2253,8 @@ def separate_fallback(mix: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np
 
 
 def process_song(mix: np.ndarray, sample_rate: int, targets: Sequence[TargetNote],
-                 device: str = "cuda") -> tuple[np.ndarray, CorrectionReport]:
+                 device: str = "cuda",
+                 requested_bpm: Optional[float] = None) -> tuple[np.ndarray, CorrectionReport]:
     """The whole vocal pipeline, on one song, once.
 
     separate -> analyse -> correct -> remix. Returns the finished audio and the
@@ -2095,6 +2300,52 @@ def process_song(mix: np.ndarray, sample_rate: int, targets: Sequence[TargetNote
         assess_trust(report)
         return mix, report
 
+    # Before anything is separated or measured: does this plan describe this
+    # performance at all? The tempo answers that, because the melody's note
+    # times come from the planned tempo and nothing downstream can detect a
+    # timeline that is simply wrong — every note would still find a partner,
+    # just the wrong one.
+    tempo_started = time.perf_counter()
+    try:
+        import tempo as tempo_module
+
+        reading = tempo_module.measure_tempo(
+            np.asarray(mix, dtype=np.float64).reshape(-1)
+            if np.ndim(mix) == 1 else np.asarray(mix, dtype=np.float64).mean(axis=0),
+            sample_rate, requested_bpm=requested_bpm)
+    except Exception as error:  # noqa: BLE001 - a missing measurement is a refusal
+        reading = None
+        report.decisions.append(f"tempo could not be measured: {error}")
+    tempo_seconds = time.perf_counter() - tempo_started
+
+    report.tempo_verdict = reading.verdict if reading else "TEMPO_UNMEASURABLE"
+    report.measured_bpm = round(reading.comparable_bpm, 2) if reading else 0.0
+    report.requested_bpm = float(requested_bpm) if requested_bpm else 0.0
+    report.tempo_ratio = round(reading.ratio, 4) if (reading and reading.ratio) else None
+    report.tempo_local_drift = round(reading.local_drift, 4) if reading else 0.0
+
+    authorized, why = authorize_correction(reading, targets)
+    report.authorization = authorized
+    report.authorization_reasons = why
+    if authorized != CORRECTION_AUTHORIZED:
+        # The safe outcome, and an expected one. The song is returned exactly as
+        # generated — which is what this Space produced before correction
+        # existed — and the report says why nothing was touched. It is never
+        # upgraded to a pass by anything measured afterwards.
+        report.unavailable = (
+            "Pitch correction was not authorised: the target melody does not describe this "
+            "performance closely enough to correct against.")
+        report.stage_seconds = {"tempo": round(tempo_seconds, 3)}
+        assess_trust(report)
+        report.trust = "UNVERIFIED"
+        report.trust_reasons = why
+        return mix, report
+
+    if reading and reading.ratio and abs(reading.ratio - 1.0) > 1e-6:
+        targets = warp_targets(targets, reading.ratio)
+        report.decisions.append(
+            f"target melody re-timed by {reading.ratio:.4f} to the tempo actually generated")
+
     started = time.perf_counter()
     vocal, backing, problem = separate(mix, sample_rate, device)
     separator = "hybrid-demucs"
@@ -2119,7 +2370,13 @@ def process_song(mix: np.ndarray, sample_rate: int, targets: Sequence[TargetNote
     report.stage_seconds = {
         "separate": round(separation_seconds, 3),
         "measure_align_correct": round(time.perf_counter() - corrected_started, 3),
+        "tempo": round(tempo_seconds, 3),
     }
+    report.phrase_alignments = [
+        {"phrase": p.phrase, "planned": p.planned_notes, "matched": p.matched_notes,
+         "t0": p.start_seconds, "t1": p.end_seconds, "confidence": p.confidence,
+         "trusted": p.trusted, "reason": p.reason}
+        for p in _LAST_PHRASE_SCORES]
     if report.unavailable is not None:
         return mix, report
     if report.notes_corrected == 0:

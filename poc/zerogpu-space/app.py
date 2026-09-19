@@ -48,6 +48,7 @@ import gradio as gr
 import spaces
 import torch
 
+import generation_params
 import guard
 
 # --- configuration -----------------------------------------------------------
@@ -256,36 +257,21 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
     # finished song because the two numbers disagreed.
     lyric_lines_sent = guard.count_lyric_lines(lyrics)
 
-    params = GenerationParams(
-        task_type="text2music",
+    # Built by `generation_params.build_generation_params`, which is a module
+    # with no gradio, no spaces and no torch so that the mapping can be tested
+    # without a GPU. What the test checks and what is sent here are the same
+    # dictionary. See that module for why the tempo must land in `params.bpm`
+    # and not in the caption.
+    params = GenerationParams(**generation_params.build_generation_params(
         caption=caption,
-        lyrics="[inst]" if instrumental else sheet,
+        lyrics=sheet,
         instrumental=instrumental,
-        vocal_language=language,
+        language=language,
         duration=duration,
-        # ACE-Step 1.5's real metadata fields. inference.py reads these into
-        # the metadata handed to the model and only lets its own LM fill in
-        # the ones left empty:
-        #
-        #   if (not params.bpm or params.bpm <= 0) and bpm and int(bpm) > 0:
-        #       params.cot_bpm = bpm
-        #
-        # so a stated value is never overwritten by the model's estimate. None
-        # and "" are the documented "you choose" values, which is the right
-        # thing to send when the caller stated nothing — an invented tempo
-        # would be worse than the model's own.
-        bpm=bpm if bpm else None,
-        keyscale=keyscale or "",
-        timesignature=timesignature or "",
-        # The 5 Hz LM is what turns a backing track into singing.
-        thinking=not instrumental,
-        # Off, both of them: these let the LM rewrite the caption and the lyric
-        # sheet, and the caption and the lyric sheet are the user's.
-        use_cot_caption=False,
-        use_cot_lyrics=False,
-        # The language was stated explicitly; nothing should re-detect it.
-        use_cot_language=False,
-    )
+        bpm=bpm,
+        keyscale=keyscale,
+        timesignature=timesignature,
+    ))
     # A stated seed makes the generation reproducible; -1 keeps ACE-Step's own
     # behaviour of drawing one. `use_random_seed` has to follow it, or the
     # config would draw over the seed the params carry.
@@ -342,7 +328,11 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
                 if isinstance(row, (list, tuple)) and len(row) >= 3
             ]
             pitch_started = time.perf_counter()
-            corrected, report = vocal_pitch.process_song(mono, sample_rate, targets)
+            # The requested tempo goes with it: the plan's note times were laid
+            # out on that tempo, so it is what the measured tempo has to be
+            # checked against before any correction is allowed.
+            corrected, report = vocal_pitch.process_song(
+                mono, sample_rate, targets, requested_bpm=params.bpm)
             pitch_report = {
                 "ran": True,
                 "seconds": round(time.perf_counter() - pitch_started, 3),
@@ -362,6 +352,14 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
                 # song — which the caller needs to be told, not spared.
                 "separator": report.separator,
                 "trust": report.trust,
+                "tempo_verdict": report.tempo_verdict,
+                "measured_bpm": report.measured_bpm,
+                "requested_bpm": report.requested_bpm,
+                "tempo_ratio": report.tempo_ratio,
+                "tempo_local_drift": report.tempo_local_drift,
+                "authorization": report.authorization,
+                "authorization_reasons": report.authorization_reasons,
+                "phrase_alignments": report.phrase_alignments,
                 "trust_reasons": report.trust_reasons,
                 "time_offset_seconds": report.time_offset_seconds,
                 "planned_notes": report.planned_notes,
