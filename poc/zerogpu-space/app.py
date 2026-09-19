@@ -360,8 +360,17 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
                 # is not something this stage can fix, and a run with many of
                 # them is a run whose plan and performance disagree about the
                 # song — which the caller needs to be told, not spared.
-                "octave_errors": report.octave_errors,
-                "beyond_correction": report.beyond_correction,
+                "separator": report.separator,
+                "planned_notes": report.planned_notes,
+                "planned_notes_measured": report.planned_notes_measured,
+                "measurement_coverage": round(report.measurement_coverage, 3),
+                "octave_errors_before": report.octave_errors,
+                "octave_errors_after": report.octave_errors_after,
+                "notes_reverted": report.notes_reverted,
+                "large_corrections": report.large_corrections,
+                "implausible": report.implausible,
+                "phrases_reanchored": report.phrases_reanchored,
+                "stage_seconds": report.stage_seconds,
                 "unmatched_sung": report.unmatched_sung,
                 "unmatched_planned": report.unmatched_planned,
                 "phrases_measured": report.phrases_measured,

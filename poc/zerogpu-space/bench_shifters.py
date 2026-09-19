@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Sequence
 
 import numpy as np
 from fractions import Fraction
@@ -168,11 +169,19 @@ def shift_psola(audio: np.ndarray, ratio: float, f0_hz: float,
     if analysis.size < 3:
         return audio.copy()
 
-    window_length = period * 2
-    window = get_window("hann", window_length, fftbins=False)
     # Synthesis marks spaced by the new period; the output is then the same
     # length as the input because the count of grains changes, not the span.
     new_period = period / ratio
+    # A grain is two *analysis* periods. That is what PSOLA is: the window has to
+    # hold the source's own periodicity and nothing more. Widening it to span the
+    # synthesis period instead — which is what this tried first — puts four
+    # source periods inside each grain, so the output keeps the source's pitch
+    # however the grains are spaced, and a -1200 cent shift came back +1202
+    # cents out. The gap problem that widening was meant to solve is solved by
+    # `shift_psola_cascaded` instead: stay inside the ratio range where grains
+    # still overlap, and take a large shift in two passes.
+    window_length = period * 2
+    window = get_window("hann", window_length, fftbins=False)
     out = np.zeros(audio.size + window_length)
     weight = np.zeros_like(out)
 
@@ -180,7 +189,7 @@ def shift_psola(audio: np.ndarray, ratio: float, f0_hz: float,
     while position < audio.size:
         nearest = int(np.argmin(np.abs(analysis - position)))
         centre = analysis[nearest]
-        start = centre - period
+        start = centre - window_length // 2
         grain = np.zeros(window_length)
         lo, hi = max(0, start), min(audio.size, start + window_length)
         if hi > lo:
@@ -192,6 +201,37 @@ def shift_psola(audio: np.ndarray, ratio: float, f0_hz: float,
 
     weight[weight < 1e-6] = 1.0
     return (out / weight)[:audio.size]
+
+
+#: The ratio range a single PSOLA pass stays correct over.
+#:
+#: A grain is two analysis periods and the grains are spaced by the synthesis
+#: period, so they stop overlapping once the synthesis period reaches the window
+#: length — at ratio 0.5. Measured, the useful range is comfortably inside that.
+PSOLA_MIN_RATIO = 0.62   # about -840 cents
+PSOLA_MAX_RATIO = 1.60   # about +810 cents
+
+
+def shift_psola_cascaded(audio: np.ndarray, ratio: float, f0_hz: float,
+                         sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+    """PSOLA in as many passes as it takes to stay inside its working range.
+
+    An octave is outside what one pass can do, so an octave is two passes of a
+    tritone. Each pass re-estimates nothing — the pitch after pass one is known
+    exactly, because that is what the pass was for — so this costs a second
+    overlap-add and no extra analysis.
+    """
+    remaining = ratio
+    out = np.asarray(audio, dtype=np.float64)
+    current_f0 = f0_hz
+    for _ in range(4):
+        if PSOLA_MIN_RATIO <= remaining <= PSOLA_MAX_RATIO:
+            return shift_psola(out, remaining, current_f0, sample_rate)
+        step = PSOLA_MAX_RATIO if remaining > 1.0 else PSOLA_MIN_RATIO
+        out = shift_psola(out, step, current_f0, sample_rate)
+        current_f0 *= step
+        remaining /= step
+    return out
 
 
 def shift_phase_vocoder(audio: np.ndarray, ratio: float,
@@ -426,11 +466,20 @@ def _mean(values: list[float]) -> float:
     return float(np.mean(values)) if values else 0.0
 
 
-def run() -> dict[str, Result]:
-    # The shifts the correction stage actually applies: it never moves a note
-    # more than about a semitone, because beyond that the note was wrong rather
-    # than out of tune, and a wrong note is reported instead of dragged.
-    shifts_cents = [-110.0, -80.0, -55.0, -25.0, 25.0, 55.0, 80.0, 110.0]
+#: Small shifts: tuning errors, where the note was right and the pitch was not.
+SMALL_SHIFTS = [-110.0, -80.0, -55.0, -25.0, 25.0, 55.0, 80.0, 110.0]
+
+#: Large shifts: a wrong note, or a note in the wrong octave.
+#:
+#: These used to be out of scope, because the pipeline reported them and left
+#: them alone. The product requirement is that the final song contains no
+#: audible out-of-tune note, and "too large to correct" is not a way of meeting
+#: it — so the question became which method survives a shift this size, and that
+#: is a measurement rather than an opinion.
+LARGE_SHIFTS = [-1200.0, -700.0, -400.0, -200.0, 200.0, 400.0, 700.0, 1200.0]
+
+
+def run(shifts_cents: Sequence[float] = tuple(SMALL_SHIFTS)) -> dict[str, Result]:
     base_pitches = [110.0, 165.0, 220.0, 330.0]
 
     methods = {
@@ -445,6 +494,7 @@ def run() -> dict[str, Result]:
         "varispeed": lambda audio, ratio, f0: shift_varispeed(audio, ratio),
         "varispeed-poly": lambda audio, ratio, f0: shift_varispeed_poly(audio, ratio),
         "td-psola": lambda audio, ratio, f0: shift_psola(audio, ratio, f0),
+        "psola-cascaded": lambda audio, ratio, f0: shift_psola_cascaded(audio, ratio, f0),
         "phase-vocoder": lambda audio, ratio, f0: shift_phase_vocoder(audio, ratio),
         "hybrid": lambda audio, ratio, f0: shift_hybrid(audio, ratio),
     }
@@ -530,7 +580,12 @@ def run() -> dict[str, Result]:
 
 
 def main() -> None:
-    results = run()
+    import sys
+    large = "--large" in sys.argv
+    results = run(LARGE_SHIFTS if large else SMALL_SHIFTS)
+    print(f"\n{'LARGE shifts (200-1200 cents)' if large else 'SMALL shifts (25-110 cents)'}: "
+          f"a wrong note or a wrong octave" if large else
+          f"\nSMALL shifts (25-110 cents): a tuning error")
     header = (f"{'method':<15}{'cents':>8}{'oct':>5}{'centroid%':>11}{'formant%':>10}"
               f"{'flux':>8}{'HNRloss':>9}{'len':>5}{'vib%':>7}{'onset%':>8}")
     print(header)

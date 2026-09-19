@@ -24,7 +24,8 @@ import numpy as np
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
 from vocal_pitch import (  # noqa: E402
-    AUDIBLE_ERROR_CENTS, MAX_CORRECTION_CENTS, PHRASE_GAP_SECONDS,
+    AUDIBLE_ERROR_CENTS, CORRECTION_METHOD_SPLIT_CENTS, IMPLAUSIBLE_DEVIATION_CENTS,
+    PHRASE_GAP_SECONDS,
     ROLE_ANCHOR, ROLE_PASSING, ROLE_REST, TargetNote, align, cents_between,
     correct_vocal, detect_f0, group_measured_phrases, group_target_phrases,
     hz_to_midi, midi_to_hz, remix, segment_notes,
@@ -403,26 +404,168 @@ _, rest_report = correct_vocal(rest_only, SR, [TargetNote(0.0, 0.8, 0, ROLE_REST
 check("a rest is never a correction target", rest_report.notes_corrected == 0,
       rest_report.unavailable or f"{rest_report.notes_corrected} corrected")
 
-print("\n=== a wrong octave is reported, never dragged ===")
-# The review's §5 and the honest limit of this stage. A note sung an octave low
-# is the right note in the wrong place; a 1200-cent shift would be a bigger
-# edit than the error, and this pipeline cannot make ACE-Step sing differently.
-octave_low = voice(midi_to_hz(57 - 12), 0.9)
-_, octave_report = correct_vocal(octave_low, SR, [TargetNote(0.0, 0.9, 57, ROLE_ANCHOR, 0)])
-check("an octave error is counted", octave_report.octave_errors >= 1,
+print("\n=== a single note out of its phrase's register is moved back ===")
+# The product requirement is a finished song with no audible out-of-tune note,
+# so "too large to correct" cannot become "left incorrect". One note an octave
+# below a line that is otherwise in register is a real error, and it is moved.
+octave_plan = [TargetNote(index * 0.5, index * 0.5 + 0.45, 57 + (index % 3), ROLE_ANCHOR, 0)
+               for index in range(6)]
+octave_song = []
+for index, target in enumerate(octave_plan):
+    # Note 2 is sung an octave low. Everything else is in register and in tune.
+    sung = target.midi - 12 if index == 2 else target.midi
+    octave_song.append(voice(midi_to_hz(sung), 0.45))
+    octave_song.append(silence(0.05))
+octave_out, octave_report = correct_vocal(np.concatenate(octave_song), SR, octave_plan)
+check("the octave error is counted", octave_report.octave_errors >= 1,
       f"{octave_report.octave_errors} reported")
-check("and is not corrected", octave_report.notes_corrected == 0,
-      f"{octave_report.notes_corrected} corrected")
-check("and is not counted as in tune",
-      octave_report.anchors_within_tolerance_before == 0,
-      f"{octave_report.anchors_within_tolerance_before} called in tune")
+check("and it is corrected, not left in the song", octave_report.notes_corrected >= 1,
+      f"{octave_report.notes_corrected} corrected; "
+      + "; ".join(octave_report.decisions[:3]))
+after_track = segment_notes(detect_f0(octave_out, SR))
+# Note 2 of the plan starts at 2 x 0.5 = 1.0 seconds and runs to 1.45. Selecting
+# 1.4 to 1.9 — which this did first — picks note 3 instead, whose target is a
+# different pitch, and the test then reported the pipeline 200 cents out when it
+# was the window that was wrong.
+in_register = [note for note in after_track
+               if 0.9 < note.start_seconds < 1.4]
+if in_register:
+    moved = cents_between(in_register[0].median_hz, midi_to_hz(octave_plan[2].midi))
+    check("and it lands on the planned note", abs(moved) < 60.0,
+          f"{in_register[0].median_hz:.1f} Hz, {moved:+.0f} cents from the target")
+else:
+    check("and it lands on the planned note", False, "the corrected note was not found")
 
-print("\n=== a note too far out to be a tuning error is reported, not moved ===")
+print("\n=== a whole phrase an octave out is a register, not eleven errors ===")
+# The musical-context half of the same requirement. The target melody picks the
+# octave nearest a section's centre, which is a preference; a line sung entirely
+# an octave away is the singer's register, consonant with the same harmony. The
+# plan moves, and no audio is touched.
+low_plan = [TargetNote(index * 0.5, index * 0.5 + 0.45, 57 + (index % 3), ROLE_ANCHOR, 0)
+            for index in range(6)]
+low_song = np.concatenate([
+    np.concatenate([voice(midi_to_hz(target.midi - 12), 0.45), silence(0.05)])
+    for target in low_plan])
+low_out, low_report = correct_vocal(low_song, SR, low_plan)
+check("no note is dragged an octave", low_report.notes_corrected == 0,
+      f"{low_report.notes_corrected} corrected")
+check("and the phrase is not reported as out of tune",
+      low_report.octave_errors == 0,
+      f"{low_report.octave_errors} octave errors after re-anchoring")
+check("and the audio comes back untouched",
+      np.array_equal(low_out, low_song))
+# Re-anchoring builds transposed copies of the phrase's targets. Anything that
+# identified a matched target by object identity would then see none of them.
+check("and the plan is still reported as matched, not lost",
+      low_report.unmatched_planned == 0 and low_report.phrases_matched >= 1,
+      f"{low_report.unmatched_planned} planned notes unmatched, "
+      f"{low_report.phrases_matched} phrases matched")
+
+print("\n=== a wrong note, not a mistuned one, is still corrected ===")
 far = voice(midi_to_hz(57) * 2 ** (250 / 1200), 0.9)
 _, far_report = correct_vocal(far, SR, [TargetNote(0.0, 0.9, 57, ROLE_ANCHOR, 0)])
-check(f"beyond {MAX_CORRECTION_CENTS:.0f} cents is not corrected",
-      far_report.notes_corrected == 0 and far_report.beyond_correction >= 1,
-      f"{far_report.notes_corrected} corrected, {far_report.beyond_correction} flagged")
+check(f"beyond {CORRECTION_METHOD_SPLIT_CENTS:.0f} cents is corrected, not abandoned",
+      far_report.notes_corrected >= 1 and far_report.large_corrections >= 1,
+      f"{far_report.notes_corrected} corrected, {far_report.large_corrections} large")
+
+print("\n=== a deviation too large to be singing at all is an alignment failure ===")
+# Both pitches have to be inside the detector's range or there is no measured
+# note to judge at all: MIDI 87 is 3520 Hz, well above F0_MAX_HZ, and the first
+# version of this test passed only because nothing was detected.
+absurd = voice(midi_to_hz(66), 0.9)
+_, absurd_report = correct_vocal(absurd, SR, [TargetNote(0.0, 0.9, 40, ROLE_ANCHOR, 0)])
+check(f"beyond {IMPLAUSIBLE_DEVIATION_CENTS:.0f} cents is named as a match failure",
+      absurd_report.implausible >= 1 and absurd_report.notes_corrected == 0,
+      f"{absurd_report.implausible} flagged, {absurd_report.notes_corrected} corrected")
+
+print("\n=== a correction that does not land is undone ===")
+# The do-no-harm rule. The aggregate check at the end of `correct_vocal` is not
+# enough on its own: a run where the totals improve can still contain one note
+# that was destroyed, and one destroyed note is one audible wrong note.
+harmless = voice(midi_to_hz(57), 0.9)
+_, harmless_report = correct_vocal(harmless, SR, [TargetNote(0.0, 0.9, 57, ROLE_ANCHOR, 0)])
+check("an in-tune note is never touched, so nothing to revert",
+      harmless_report.notes_corrected == 0 and harmless_report.notes_reverted == 0,
+      f"{harmless_report.notes_corrected} corrected, {harmless_report.notes_reverted} reverted")
+
+print("\n=== no note leaves further from its target than it arrived ===")
+# The property the requirement actually turns on, asserted per note rather than
+# on an average: correcting a song must not make any single note worse.
+mixed_plan = [TargetNote(index * 0.5, index * 0.5 + 0.45, 57 + (index % 4), ROLE_ANCHOR, 0)
+              for index in range(8)]
+offsets = [0.0, 45.0, -5.0, 70.0, 0.0, -60.0, 8.0, 250.0]
+mixed_song = np.concatenate([
+    np.concatenate([voice(midi_to_hz(target.midi) * 2 ** (offset / 1200), 0.45), silence(0.05)])
+    for target, offset in zip(mixed_plan, offsets)])
+mixed_out, mixed_report = correct_vocal(mixed_song, SR, mixed_plan)
+
+worse = []
+for target, offset in zip(mixed_plan, offsets):
+    start = int(round(target.start_seconds * SR))
+    end = int(round(target.end_seconds * SR))
+    before_hz = float(np.median(
+        detect_f0(mixed_song[start:end], SR).f0[detect_f0(mixed_song[start:end], SR).voiced]
+    )) if detect_f0(mixed_song[start:end], SR).voiced.any() else 0.0
+    after = detect_f0(mixed_out[start:end], SR)
+    after_hz = float(np.median(after.f0[after.voiced])) if after.voiced.any() else 0.0
+    if before_hz <= 0 or after_hz <= 0:
+        continue
+    before_err = abs(cents_between(before_hz, midi_to_hz(target.midi)))
+    after_err = abs(cents_between(after_hz, midi_to_hz(target.midi)))
+    # Five cents of slack: the detector's own resolution, not a softened rule.
+    if after_err > before_err + 5.0:
+        worse.append(f"{target.start_seconds:.2f}s {before_err:.0f} -> {after_err:.0f} cents")
+check("every note is at least as close to its target afterwards", not worse,
+      "; ".join(worse) if worse else
+      f"{mixed_report.notes_corrected} corrected, {mixed_report.notes_reverted} reverted")
+
+print("\n=== the report says how much of the melody it actually measured ===")
+# A song where half the planned notes were never found is half unmeasured, not
+# half fine, and the two must not read the same.
+partial_plan = [TargetNote(index * 0.5, index * 0.5 + 0.45, 57, ROLE_ANCHOR, 0)
+                for index in range(6)]
+# Only the first three are sung; the rest is silence.
+partial_song = np.concatenate(
+    [np.concatenate([voice(midi_to_hz(57), 0.45), silence(0.05)]) for _ in range(3)]
+    + [silence(1.5)])
+_, partial_report = correct_vocal(partial_song, SR, partial_plan)
+check("coverage is reported, not assumed",
+      0.0 < partial_report.measurement_coverage < 1.0,
+      f"{partial_report.planned_notes_measured} of {partial_report.planned_notes} planned notes "
+      f"measured ({partial_report.measurement_coverage * 100:.0f}%)")
+
+print("\n=== the fallback separator runs where Demucs cannot ===")
+# Not as good as Demucs and never claimed to be. What it buys is that the
+# correction stage runs at all when torchaudio is absent, and that this pipeline
+# can be exercised end to end in an environment with no GPU.
+import vocal_pitch as _vp  # noqa: E402
+
+band = 0.35 * np.sin(2 * np.pi * 110.0 * np.arange(int(3 * SR)) / SR)
+band += 0.25 * np.sin(2 * np.pi * 55.0 * np.arange(int(3 * SR)) / SR)
+lead = np.concatenate([voice(midi_to_hz(64), 1.4), silence(0.2), voice(midi_to_hz(62), 1.4)])
+length = min(band.size, lead.size)
+song_mix = band[:length] + lead[:length]
+isolated, rest = _vp.separate_fallback(song_mix, SR)
+check("it returns a vocal", isolated.size == length and np.any(np.abs(isolated) > 1e-4),
+      f"{isolated.size} samples")
+check("and the two stems sum back to the mix",
+      np.allclose(isolated + rest, song_mix, atol=1e-9))
+# The claim that matters is not "more voiced" — the pad is pitched too, so the
+# mix reads as *more* voiced than the isolated stem. It is that the pitch found
+# in the isolated stem is the lead's and not the accompaniment's.
+mix_notes = segment_notes(detect_f0(song_mix, SR))
+isolated_notes = segment_notes(detect_f0(isolated, SR))
+lead_hz = midi_to_hz(64)
+
+
+def _closest(notes, hz):
+    return min((abs(cents_between(note.median_hz, hz)) for note in notes), default=9999.0)
+
+
+check("and what it isolates is the lead, not the accompaniment",
+      _closest(isolated_notes, lead_hz) < 100.0,
+      f"nearest note to the lead: {_closest(isolated_notes, lead_hz):.0f} cents "
+      f"in the isolated stem, {_closest(mix_notes, lead_hz):.0f} cents in the mix")
 
 print("\n=== the synthetic song: a whole performance, end to end ===")
 # The review's §15. One signal carrying every case the pipeline has to handle

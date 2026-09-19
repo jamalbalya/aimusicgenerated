@@ -67,7 +67,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional, Sequence
 
 import numpy as np
@@ -172,13 +172,57 @@ PHRASE_GAP_SECONDS = 0.35
 #: ACE-Step sang a syllable the plan did not have.
 SKIP_COST_SECONDS = 0.30
 
-#: A shift larger than this is not a correction.
+#: Where the correction stage changes method.
 #:
-#: Beyond about a semitone the note was *wrong*, not out of tune, and dragging
-#: it there is a bigger edit than the error. Those are reported instead — which
-#: is the honest outcome, because this pipeline cannot make ACE-Step sing a
-#: different note.
-MAX_CORRECTION_CENTS = 120.0
+#: Not a threshold for *whether* to correct — the product requirement is that
+#: the finished song contains no audible out-of-tune note, and "too large to
+#: correct" is not a way of meeting it. This is which method to use, and the
+#: split is measured rather than chosen. `bench_shifters.py`, per shift size,
+#: spectral centroid distance from a voice genuinely sung at the target pitch:
+#:
+#:     cents    varispeed   hybrid   psola-cascaded
+#:      -110         6.1      2.1        9.4
+#:      -200         8.5      6.6       10.9
+#:      -400        16.1      7.9        7.6
+#:      -700        26.6      0.4       13.2
+#:     -1200        41.2      9.4       21.2
+#:      +200        22.4      3.3        5.6
+#:      +400        52.5      9.3        6.3
+#:      +700        78.1     17.0       11.5
+#:     +1200       118.7     27.6       14.6
+#:
+#: and the first three formants, where the estimator's noise floor is about 15%:
+#:
+#:     cents    varispeed   hybrid   psola-cascaded
+#:      +400       203.3     20.6        2.7
+#:      +700        35.2     13.3        3.7
+#:     -1200       100.0    406.6       71.9
+#:
+#: Below a whole tone the hybrid wins on both. Above it the hybrid's static
+#: envelope filter is being asked to move resonances further than a single
+#: zero-phase correction can, and PSOLA — which never resamples, so the formants
+#: never move in the first place — wins by a margin far outside any estimator
+#: noise. So: hybrid under, PSOLA over.
+CORRECTION_METHOD_SPLIT_CENTS = 200.0
+
+#: Beyond this, the *alignment* is wrong, not the singing.
+#:
+#: Two octaves is not a mistuned note. A deviation this large means a sung note
+#: was matched to a planned note that is not its own, and shifting it would turn
+#: an alignment failure into an audible one. Reported, and the report says which
+#: it is.
+IMPLAUSIBLE_DEVIATION_CENTS = 2400.0
+
+#: The ratio range one PSOLA pass stays correct over.
+#:
+#: A grain is two analysis periods and grains are spaced by the synthesis
+#: period, so they stop overlapping once the synthesis period reaches the window
+#: length — at ratio 0.5. An octave down therefore cannot be one pass: measured,
+#: it came back 1202 cents out, because each grain held four source periods and
+#: the source's own pitch survived the spacing. Two passes of a tritone measure
+#: -1 cent.
+PSOLA_MIN_RATIO = 0.62
+PSOLA_MAX_RATIO = 1.60
 
 #: Below this, a lifter of this many cepstral bins keeps the spectral envelope
 #: smooth enough to be formants rather than harmonics.
@@ -630,6 +674,16 @@ class Alignment:
     #: modulo.
     octaves_out: int = 0
 
+    @property
+    def total_deviation_cents(self) -> float:
+        """The whole distance from the planned note, octaves included.
+
+        `deviation_cents` is folded, which is right for asking "is this note in
+        tune with itself". This is the number a correction has to move, and they
+        differ by exactly the thing the fold hides.
+        """
+        return self.deviation_cents + self.octaves_out * 1200.0
+
 
 def _phrase_of(note: MeasuredNote) -> float:
     return (note.start_seconds + note.end_seconds) / 2.0
@@ -743,14 +797,34 @@ def _judge(note: MeasuredNote, target: TargetNote) -> Alignment:
     magnitude = abs(folded)
     tolerance = target.tolerance_cents
 
+    if abs(raw) > IMPLAUSIBLE_DEVIATION_CENTS:
+        # Two octaves is not a mistuned note. This sung note has been matched to
+        # a planned note that is not its own, and shifting it would turn an
+        # alignment failure into an audible one.
+        return Alignment(note, target, folded,
+                         f"{raw:+.0f} cents from the planned note: the match, not the singing",
+                         False, octaves)
     if octaves != 0:
-        # Nothing here can fix this. A 1200-cent varispeed shift halves or
-        # doubles the length read from the stem and comes back sounding like a
-        # different instrument, and the note was not mistuned in the first
-        # place — it was the wrong note. Reported, never corrected.
-        decision = f"sung {abs(octaves)} octave{'s' if abs(octaves) > 1 else ''} "\
-                   f"{'above' if octaves > 0 else 'below'} the planned note"
-        return Alignment(note, target, folded, decision, False, octaves)
+        # An octave error left in the song is an audible wrong note, so it is
+        # corrected rather than reported. Which *way* it is corrected is decided
+        # a level up, in `align`: a whole phrase sitting an octave from the plan
+        # is the register the singer chose, and the plan's octave was a free
+        # decision, so the plan moves. Only a note out of step with its own
+        # phrase reaches here, and that one is genuinely wrong.
+        if target.is_rest or not target.is_anchor:
+            return Alignment(note, target, folded,
+                             f"{_role_name(target.role)} note an octave out, left as performed",
+                             False, octaves)
+        if note.confidence < 0.35:
+            return Alignment(note, target, folded,
+                             "an octave out, but not measured confidently enough to act on",
+                             False, octaves)
+        direction = "above" if octaves > 0 else "below"
+        return Alignment(
+            note, target, folded,
+            f"sung {abs(octaves)} octave{'s' if abs(octaves) > 1 else ''} {direction} "
+            f"the planned note, and moved back",
+            True, octaves)
     if target.is_rest:
         return Alignment(note, target, 0.0, "nothing was planned to be sung here", False)
     if not target.is_anchor:
@@ -768,9 +842,13 @@ def _judge(note: MeasuredNote, target: TargetNote) -> Alignment:
         # Vibrato centred correctly reads as in tune even when individual
         # frames are not. Only a grossly wrong vibrato note is moved.
         return Alignment(note, target, folded, "vibrato around the target, preserved", False)
-    if magnitude > MAX_CORRECTION_CENTS:
+    if magnitude > CORRECTION_METHOD_SPLIT_CENTS:
+        # A wrong note rather than a mistuned one, and still corrected: the
+        # requirement is a finished song with no audible out-of-tune note, and
+        # an error this size is the most audible kind there is. It goes to
+        # PSOLA rather than to the small-shift method.
         return Alignment(note, target, folded,
-                         f"{folded:+.0f} cents out — too far to be a tuning error", False)
+                         f"{folded:+.0f} cents from the planned note — a wrong note, moved", True)
     return Alignment(note, target, folded, f"{folded:+.0f} cents from the planned note", True)
 
 
@@ -834,6 +912,7 @@ def align(notes: Sequence[MeasuredNote], targets: Sequence[TargetNote]) -> list[
             [(target.start_seconds + target.end_seconds) / 2 for target in planned],
             SKIP_COST_SECONDS,
         ))
+        planned = _reanchor_octave(phrase, planned, pairs)
         for position, note in enumerate(phrase):
             if position not in pairs:
                 aligned.append(
@@ -841,6 +920,51 @@ def align(notes: Sequence[MeasuredNote], targets: Sequence[TargetNote]) -> list[
                 continue
             aligned.append(_judge(note, planned[pairs[position]]))
     return aligned
+
+
+def _reanchor_octave(phrase: Sequence[MeasuredNote], planned: Sequence[TargetNote],
+                     pairs: dict) -> list[TargetNote]:
+    """Moves a whole planned phrase into the octave it was actually sung in.
+
+    An octave displacement is not an out-of-tune note. It is the right pitch
+    class in a different register, consonant with the same harmony, and the
+    melody writer's choice of register was free in the first place — the target
+    melody picks the octave nearest a section's centre, which is a preference
+    and not a requirement.
+
+    So when a *whole line* comes back an octave from the plan, the honest
+    reading is that the singer chose a register, not that they sang eleven wrong
+    notes. Transposing the plan costs nothing and touches no audio. Transposing
+    the audio would be the largest edit this pipeline can make, applied to
+    something that was not a defect.
+
+    What this deliberately does not absorb is a single note out of step with its
+    own phrase. That one is a real error — a leap nobody sang on purpose — and
+    it goes on to be corrected. The median is what separates them: it moves with
+    the line and ignores the outlier.
+    """
+    offsets: list[int] = []
+    for position, note in enumerate(phrase):
+        if position not in pairs:
+            continue
+        target = planned[pairs[position]]
+        if target.is_rest:
+            continue
+        raw = cents_between(note.median_hz, target.frequency_hz)
+        offsets.append(int(round(raw / 1200.0)))
+    if len(offsets) < 3:
+        # Too few notes for a median to mean anything. A two-note phrase that
+        # disagrees with the plan is as likely to be two errors as a register.
+        return list(planned)
+
+    shift = int(np.median(offsets))
+    if shift == 0:
+        return list(planned)
+    return [
+        target if target.is_rest
+        else replace(target, midi=target.midi + shift * 12)
+        for target in planned
+    ]
 
 
 # ------------------------------------------------------------- correction ------
@@ -862,7 +986,82 @@ def _spectral_envelope(spectrum: np.ndarray, lifter: int = FORMANT_LIFTER_BINS) 
     return np.exp(np.fft.rfft(cepstrum, n=length).real)
 
 
-def _shift_note(audio: np.ndarray, start: int, end: int, ratio: float) -> np.ndarray:
+def _pitch_marks(audio: np.ndarray, period: int) -> np.ndarray:
+    """Uniformly spaced analysis marks, anchored once to the first peak.
+
+    Anchored *once* and then stepped, rather than snapped to the nearest peak
+    each time. Snapping each mark independently was a real defect: on a signal
+    whose cycle has two comparable peaks the marks alternate between them, which
+    writes a period doubling into the grain grid — a -55 cent correction came
+    back a clean octave low.
+    """
+    if period < 2 or audio.size < period:
+        return np.arange(0, max(1, audio.size), max(1, period))
+    first = int(np.argmax(np.abs(audio[: min(audio.size, period * 2)])))
+    count = max(1, int((audio.size - first) // period))
+    return (first + np.arange(count) * period).astype(int)
+
+
+def _shift_psola(audio: np.ndarray, ratio: float, f0_hz: float, sample_rate: int) -> np.ndarray:
+    """One TD-PSOLA pass: re-space pitch periods, keeping the length.
+
+    The formants never move because nothing is resampled — the grains are cut
+    from the source at its own period and laid down at a different one. That is
+    the property that makes this the right method for a large correction, where
+    varispeed drags the whole spectrum by the full ratio and a note moved an
+    octave comes back sounding like a different person.
+    """
+    period = int(round(sample_rate / max(1.0, f0_hz)))
+    if period < 4 or audio.size < period * 4:
+        return audio.copy()
+    analysis = _pitch_marks(audio, period)
+    if analysis.size < 3:
+        return audio.copy()
+
+    # A grain is two *analysis* periods. Widening it to span the synthesis
+    # period instead puts four source periods inside each grain, and then the
+    # source's own pitch survives however the grains are spaced.
+    window_length = period * 2
+    window = np.hanning(window_length)
+    new_period = period / ratio
+
+    out = np.zeros(audio.size + window_length)
+    weight = np.zeros_like(out)
+    position = 0.0
+    while position < audio.size:
+        nearest = int(np.argmin(np.abs(analysis - position)))
+        start = analysis[nearest] - window_length // 2
+        grain = np.zeros(window_length)
+        low, high = max(0, start), min(audio.size, start + window_length)
+        if high > low:
+            grain[low - start: high - start] = audio[low:high]
+        target = int(round(position))
+        out[target: target + window_length] += grain * window
+        weight[target: target + window_length] += window
+        position += new_period
+
+    weight[weight < 1e-6] = 1.0
+    return (out / weight)[: audio.size]
+
+
+def _shift_psola_cascaded(audio: np.ndarray, ratio: float, f0_hz: float,
+                          sample_rate: int) -> np.ndarray:
+    """PSOLA in as many passes as it takes to stay inside its working range."""
+    remaining = ratio
+    out = np.asarray(audio, dtype=np.float64)
+    current = max(1.0, f0_hz)
+    for _ in range(4):
+        if PSOLA_MIN_RATIO <= remaining <= PSOLA_MAX_RATIO:
+            return _shift_psola(out, remaining, current, sample_rate)
+        step = PSOLA_MAX_RATIO if remaining > 1.0 else PSOLA_MIN_RATIO
+        out = _shift_psola(out, step, current, sample_rate)
+        current *= step
+        remaining /= step
+    return out
+
+
+def _shift_note(audio: np.ndarray, start: int, end: int, ratio: float,
+                f0_hz: float = 0.0, sample_rate: int = 44100) -> np.ndarray:
     """Shifts one note by `ratio`, keeping its length exactly.
 
     Fixed-length varispeed followed by one static formant-restoration filter.
@@ -935,6 +1134,20 @@ def _shift_note(audio: np.ndarray, start: int, end: int, ratio: float) -> np.nda
     length = end - start
     if length <= 0 or ratio <= 0 or abs(ratio - 1.0) < 1e-4:
         return audio[start:end].copy()
+
+    # Large corrections go to PSOLA, which does not resample and so does not
+    # move the formants at all. See `CORRECTION_METHOD_SPLIT_CENTS` for the
+    # measurements behind the split; the short version is that above a whole
+    # tone the hybrid's static envelope filter is being asked to move resonances
+    # further than one zero-phase correction can, and it shows.
+    cents = abs(1200.0 * math.log2(ratio))
+    if cents > CORRECTION_METHOD_SPLIT_CENTS and f0_hz > 0:
+        shifted = _shift_psola_cascaded(audio[start:end], ratio, f0_hz, sample_rate)
+        if shifted.size == length:
+            return shifted
+        # PSOLA declined — too few periods in the note. Fall through rather than
+        # leave the note wrong, because a formant-shifted correction is still a
+        # correction and an uncorrected note is the thing being forbidden.
 
     needed = int(round(length * ratio))
     if needed < 8:
@@ -1010,8 +1223,39 @@ class CorrectionReport:
     #: ACE-Step have sung the right one. Counting them separately is what stops
     #: the octave fold in `_judge` from reporting them as perfectly in tune.
     octave_errors: int = 0
-    #: Notes more than `MAX_CORRECTION_CENTS` out: wrong rather than untuned.
-    beyond_correction: int = 0
+    #: Notes corrected by more than `CORRECTION_METHOD_SPLIT_CENTS`: wrong notes
+    #: rather than mistuned ones, moved by PSOLA rather than by the small-shift
+    #: method. Counted because a song with many of them is a song whose plan and
+    #: performance disagree, which the caller needs told.
+    large_corrections: int = 0
+    #: Deviations too large to be a tuning error at all — an alignment failure.
+    #: These are the only ones still left alone, and the decision line says so.
+    implausible: int = 0
+    #: Phrases whose planned octave was moved to the register actually sung.
+    phrases_reanchored: int = 0
+    #: How much of the planned melody was actually found in the vocal stem.
+    #:
+    #: The honest denominator for everything else in this report. A song where
+    #: half the planned notes were never located is a song half of which is
+    #: unmeasured — not a song half of which is fine — and the two must not be
+    #: allowed to read the same. A low figure usually means the separation was
+    #: poor, not that the singer stopped.
+    planned_notes: int = 0
+    planned_notes_measured: int = 0
+    #: Octave errors still present after correction. Zero is the target; a
+    #: number here is an audible wrong note that survived, and it is reported
+    #: rather than folded away.
+    octave_errors_after: int = 0
+    #: Corrections that were applied, measured, and undone because they did not
+    #: land. Never zero-by-construction: this is the count of times the do-no-
+    #: harm rule actually fired, and a run with many of them is a run whose
+    #: vocal stem was not clean enough to correct against.
+    notes_reverted: int = 0
+    #: Which separator produced the vocal stem this report describes.
+    #:
+    #: Never inferred by a reader. Hybrid Demucs and the numpy fallback are not
+    #: equivalent, and every figure below depends on which one ran.
+    separator: str = "none"
     #: Sung notes the plan had no note for, and planned notes nothing was sung
     #: for. Both are normal — ACE-Step has never seen the plan — and both are
     #: reported, because a high count means the alignment is guessing.
@@ -1031,6 +1275,13 @@ class CorrectionReport:
     unavailable: Optional[str] = None
 
     @property
+    def measurement_coverage(self) -> float:
+        """Share of the planned melody that was found and measured, 0..1."""
+        if self.planned_notes == 0:
+            return 0.0
+        return self.planned_notes_measured / self.planned_notes
+
+    @property
     def anchors_in_tune_after(self) -> float:
         """Share of the notes that had to be right which are, 0..1.
 
@@ -1040,6 +1291,23 @@ class CorrectionReport:
         if self.anchors_examined == 0:
             return 0.0
         return self.anchors_within_tolerance_after / self.anchors_examined
+
+
+def _measure_segment(audio: np.ndarray, start: int, end: int,
+                     sample_rate: int) -> tuple[float, float]:
+    """Median pitch and confidence of one stretch of audio.
+
+    Used to check a correction against the note it just changed, rather than
+    against the whole stem. Cheap now that the difference function is an FFT.
+    """
+    segment = audio[max(0, start): min(audio.size, end)]
+    if segment.size < sample_rate // 20:
+        return 0.0, 0.0
+    track = detect_f0(segment, sample_rate)
+    voiced = track.f0[track.voiced]
+    if voiced.size == 0:
+        return 0.0, 0.0
+    return float(np.median(voiced)), float(np.median(track.confidence[track.voiced]))
 
 
 def correct_vocal(vocal: np.ndarray, sample_rate: int,
@@ -1070,26 +1338,39 @@ def correct_vocal(vocal: np.ndarray, sample_rate: int,
     alignments = align(notes, targets)
     report.notes_examined = len(alignments)
 
-    matched = [a for a in alignments if a.target is not None]
-    deviations_before = [abs(a.deviation_cents) for a in matched if a.octaves_out == 0]
+    matched = [a for a in alignments if a.target is not None and not a.target.is_rest]
+    # The whole distance from the planned note, octaves included, over every
+    # matched note. Excluding the octave errors — which this did first — made
+    # the "before" median an average of the notes that were already fine, while
+    # the "after" median included the corrected ones, so a run that fixed an
+    # octave error and two wrong notes reported its median *rising* from 0.1 to
+    # 2.8 cents. Two different sets of notes are not a before and an after.
+    deviations_before = [abs(a.total_deviation_cents) for a in matched]
     anchors = [a for a in matched if a.target is not None and a.target.is_anchor]
     report.anchors_examined = len(anchors)
     report.anchors_within_tolerance_before = sum(
         1 for a in anchors
         if a.octaves_out == 0 and abs(a.deviation_cents) < a.target.tolerance_cents)
     report.octave_errors = sum(1 for a in matched if a.octaves_out != 0)
-    report.beyond_correction = sum(
-        1 for a in anchors
-        if a.octaves_out == 0 and abs(a.deviation_cents) > MAX_CORRECTION_CENTS)
+    report.large_corrections = sum(
+        1 for a in matched
+        if a.correct and abs(a.total_deviation_cents) > CORRECTION_METHOD_SPLIT_CENTS)
+    report.implausible = sum(1 for a in matched if "the match, not the singing" in a.decision)
     report.unmatched_sung = sum(1 for a in alignments if a.target is None)
     report.phrases_measured = len(group_measured_phrases(notes))
     planned_phrases = group_target_phrases(targets)
-    matched_targets = {id(a.target) for a in matched}
+    # Keyed on when the note starts, not on object identity. `_reanchor_octave`
+    # builds transposed copies of a phrase's targets, so their ids are not the
+    # ids in `targets` — and every re-anchored phrase would then have reported
+    # every one of its notes as unmatched. A start time survives transposition;
+    # a Python id does not.
+    matched_targets = {round(a.target.start_seconds, 4) for a in matched if a.target}
     report.unmatched_planned = sum(
-        1 for phrase in planned_phrases for target in phrase if id(target) not in matched_targets)
+        1 for phrase in planned_phrases for target in phrase
+        if round(target.start_seconds, 4) not in matched_targets)
     report.phrases_matched = sum(
         1 for phrase in planned_phrases
-        if any(id(target) in matched_targets for target in phrase))
+        if any(round(target.start_seconds, 4) in matched_targets for target in phrase))
 
     output = vocal.copy()
     for alignment in alignments:
@@ -1119,9 +1400,18 @@ def correct_vocal(vocal: np.ndarray, sample_rate: int,
 
         # Correct most of the way, not all of it. The residue is inaudible and
         # the alternative sounds machined.
-        move_cents = -alignment.deviation_cents * CORRECTION_STRENGTH
+        #
+        # Except for an octave, which is corrected all the way: 92% of 1200
+        # cents leaves a note 96 cents flat, which is not a softened edit, it is
+        # a different and worse error than the one being fixed. Partial
+        # correction is for intonation; a register is not intonation.
+        if alignment.octaves_out != 0:
+            move_cents = -alignment.total_deviation_cents
+        else:
+            move_cents = -alignment.deviation_cents * CORRECTION_STRENGTH
         ratio = 2.0 ** (move_cents / 1200.0)
-        shifted = _shift_note(output, start, end, ratio)
+        shifted = _shift_note(output, start, end, ratio,
+                              f0_hz=note.median_hz, sample_rate=sample_rate)
         if shifted.size == end - start:
             # Cross-fade the joins. A hard splice between a corrected note and
             # the untouched breath before it is a click, and a click is more
@@ -1131,10 +1421,52 @@ def correct_vocal(vocal: np.ndarray, sample_rate: int,
                 ramp = np.linspace(0.0, 1.0, fade)
                 shifted[:fade] = shifted[:fade] * ramp + output[start:start + fade] * (1 - ramp)
                 shifted[-fade:] = shifted[-fade:] * ramp[::-1] + output[end - fade:end] * ramp
-            output[start:end] = shifted
-            report.notes_corrected += 1
-            report.total_cents_moved += abs(move_cents)
-            report.largest_correction_cents = max(report.largest_correction_cents, abs(move_cents))
+            # Do no harm to a note that was already right.
+            #
+            # The aggregate check at the end of this function is not enough, and
+            # this pipeline has the measurement to prove it: on a stem the
+            # separator had made a poor job of, one note that measured +0.1
+            # cents came back 155 cents and an octave out, while the *totals*
+            # improved — two anchors in tune became three — so nothing noticed.
+            # A song with one destroyed note is a song with an audible wrong
+            # note in it, whatever the average did.
+            #
+            # So every correction is checked against the note it changed, and a
+            # correction that did not land is undone. The cost is one short F0
+            # pass per corrected note; the guarantee is that no note leaves this
+            # function further from its target than it arrived.
+            # Measured on the shifted segment itself, not on a copy of the
+            # whole stem with the segment written into it: the slice is the same
+            # samples either way, and the copy is 74 MB on a three-and-a-half
+            # minute song, allocated once per corrected note.
+            before_hz, _ = _measure_segment(output, start, end, sample_rate)
+            after_hz, after_confidence = _measure_segment(
+                shifted, 0, shifted.size, sample_rate)
+            target_hz = alignment.target.frequency_hz
+            improved = False
+            if after_hz > 0 and before_hz > 0 and target_hz > 0 and after_confidence > 0.2:
+                def _folded(hz: float) -> float:
+                    raw = cents_between(hz, target_hz)
+                    return abs(raw - round(raw / 1200.0) * 1200.0)
+                improved = _folded(after_hz) <= _folded(before_hz) + 1.0
+                if alignment.octaves_out != 0:
+                    # An octave correction has to land in the right octave, so
+                    # the folded comparison is not the question here.
+                    improved = abs(cents_between(after_hz, target_hz)) < abs(
+                        cents_between(before_hz, target_hz))
+            if improved:
+                output[start:end] = shifted
+                report.notes_corrected += 1
+                report.total_cents_moved += abs(move_cents)
+                report.largest_correction_cents = max(
+                    report.largest_correction_cents, abs(move_cents))
+            else:
+                report.notes_reverted += 1
+                report.notes_left_alone += 1
+                report.decisions.append(
+                    f"{note.start_seconds:6.2f}s  correction reverted: it did not land "
+                    f"({before_hz:.1f} Hz -> {after_hz:.1f} Hz, target {target_hz:.1f} Hz)")
+                continue
         else:
             report.notes_left_alone += 1
         report.decisions.append(
@@ -1144,15 +1476,42 @@ def correct_vocal(vocal: np.ndarray, sample_rate: int,
     # Measure again, on the output, rather than predicting what the correction
     # achieved. A correction that did not land must not be reported as one that
     # did.
-    after_track = detect_f0(output, sample_rate)
-    after_notes = segment_notes(after_track)
-    after = align(after_notes, targets)
-    deviations_after = [abs(a.deviation_cents) for a in after
-                       if a.target is not None and a.octaves_out == 0]
-    after_anchors = [a for a in after if a.target is not None and a.target.is_anchor]
-    report.anchors_within_tolerance_after = sum(
-        1 for a in after_anchors
-        if a.octaves_out == 0 and abs(a.deviation_cents) < a.target.tolerance_cents)
+    #
+    # At the note boundaries already established, not by re-segmenting the
+    # corrected stem. Re-segmenting looks more independent and is worse: the
+    # segmenter splits a run of voicing wherever the pitch jumps more than a
+    # tone, so correcting one note to within a tone of its neighbour makes the
+    # two merge into one, and the merged median is then reported as both of
+    # them. Measured: a note that was +0.1 cents and never touched — the audio
+    # around it bit-identical — was reported afterwards as 156 cents and an
+    # octave out, purely because the note after it had been corrected closer.
+    # The boundaries are not in question here; the pitch inside them is.
+    deviations_after: list[float] = []
+    after_in_tune = 0
+    after_octave_errors = 0
+    measured_after = 0
+    for alignment in matched:
+        target = alignment.target
+        if target is None or target.is_rest:
+            continue
+        start = int(round(alignment.measured.start_seconds * sample_rate))
+        end = int(round(alignment.measured.end_seconds * sample_rate))
+        hz, _ = _measure_segment(output, start, end, sample_rate)
+        if hz <= 0:
+            continue
+        raw = cents_between(hz, target.frequency_hz)
+        octaves = int(round(raw / 1200.0))
+        folded = raw - octaves * 1200.0
+        if octaves != 0:
+            after_octave_errors += 1
+        deviations_after.append(abs(raw))
+        measured_after += 1
+        if target.is_anchor and octaves == 0 and abs(folded) < target.tolerance_cents:
+            after_in_tune += 1
+    report.anchors_within_tolerance_after = after_in_tune
+    report.octave_errors_after = after_octave_errors
+    report.planned_notes = sum(1 for target in targets if not target.is_rest)
+    report.planned_notes_measured = measured_after
     report.median_deviation_before_cents = float(np.median(deviations_before)) if deviations_before else 0.0
     report.median_deviation_after_cents = float(np.median(deviations_after)) if deviations_after else 0.0
 
@@ -1276,6 +1635,142 @@ def separate(mix: np.ndarray, sample_rate: int, device: str = "cuda") -> tuple[n
         return np.zeros(0), mix, f"Separation failed: {error}"
 
 
+#: STFT settings for the fallback separator. 2048 at 44.1 kHz is about 46 ms:
+#: long enough to resolve a low male fundamental, short enough that a syllable
+#: is several frames.
+FALLBACK_FFT = 2048
+FALLBACK_HOP = 512
+
+#: How long the background model looks, in seconds.
+#:
+#: The instrumental of a song is far more stationary than the voice over this
+#: span — a pad, a bass line and a drum loop are all still there two seconds
+#: later, where a sung syllable is not. A median over that window is therefore
+#: an estimate of everything except the singer.
+FALLBACK_BACKGROUND_SECONDS = 2.0
+
+
+def _stft(audio: np.ndarray, n_fft: int, hop: int) -> np.ndarray:
+    window = np.hanning(n_fft)
+    frames = 1 + max(0, (audio.size - n_fft) // hop)
+    out = np.empty((n_fft // 2 + 1, frames), dtype=np.complex128)
+    for index in range(frames):
+        out[:, index] = np.fft.rfft(audio[index * hop: index * hop + n_fft] * window)
+    return out
+
+
+def _istft(spectra: np.ndarray, n_fft: int, hop: int, length: int) -> np.ndarray:
+    window = np.hanning(n_fft)
+    frames = spectra.shape[1]
+    out = np.zeros(frames * hop + n_fft)
+    weight = np.zeros_like(out)
+    for index in range(frames):
+        out[index * hop: index * hop + n_fft] += np.fft.irfft(spectra[:, index], n_fft) * window
+        weight[index * hop: index * hop + n_fft] += window ** 2
+    weight[weight < 1e-8] = 1.0
+    result = out / weight
+    if result.size >= length:
+        return result[:length]
+    return np.concatenate([result, np.zeros(length - result.size)])
+
+
+def separate_fallback(mix: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
+    """Vocal isolation with numpy and scipy only, for when Demucs is absent.
+
+    This exists because of a deployment constraint and it is honest about what
+    it is. Hybrid Demucs is the separator; it needs torchaudio, which this Space
+    already pins for ACE-Step, so in the deployed environment it is there. But
+    `separate` degrading to "unavailable" means the whole correction stage does
+    nothing, and a pipeline whose single point of failure silently disables it
+    is worse than one with a weaker second path.
+
+    The method is the standard median-filter foreground estimate. In the
+    magnitude spectrogram, take a running median over about two seconds in each
+    frequency bin: a pad, a bass line and a drum loop are all still there two
+    seconds later, and a sung syllable is not, so the median is an estimate of
+    everything except the singer. The vocal is then a soft Wiener mask of what
+    the median could not explain, band-limited to where a voice actually lives.
+
+    It is **not as good as Demucs** and nothing here pretends otherwise. What it
+    buys is that the correction stage runs at all, and that this pipeline can be
+    exercised end to end — through separation, measurement, correction and remix
+    to a real audio file — in an environment that has no GPU and no torchaudio.
+    `process_song` records which separator ran, and every report says so.
+
+    Returns `(vocal, backing)`; the two sum to the input by construction, so a
+    song whose vocal is never corrected reconstructs exactly.
+    """
+    mix = np.asarray(mix, dtype=np.float64).reshape(-1)
+    if mix.size < FALLBACK_FFT * 4:
+        return np.zeros(0), mix
+
+    from scipy.ndimage import median_filter
+
+    spectra = _stft(mix, FALLBACK_FFT, FALLBACK_HOP)
+    magnitude = np.abs(spectra)
+    span = max(3, int(round(FALLBACK_BACKGROUND_SECONDS * sample_rate / FALLBACK_HOP)))
+
+    # The median is taken on a time-decimated spectrogram and interpolated back.
+    #
+    # At full rate this cost 3.5 seconds to separate 9.6 seconds of audio — 0.36x
+    # realtime, so a three-and-a-half minute song costs about 76 seconds, more
+    # than the whole ZeroGPU slice this runs at the end of. A median filter costs
+    # roughly (elements x window) and decimating divides both, so the saving is
+    # quadratic in the factor.
+    #
+    # The factor is 2, and it is measured rather than reasoned. The reasoning
+    # said decimation is free — the background model is a two-second median, so
+    # it cannot contain detail finer than that, so sampling it every 93 ms and
+    # interpolating is the estimate rather than an approximation of it. That
+    # argument is wrong, and the swept measurement says where: the same window in
+    # time holds *fewer order statistics* after decimating, and a median over 20
+    # samples is a noisier estimate than a median over 173 however far apart they
+    # are spread.
+    #
+    #     decimation   seconds   SNR dB   planned notes measured
+    #              1      2.09     2.14      4/8
+    #              2      0.60     1.89      4/8
+    #              4      0.24     1.87      3/8
+    #              8      0.14    -6.46      3/8
+    #
+    # Two is 3.5x faster for no measurable loss. Eight, which is what the free-
+    # lunch argument would have chosen, loses 8.6 dB and a quarter of the notes.
+    decimation = 2
+    coarse = magnitude[:, ::decimation]
+    coarse_span = max(3, span // decimation)
+    coarse_span += 1 - coarse_span % 2
+    coarse_background = median_filter(coarse, size=(1, coarse_span), mode="nearest")
+
+    if decimation == 1:
+        background = coarse_background
+    else:
+        frames = magnitude.shape[1]
+        source = np.arange(coarse_background.shape[1]) * decimation
+        background = np.empty_like(magnitude)
+        for bin_index in range(magnitude.shape[0]):
+            background[bin_index] = np.interp(
+                np.arange(frames), source, coarse_background[bin_index])
+
+    # What the background cannot account for. Squared, which is the Wiener form:
+    # it is gentler on bins where the two are comparable, and a hard mask there
+    # is what makes this kind of separation sound like a phone call.
+    foreground = np.maximum(magnitude - background, 0.0)
+    denominator = foreground ** 2 + background ** 2 + 1e-12
+    mask = foreground ** 2 / denominator
+
+    # A voice lives here. Below 80 Hz is bass and kick; above 8 kHz the vocal is
+    # breath and sibilance that the mask cannot separate anyway, and letting it
+    # through mostly imports cymbals.
+    frequencies = np.fft.rfftfreq(FALLBACK_FFT, 1.0 / sample_rate)
+    mask[frequencies < 80.0, :] = 0.0
+    mask[frequencies > 8000.0, :] *= 0.25
+
+    vocal = _istft(spectra * mask, FALLBACK_FFT, FALLBACK_HOP, mix.size)
+    # The backing is the remainder rather than a second mask, so the two sum to
+    # the input exactly and a song with nothing corrected comes back unchanged.
+    return vocal, mix - vocal
+
+
 def process_song(mix: np.ndarray, sample_rate: int, targets: Sequence[TargetNote],
                  device: str = "cuda") -> tuple[np.ndarray, CorrectionReport]:
     """The whole vocal pipeline, on one song, once.
@@ -1324,14 +1819,24 @@ def process_song(mix: np.ndarray, sample_rate: int, targets: Sequence[TargetNote
 
     started = time.perf_counter()
     vocal, backing, problem = separate(mix, sample_rate, device)
-    separation_seconds = time.perf_counter() - started
+    separator = "hybrid-demucs"
     if problem is not None or vocal.size == 0:
-        report.unavailable = problem or "The separator returned no vocal."
-        report.stage_seconds = {"separate": round(separation_seconds, 3)}
-        return mix, report
+        # Demucs is not available. Rather than disable the whole correction
+        # stage on one missing dependency, fall back — and say so, in the report
+        # and in the returned metadata, because the two separators are not
+        # equivalent and a reader must not have to guess which one ran.
+        vocal, backing = separate_fallback(mix, sample_rate)
+        separator = "median-filter fallback"
+        if vocal.size == 0:
+            report.unavailable = problem or "The separator returned no vocal."
+            report.separator = "none"
+            report.stage_seconds = {"separate": round(time.perf_counter() - started, 3)}
+            return mix, report
+    separation_seconds = time.perf_counter() - started
 
     corrected_started = time.perf_counter()
     corrected, report = correct_vocal(vocal, sample_rate, targets)
+    report.separator = separator
     report.stage_seconds = {
         "separate": round(separation_seconds, 3),
         "measure_align_correct": round(time.perf_counter() - corrected_started, 3),
@@ -1402,6 +1907,25 @@ def readiness(sample_rate: int = 44100, device: str = "cuda") -> dict[str, objec
             found["resample_needed"] = True
     except Exception as error:
         problems.append(f"torchaudio / Hybrid Demucs unavailable: {error}")
+        # Not fatal on its own. `process_song` falls back to the numpy
+        # separator, so the correction stage still runs — worse, and saying so.
+        found["fallback_separator"] = "available"
+
+    # The fallback, exercised rather than assumed. It is what actually runs when
+    # the line above failed, so a readiness report that did not test it would be
+    # reporting on a path the request will not take.
+    try:
+        probe_rate = 22050
+        axis = np.arange(int(1.5 * probe_rate)) / probe_rate
+        probe_mix = (0.3 * np.sin(2 * np.pi * 110.0 * axis)
+                     + 0.4 * np.sin(2 * np.pi * 330.0 * axis))
+        isolated, rest = separate_fallback(probe_mix, probe_rate)
+        found["fallback_sums_back"] = bool(
+            isolated.size and np.allclose(isolated + rest, probe_mix, atol=1e-9))
+        if not found["fallback_sums_back"]:
+            problems.append("the fallback separator's stems do not sum back to the mix")
+    except Exception as error:
+        problems.append(f"the fallback separator failed: {error}")
 
     # The DSP itself, on a signal whose answer is known. If this fails, nothing
     # downstream is worth running.

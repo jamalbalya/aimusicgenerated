@@ -31,7 +31,7 @@ import { linkProps } from '../../lib/router'
 import { useNeuralEngine } from '../useNeuralEngine'
 import {
   planLiveGeneration, compilePrompt, mintRequestTicket, aceStepKeyscale,
-  buildTargetMelody, melodyPayload, anchorNotes,
+  buildTargetMelody, melodyPayload, anchorNotes, checkTargetMelody,
   type LivePlan, type CompiledPrompt, type LiveVerification,
 } from '../../engine/live'
 import { useAuth } from '../useAuth'
@@ -394,6 +394,7 @@ export default function StudioPage() {
   const [melodySummary, setMelodySummary] = useState<{
     notes: number; anchors: number; phrases: number; key: string
     progressions: string; bars: number; lowest: number; highest: number
+    usable: boolean; problems: string[]; checksPassed: number
   } | null>(null)
   const [liveVerification, setLiveVerification] = useState<LiveVerification | null>(null)
   /** Which press of Generate authorised the request in flight. */
@@ -542,8 +543,25 @@ export default function StudioPage() {
     // from the plan, never from the audio: the audio is the thing being
     // judged, so it cannot also be the standard.
     const melody = buildTargetMelody(plan, vocalGender)
+    // Checked before it is used, because of what it is used *for*. The
+    // correction stage moves a real vocal onto this melody, so a melody that is
+    // merely odd produces a vocal that is confidently and audibly wrong — every
+    // structural note dragged onto it. The failure to prevent is not "no
+    // correction", it is "correct pitch, wrong melody", which sounds worse than
+    // the untouched take and reports success.
+    //
+    // A melody that fails is not sent. The song then comes back exactly as
+    // ACE-Step made it, which is a real and safe outcome: it is where this
+    // project started, and it is strictly better than correcting toward
+    // something wrong.
+    const melodyCheck = checkTargetMelody(melody)
+    const melodyUsable = melodyCheck.usable && melody.notes.length > 0
     const sung = melody.notes.filter((note) => note.role !== 'rest')
     setMelodySummary(sung.length === 0 ? null : {
+      usable: melodyUsable,
+      problems: melodyCheck.problems.filter((problem) => problem.severity === 'error')
+        .map((problem) => problem.message),
+      checksPassed: melodyCheck.passed.length,
       notes: sung.length,
       anchors: anchorNotes(melody).length,
       phrases: new Set(sung.map((note) => note.phrase)).size,
@@ -591,7 +609,7 @@ export default function StudioPage() {
         // The melody the planner wrote, for the Space to correct the returned
         // vocal against. ACE-Step never sees it — there is no melody input —
         // so this is the reference, not a request.
-        ...(melody.notes.length > 0 ? { melody: JSON.stringify(melodyPayload(melody)) } : {}),
+        ...(melodyUsable ? { melody: JSON.stringify(melodyPayload(melody)) } : {}),
         // The parsed payload, not the raw box: identical to what was typed
         // except that an [End] marker and anything after it are left off,
         // which is what the marker means. Every line, header and direction of
@@ -1521,6 +1539,25 @@ export default function StudioPage() {
                     its own nearest semitone, which leaves a wrong note exactly where it was and
                     reports success.
                   </p>
+                  {melodySummary.usable ? (
+                    <p className="text-[var(--text-faint)]" data-testid="live-melody-checks">
+                      {melodySummary.checksPassed} musical checks passed — key, chords, range,
+                      leaps, phrase endings, section joins, chorus lift, climax, note lengths,
+                      overlap, melisma, breaths and suspensions.
+                    </p>
+                  ) : (
+                    <div data-testid="live-melody-rejected">
+                      <p style={{ color: 'var(--bad, #a33)' }}>
+                        This melody did not pass its own musical checks, so it is not being sent
+                        as a correction reference. The song will come back exactly as ACE-Step
+                        makes it. Correcting a vocal onto a melody that is wrong sounds worse
+                        than leaving it alone.
+                      </p>
+                      {melodySummary.problems.map((problem, index) => (
+                        <p key={index} className="text-[var(--text-faint)]">{problem}</p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 

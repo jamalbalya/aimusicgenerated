@@ -50,6 +50,11 @@ export {
 } from './targetMelody'
 
 export {
+  checkTargetMelody,
+  type MelodyCheck, type MelodyProblem, type MelodyProblemCode,
+} from './melodyCheck'
+
+export {
   planSongHarmony, barAtBeat, BEATS_PER_BAR, SECTION_INTENSITY,
   type SongHarmony, type HarmonyBar, type HarmonySection,
 } from './songHarmony'

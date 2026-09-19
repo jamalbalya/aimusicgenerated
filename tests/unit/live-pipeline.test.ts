@@ -17,7 +17,7 @@ import {
   parameterControls, descriptiveControls, channelOf, aceStepKeyscale, aceStepBpm,
   ACE_STEP_BPM_RANGE, buildTargetMelody, anchorNotes, sungNotes, melodyPayload,
   midiToHz, hzToMidi, centsBetween, VOCAL_RANGES, ROLE_CODES,
-  planSongHarmony, BEATS_PER_BAR,
+  planSongHarmony, BEATS_PER_BAR, checkTargetMelody,
   MAX_SUSTAINED_SYLLABLES_PER_SECOND,
   type LiveGenerationInput,
 } from '../../src/engine/live'
@@ -953,6 +953,90 @@ describe('the vocal is given something to be measured against', () => {
     const roles = new Set(payload.notes.map((note) => note[3]))
     expect(roles.has(ROLE_CODES.anchor)).toBe(true)
     expect(roles.has(ROLE_CODES.rest)).toBe(true)
+  })
+
+  it('passes its own musical checks on a real request', () => {
+    // The melody the correction stage will move a real vocal onto. If this
+    // check fails, the melody is not sent — which is safe, and is also an
+    // admission that the writer produced something it should not have.
+    for (const gender of ['male', 'female', 'auto'] as const) {
+      for (const seconds of [75, 120, 210]) {
+        const melody = buildTargetMelody(
+          planLiveGeneration(input({ durationSeconds: seconds })), gender)
+        const check = checkTargetMelody(melody)
+        const errors = check.problems.filter((problem) => problem.severity === 'error')
+        expect(`${gender}/${seconds}s: ${errors.map((e) => e.message).join(' | ')}`)
+          .toBe(`${gender}/${seconds}s: `)
+        expect(check.usable).toBe(true)
+        expect(check.passed.length).toBeGreaterThan(8)
+      }
+    }
+  })
+
+  it('refuses a melody whose structural note fights its chord', () => {
+    // The failure this exists to prevent: correct pitch, wrong melody. A vocal
+    // corrected onto a note that is not in the chord under it is worse than one
+    // left alone, because the error is then permanent and confident.
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
+    const anchor = melody.notes.find((note) => note.role === 'anchor')!
+    const broken = {
+      ...melody,
+      notes: melody.notes.map((note) => note.index !== anchor.index ? note : {
+        ...note,
+        // A semitone off its own chord: in the key, in range, and wrong.
+        midi: note.midi + 1,
+        isChordTone: false,
+      }),
+    }
+    const check = checkTargetMelody(broken)
+    expect(check.usable).toBe(false)
+    expect(check.problems.some((problem) => problem.severity === 'error')).toBe(true)
+  })
+
+  it('refuses a melody with a leap nobody would sing', () => {
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
+    const broken = {
+      ...melody,
+      range: { low: 0, high: 127 },
+      notes: melody.notes.map((note, index) =>
+        index === 6 ? { ...note, midi: note.midi + 20 } : note),
+    }
+    const check = checkTargetMelody(broken)
+    expect(check.usable).toBe(false)
+    expect(check.problems.some((problem) => problem.code === 'EXCESSIVE_LEAP')).toBe(true)
+  })
+
+  it('refuses a melody whose notes sound at the same time', () => {
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
+    const broken = {
+      ...melody,
+      notes: melody.notes.map((note, index) =>
+        index === 4 ? { ...note, durationBeats: note.durationBeats + 4 } : note),
+    }
+    const check = checkTargetMelody(broken)
+    expect(check.problems.some((problem) => problem.code === 'OVERLAPPING_NOTES')).toBe(true)
+    expect(check.usable).toBe(false)
+  })
+
+  it('refuses a melody that leaves a suspension hanging', () => {
+    const melody = buildTargetMelody(planLiveGeneration(input({ durationSeconds: 75 })), 'male')
+    const suspension = melody.notes.find((note) => note.role === 'suspension')!
+    const broken = {
+      ...melody,
+      notes: melody.notes.map((note) => note.index !== suspension.index + 1 ? note : {
+        ...note, role: 'passing' as const,
+      }),
+    }
+    const check = checkTargetMelody(broken)
+    expect(check.problems.some((problem) => problem.code === 'UNRESOLVED_SUSPENSION')).toBe(true)
+  })
+
+  it('says which checks held, not only which failed', () => {
+    const check = checkTargetMelody(buildTargetMelody(planLiveGeneration(input()), 'male'))
+    expect(check.passed).toContain('every note belongs to the key')
+    expect(check.passed).toContain('every structural note is a tone of its own chord')
+    expect(check.passed).toContain('every line ends on a chord tone')
+    expect(check.passed).toContain('no two notes overlap in time')
   })
 
   it('converts between notes and frequencies the way the Space does', () => {

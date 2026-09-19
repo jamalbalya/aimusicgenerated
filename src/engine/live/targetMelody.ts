@@ -761,8 +761,16 @@ export function buildTargetMelody(plan: LivePlan, vocalGender: 'male' | 'female'
         // note of the final chorus's first phrase. One note, once in the song.
         let octaveLift = false
         if (isClimax && phraseIndex === 0 && isFirst) {
-          const lifted = nearestChordRung(ladder, ladder.length - 1, bar.pitchClasses)
-          if (ladder[lifted]! - ladder[rung]! >= 5) { rung = lifted; octaveLift = true }
+          // The highest chord tone that is still within an octave of where the
+          // line would otherwise have started. Taking the top of the ladder
+          // outright — which is what this did first — put the final chorus 16
+          // semitones above the end of the verse before it, across a breath.
+          // That is not a climax, it is a different song, and the melody
+          // checker caught it as a leap nobody would sing.
+          const ceiling = rungNear(ladder, Math.min(range.high, ladder[rung]! + 12))
+          const lifted = nearestChordRung(ladder, ceiling, bar.pitchClasses)
+          const rise = ladder[lifted]! - ladder[rung]!
+          if (rise >= 5 && rise <= 12) { rung = lifted; octaveLift = true }
         }
 
         const midi = ladder[clampRung(ladder, rung)]!
