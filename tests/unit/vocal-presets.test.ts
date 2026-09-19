@@ -94,15 +94,23 @@ describe('the request contract is unchanged by any of this', () => {
     vocalGender: 'male',
   }
 
-  it('still sends exactly the six inputs the Space declares', () => {
+  it('still sends exactly the inputs the Space declares, and no more', () => {
     const plan = planZeroGpuRequest(request as never, {} as never)
-    expect(plan.data).toHaveLength(6)
+    expect(plan.data).toHaveLength(11)
     expect(typeof plan.data[0]).toBe('string')   // style, hints included
     expect(typeof plan.data[1]).toBe('string')   // lyrics
     expect(typeof plan.data[2]).toBe('string')   // language
     expect(plan.data[3]).toBe('male')            // vocal_gender
     expect(typeof plan.data[4]).toBe('boolean')  // instrumental
     expect(typeof plan.data[5]).toBe('number')   // duration
+    // ACE-Step 1.5's metadata parameters, at their "you choose" values here
+    // because this request states none of them. A vocal preset changes the
+    // caption and must not touch these.
+    expect(plan.data[6]).toBeNull()              // bpm
+    expect(plan.data[7]).toBe('')                // keyscale
+    expect(plan.data[8]).toBe('')                // timesignature
+    expect(plan.data[9]).toBe(-1)                // seed
+    expect(plan.data[10]).toBe('')               // melody (the correction target)
   })
 
   it('adds no parameter for anything the endpoint does not take', () => {

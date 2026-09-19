@@ -30,7 +30,8 @@ import { newProjectId, saveProject } from '../../lib/library'
 import { linkProps } from '../../lib/router'
 import { useNeuralEngine } from '../useNeuralEngine'
 import {
-  planLiveGeneration, compilePrompt, mintRequestTicket,
+  planLiveGeneration, compilePrompt, mintRequestTicket, aceStepKeyscale,
+  buildTargetMelody, melodyPayload,
   type LivePlan, type CompiledPrompt, type LiveVerification,
 } from '../../engine/live'
 import { useAuth } from '../useAuth'
@@ -512,6 +513,10 @@ export default function StudioPage() {
     }
 
     // -------------------------------------------------------- 3: compile ---
+    // The melody the vocal will be measured and corrected against. Written
+    // from the plan, never from the audio: the audio is the thing being
+    // judged, so it cannot also be the standard.
+    const melody = buildTargetMelody(plan, vocalGender)
     const compiled = compilePrompt(plan, style)
     setCompiledPrompt(compiled)
     const controller = new AbortController()
@@ -540,6 +545,17 @@ export default function StudioPage() {
       // One call. Not the first of a series — the only one.
       const result = await provider.generate({
         style: compiled.caption,
+        // ACE-Step 1.5's own metadata fields, not prose in the caption. The
+        // tempo and key the planner settled on are sent through the parameters
+        // built to carry them, where the model's own estimate cannot overwrite
+        // them. The caption no longer mentions either, so nothing is said
+        // twice and less precisely.
+        bpm: plan.music.targetBpm,
+        keyscale: aceStepKeyscale(plan.music.tonic, plan.music.scale),
+        // The melody the planner wrote, for the Space to correct the returned
+        // vocal against. ACE-Step never sees it — there is no melody input —
+        // so this is the reference, not a request.
+        ...(melody.notes.length > 0 ? { melody: JSON.stringify(melodyPayload(melody)) } : {}),
         // The parsed payload, not the raw box: identical to what was typed
         // except that an [End] marker and anything after it are left off,
         // which is what the marker means. Every line, header and direction of

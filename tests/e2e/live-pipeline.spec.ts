@@ -83,12 +83,15 @@ interface FakeSpace {
   joins: () => number
   /** The caption of the most recent request. */
   caption: () => string
+  /** ACE-Step's metadata parameters, as they arrived on the wire. */
+  metadata: () => Record<string, unknown>
 }
 
 async function fakeSpace(page: Page, options: { failGeneration?: boolean } = {}): Promise<FakeSpace> {
   let joins = 0
   let asked: unknown = SONG_SECONDS
   let caption = ''
+  let metadata: Record<string, unknown> = {}
   await page.route(`${SPACE}/**`, async (route: Route) => {
     const path = new URL(route.request().url()).pathname
 
@@ -109,6 +112,7 @@ async function fakeSpace(page: Page, options: { failGeneration?: boolean } = {})
       const data = (route.request().postDataJSON() as { data?: unknown[] } | null)?.data
       caption = String(data?.[0] ?? '')
       asked = data?.[5]
+      metadata = { bpm: data?.[6], keyscale: data?.[7], timeSignature: data?.[8], seed: data?.[9] }
       joins += 1
       return route.fulfill({
         contentType: 'application/json', body: JSON.stringify({ event_id: `event-${joins}` }),
@@ -151,7 +155,7 @@ async function fakeSpace(page: Page, options: { failGeneration?: boolean } = {})
     }
     return route.fulfill({ status: 404, body: 'not a route this test serves' })
   })
-  return { joins: () => joins, caption: () => caption }
+  return { joins: () => joins, caption: () => caption, metadata: () => metadata }
 }
 
 /** Skips when the build under test does not point at the fake Space. */
@@ -232,6 +236,27 @@ test.describe('one press, one ZeroGPU request', () => {
       await expect(generateButton(page)).toBeEnabled({ timeout: 120_000 })
       await expect(page.getByTestId('live-ticket')).toHaveText('gen-2')
       expect(space.joins(), 'two presses, two requests').toBe(2)
+    })
+
+  test('sends the planned tempo and key as parameters, not as caption prose',
+    async ({ page }) => {
+      // The point of the whole correction: ACE-Step 1.5 has bpm and keyscale
+      // fields, and a tempo routed through them is conditioning the model was
+      // built to receive. A tempo written into the caption is a description it
+      // may read as flavour text.
+      const space = await fakeSpace(page)
+      await openNeuralStudio(page)
+
+      await page.getByLabel('Style').fill('melancholic ballad at 72 BPM')
+      await page.getByLabel('Lyrics').fill(LYRICS)
+      await generateButton(page).click()
+      await expect(generateButton(page)).toBeEnabled({ timeout: 120_000 })
+
+      const sent = space.metadata()
+      expect(sent.bpm, 'the stated tempo must reach the bpm parameter').toBe(72)
+      expect(String(sent.keyscale)).toMatch(/^[A-G][#b]? (Major|Minor)$/)
+      // And it is not also repeated in the caption.
+      expect(space.caption()).not.toMatch(/\d+ BPM,/)
     })
 
   test('a rapid double-click still sends exactly one request', async ({ page }) => {

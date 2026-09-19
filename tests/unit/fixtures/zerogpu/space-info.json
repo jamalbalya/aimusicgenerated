@@ -49,6 +49,41 @@
           "type": {
             "type": "integer"
           }
+        },
+        {
+          "parameter_name": "bpm",
+          "component": "Number",
+          "type": {
+            "type": "integer"
+          }
+        },
+        {
+          "parameter_name": "keyscale",
+          "component": "Textbox",
+          "type": {
+            "type": "string"
+          }
+        },
+        {
+          "parameter_name": "timesignature",
+          "component": "Textbox",
+          "type": {
+            "type": "string"
+          }
+        },
+        {
+          "parameter_name": "seed",
+          "component": "Number",
+          "type": {
+            "type": "integer"
+          }
+        },
+        {
+          "parameter_name": "melody",
+          "component": "Textbox",
+          "type": {
+            "type": "string"
+          }
         }
       ],
       "returns": [

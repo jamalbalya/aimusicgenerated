@@ -39,6 +39,28 @@ export interface MusicGenerationRequest {
   seed?: number
   /** True for a backing track with no singer. */
   instrumental?: boolean
+  /**
+   * Tempo in BPM, sent through ACE-Step 1.5's own `GenerationParams.bpm`.
+   *
+   * Omitted or <= 0 sends null, which is the field's documented "you choose".
+   * A stated value is not overwritten by the model's own estimate — inference
+   * only fills `cot_bpm` when the caller left `bpm` empty — so this is real
+   * conditioning rather than a description.
+   */
+  bpm?: number
+  /** Key in ACE-Step's own spelling, e.g. "C Major". Empty means auto-detect. */
+  keyscale?: string
+  /** "2", "3", "4" or "6" — ACE-Step's encoding for 2/4, 3/4, 4/4 and 6/8. */
+  timeSignature?: string
+  /**
+   * The target melody, as JSON, for the Space's vocal pitch correction.
+   *
+   * Not an ACE-Step parameter: the model never sees it. It is the reference
+   * the returned vocal is measured and corrected against, after generation,
+   * inside the same request. Omitted means the song comes back exactly as
+   * generated.
+   */
+  melody?: string
 }
 
 export interface MusicGenerationResult {

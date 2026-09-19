@@ -66,22 +66,63 @@ const withMetadata = (changes: Record<string, unknown>) =>
 describe('the request matches the endpoint the live Space declares', () => {
   const declared = SPACE_INFO.named_endpoints['/generate_music']!
 
-  it('sends exactly its six inputs, in its order, with its types', async () => {
+  it('sends exactly the inputs it declares, in its order, with its types', async () => {
+    // Ten now, not six. The last four are ACE-Step 1.5's own metadata
+    // parameters — bpm, keyscale, timesignature and seed — which this project
+    // spent a long time believing did not exist because it read its own
+    // wrapper instead of GenerationParams. Sending a tempo through the field
+    // built for it is conditioning; sending it as words in the caption was
+    // description.
     const { server, provider } = zeroGpu()
     await provider.generate(BOS_TOXIC, { ticket: press() })
     const sent = server.joinBody()!.data
 
-    expect(declared.parameters.map((p) => p.parameter_name))
-      .toEqual(['style', 'lyrics', 'language', 'vocal_gender', 'instrumental', 'duration'])
+    expect(declared.parameters.map((p) => p.parameter_name)).toEqual([
+      'style', 'lyrics', 'language', 'vocal_gender', 'instrumental', 'duration',
+      'bpm', 'keyscale', 'timesignature', 'seed', 'melody',
+    ])
     expect(sent).toHaveLength(declared.parameters.length)
     declared.parameters.forEach((parameter, index) => {
       const value = sent[index]
       const expected = parameter.type.type
+      // The metadata parameters are all optional and all have a documented
+      // "you choose" value — null for bpm, "" for the two strings, -1 for the
+      // seed — so a null or an empty string here is the contract, not a gap.
+      const optional = ['bpm', 'keyscale', 'timesignature', 'melody'].includes(parameter.parameter_name)
+      if (optional && (value === null || value === '')) return
       if (expected === 'string') expect(typeof value, parameter.parameter_name).toBe('string')
       if (expected === 'boolean') expect(typeof value, parameter.parameter_name).toBe('boolean')
       if (expected === 'integer') expect(Number.isInteger(value), parameter.parameter_name).toBe(true)
       if (parameter.type.enum) expect(parameter.type.enum, parameter.parameter_name).toContain(value)
     })
+  })
+
+  it('sends a stated tempo and key through the parameters, not the caption', async () => {
+    const { server, provider } = zeroGpu()
+    await provider.generate(
+      { ...BOS_TOXIC, bpm: 72, keyscale: 'D Minor', timeSignature: '4', seed: 12345 },
+      { ticket: press() })
+    const sent = server.joinBody()!.data
+
+    expect(sent[6]).toBe(72)
+    expect(sent[7]).toBe('D Minor')
+    expect(sent[8]).toBe('4')
+    expect(sent[9]).toBe(12345)
+  })
+
+  it('sends the documented "you choose" values when nothing was stated', async () => {
+    // A request that states no metadata must behave exactly as it did before
+    // these parameters existed: ACE-Step estimates them itself. Sending an
+    // invented tempo would be worse than sending none.
+    const { server, provider } = zeroGpu()
+    await provider.generate(BOS_TOXIC, { ticket: press() })
+    const sent = server.joinBody()!.data
+
+    expect(sent[6]).toBeNull()
+    expect(sent[7]).toBe('')
+    expect(sent[8]).toBe('')
+    expect(sent[9]).toBe(-1)
+    expect(sent[10]).toBe('')
   })
 
   it('expects the two outputs the Space declares: an audio file and a metadata string', () => {

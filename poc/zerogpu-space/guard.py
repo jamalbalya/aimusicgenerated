@@ -109,6 +109,19 @@ VALID_LANGUAGES = frozenset({
 
 VALID_VOCAL_GENDERS = frozenset({"male", "female", "mixed"})
 
+# ACE-Step's own stated range for GenerationParams.bpm: "30 ~ 300".
+BPM_MIN = 30
+BPM_MAX = 300
+
+# GenerationParams.timesignature is documented as "2 for '2/4', 3 for '3/4',
+# 4 for '4/4', 6 for '6/8'" — the number alone, as a string.
+VALID_TIME_SIGNATURES = frozenset({"2", "3", "4", "6"})
+
+# keyscale is documented "A-G, #/b, major/minor". Anything else is a string the
+# field cannot parse, and sending one would be worse than sending nothing: an
+# unparseable key is not auto-detection, it is a value the model has to ignore.
+KEYSCALE_PATTERN = re.compile(r"^[A-G][#b]?\s+(major|minor)$", re.IGNORECASE)
+
 #: ACE-Step generates within 10-600 seconds, or picks a length itself when told
 #: -1. Those are the only two shapes a duration may have.
 DURATION_MIN = 10
@@ -423,9 +436,128 @@ def validate_duration(value: object) -> float:
     return float(rounded)
 
 
+def validate_bpm(value: object) -> int | None:
+    """A tempo ACE-Step's own parameter accepts, or None for its estimate.
+
+    None and 0 both mean "you choose", because that is what the field means:
+    `bpm: Optional[int] = None`, "Set to None for automatic estimation".
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AuthError(400, "The tempo is not a tempo.")
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        raise AuthError(400, "The tempo is not a tempo.")
+    if number <= 0:
+        return None
+    rounded = int(round(number))
+    if rounded < BPM_MIN or rounded > BPM_MAX:
+        raise AuthError(
+            400, f"ACE-Step takes a tempo from {BPM_MIN} to {BPM_MAX} BPM, or chooses one itself."
+        )
+    return rounded
+
+
+def validate_keyscale(value: object) -> str:
+    """A key in the spelling GenerationParams.keyscale documents, or empty."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise AuthError(400, "The key must be text.")
+    text = value.strip()
+    if not text:
+        return ""
+    if not KEYSCALE_PATTERN.match(text):
+        raise AuthError(
+            400,
+            'The key must read like "C Major" or "A Minor" — a note A to G, an optional sharp '
+            "or flat, then major or minor. That is what ACE-Step's keyscale field parses.",
+        )
+    # Normalised to ACE-Step's own capitalisation so two spellings of one key
+    # cannot reach the model as two different strings.
+    note, quality = text.split()
+    return f"{note[0].upper()}{note[1:]} {quality.capitalize()}"
+
+
+def validate_time_signature(value: object) -> str:
+    """"2", "3", "4" or "6" — ACE-Step's own encoding — or empty for auto."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        raise AuthError(400, "The time signature is not a time signature.")
+    if isinstance(value, (int, float)):
+        value = str(int(value))
+    if not isinstance(value, str):
+        raise AuthError(400, "The time signature is not a time signature.")
+    text = value.strip()
+    if not text:
+        return ""
+    # "4/4" is what a musician writes and "4" is what the field takes, so the
+    # familiar spelling is accepted and converted rather than refused.
+    if "/" in text:
+        text = text.split("/", 1)[0].strip()
+    if text not in VALID_TIME_SIGNATURES:
+        raise AuthError(
+            400,
+            "The time signature must be 2, 3, 4 or 6 — ACE-Step's own encoding for 2/4, 3/4, "
+            "4/4 and 6/8.",
+        )
+    return text
+
+
+def validate_seed(value: object) -> int:
+    """An int seed, or -1 for a seed the model draws itself."""
+    if value is None:
+        return -1
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AuthError(400, "The seed is not a seed.")
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        raise AuthError(400, "The seed is not a seed.")
+    rounded = int(round(number))
+    if rounded < -1:
+        raise AuthError(400, "A seed is -1 for random, or a number of its own.")
+    # ACE-Step seeds a torch generator; keep it inside the 32-bit range every
+    # backend accepts rather than discovering the ceiling on the GPU.
+    if rounded > 2**31 - 1:
+        raise AuthError(400, "That seed is larger than ACE-Step accepts.")
+    return rounded
+
+
+#: The target melody travels as JSON. A four-minute song is a few hundred notes
+#: at roughly thirty characters each, so this is generous; it exists to stop a
+#: payload built by hand from handing the GPU function something enormous.
+MAX_MELODY_CHARS = 64_000
+
+
+def validate_melody(value: object) -> str:
+    """The planned melody, as JSON, or empty when none was planned.
+
+    Only the size and the shape are checked here. The contents are parsed
+    inside the GPU function, where a malformed melody costs a song no GPU time
+    — it simply means the vocal is not corrected and the song is returned as
+    ACE-Step made it.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise AuthError(400, "The melody must be JSON text.")
+    text = value.strip()
+    if not text:
+        return ""
+    if len(text) > MAX_MELODY_CHARS:
+        raise AuthError(
+            400, f"The melody is {len(text)} characters; the limit is {MAX_MELODY_CHARS}."
+        )
+    return text
+
+
 def validate_request(
     style: object, lyrics: object, language: object,
     vocal_gender: object, instrumental: object, duration: object,
+    bpm: object = None, keyscale: object = None,
+    time_signature: object = None, seed: object = None, melody: object = None,
 ) -> dict[str, object]:
     """Everything the generation needs, checked before a GPU is asked for.
 
@@ -456,6 +588,15 @@ def validate_request(
         "vocal_gender": vocal_gender.strip().lower(),
         "instrumental": instrumental,
         "duration": validate_duration(duration),
+        # ACE-Step 1.5's real metadata parameters. Every one of them is
+        # optional and every one of them has an "you choose" value, because
+        # the model estimating a tempo is a perfectly good outcome when nobody
+        # asked for one — what must not happen is a stated value being lost.
+        "bpm": validate_bpm(bpm),
+        "keyscale": validate_keyscale(keyscale),
+        "timesignature": validate_time_signature(time_signature),
+        "seed": validate_seed(seed),
+        "melody": validate_melody(melody),
     }
 
 

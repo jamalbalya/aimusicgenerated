@@ -115,7 +115,19 @@ export const LIVE_GENERATION_DISABLED =
   + 'project locally cannot spend a Hugging Face allowance by accident. The deployed site has it '
   + 'on; to turn it on in a build of your own, set ACE_STEP_LIVE_GENERATION_ENABLED=true.'
 
-/** `/generate_music`'s inputs, in the order the Space declares them. */
+/**
+ * `/generate_music`'s inputs, in the order the Space declares them.
+ *
+ * The last four are ACE-Step 1.5's own metadata parameters, added once its
+ * real `GenerationParams` was read rather than assumed: `bpm`, `keyscale`,
+ * `timesignature` and `seed` are fields the model was built to receive, and
+ * routing a tempo through them instead of through prose in the caption is the
+ * difference between conditioning the model and describing something to it.
+ *
+ * Every one carries a documented "you choose" value — `null`, `""` and `-1` —
+ * so a request that states none of them behaves exactly as this endpoint did
+ * before they existed.
+ */
 export type ZeroGpuInputs = [
   style: string,
   lyrics: string,
@@ -123,12 +135,23 @@ export type ZeroGpuInputs = [
   vocalGender: ZeroGpuVocalGender,
   instrumental: boolean,
   duration: number,
+  bpm: number | null,
+  keyscale: string,
+  timeSignature: string,
+  seed: number,
+  /** The planned target melody as JSON, or "" when none was planned. */
+  melody: string,
 ]
 
 /** What was sent, kept so the answer can be checked against it. */
 export interface ZeroGpuRequestPlan {
   data: ZeroGpuInputs
   duration: number
+  /** The tempo sent through the parameter, or null when the model chooses. */
+  bpm: number | null
+  keyscale: string
+  timeSignature: string
+  seed: number
   language: string
   instrumental: boolean
   /** Sung lines in the sheet, section tags excluded — what the Space counts too. */
@@ -249,9 +272,20 @@ export function planZeroGpuRequest(
   const style = zeroGpuStyle(request.style, vocalGender, instrumental)
   checkZeroGpuTextLength('style', style)
   if (!instrumental) checkZeroGpuTextLength('lyrics', lyrics)
+  const bpm = request.bpm !== undefined && request.bpm > 0 ? Math.round(request.bpm) : null
+  const keyscale = request.keyscale ?? ''
+  const timeSignature = request.timeSignature ?? ''
+  const seed = request.seed !== undefined && request.seed >= 0 ? Math.round(request.seed) : -1
+  const melody = request.melody ?? ''
+
   return {
-    data: [style, lyrics, language, vocalGender, instrumental, duration],
+    data: [style, lyrics, language, vocalGender, instrumental, duration,
+      bpm, keyscale, timeSignature, seed, melody],
     duration,
+    bpm,
+    keyscale,
+    timeSignature,
+    seed,
     language,
     instrumental,
     lyricLineCount: lyricLines(lyrics).length,

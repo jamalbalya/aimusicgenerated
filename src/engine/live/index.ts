@@ -43,6 +43,12 @@ export {
 } from './promptCompiler'
 
 export {
+  buildTargetMelody, anchorNotes, melodyPayload, midiToHz, hzToMidi, centsBetween,
+  VOCAL_RANGES,
+  type TargetMelody, type TargetNote, type MelodyPayload,
+} from './targetMelody'
+
+export {
   compileStyle, splitClauses, scoreClause,
   type CompiledStyle, type StyleClause,
 } from './styleCompiler'

@@ -15,7 +15,8 @@ import {
   mintRequestTicket, resetRequestTickets, RequestTicketSpentError, MissingRequestTicketError,
   verifyLiveResult, planLyrics, parseLyricScript, CONSTRAINTS, constraintsOf, constraint,
   parameterControls, descriptiveControls, channelOf, aceStepKeyscale, aceStepBpm,
-  ACE_STEP_BPM_RANGE,
+  ACE_STEP_BPM_RANGE, buildTargetMelody, anchorNotes, melodyPayload,
+  midiToHz, hzToMidi, centsBetween, VOCAL_RANGES,
   MAX_SUSTAINED_SYLLABLES_PER_SECOND,
   type LiveGenerationInput,
 } from '../../src/engine/live'
@@ -664,6 +665,87 @@ describe('the song that came back is measured once, and never regenerated', () =
       expect(['PASS', 'PASS_WITH_LIMITATIONS', 'FAILED_VERIFICATION', 'ANALYSIS_UNAVAILABLE'])
         .toContain(verdict)
     }
+  })
+})
+
+/* ---------------------------------------------------- the target melody --- */
+
+describe('the vocal is given something to be measured against', () => {
+  it('writes a note for every syllable, inside the voice range', () => {
+    const plan = planLiveGeneration(input())
+    const melody = buildTargetMelody(plan, 'male')
+    expect(melody.unavailable).toBeUndefined()
+    expect(melody.notes.length).toBeGreaterThan(10)
+    for (const note of melody.notes) {
+      expect(note.midi).toBeGreaterThanOrEqual(VOCAL_RANGES.male!.low)
+      expect(note.midi).toBeLessThanOrEqual(VOCAL_RANGES.male!.high)
+      expect(note.frequencyHz).toBeGreaterThan(0)
+      expect(note.endSeconds).toBeGreaterThan(note.startSeconds)
+    }
+  })
+
+  it('puts a female voice higher than a male one, for the same song', () => {
+    const plan = planLiveGeneration(input())
+    const low = buildTargetMelody(plan, 'male')
+    const high = buildTargetMelody(plan, 'female')
+    const average = (m: typeof low) => m.notes.reduce((t, n) => t + n.midi, 0) / m.notes.length
+    expect(average(high)).toBeGreaterThan(average(low))
+  })
+
+  it('lands every anchor on a chord tone', () => {
+    // The whole point of an anchor: it is the note the ear uses to hear the
+    // harmony, so it must belong to the chord. A melody whose landing notes
+    // fight the chords is the failure this project has spent the longest on.
+    const plan = planLiveGeneration(input())
+    const melody = buildTargetMelody(plan, 'auto')
+    const anchors = anchorNotes(melody)
+    expect(anchors.length).toBeGreaterThan(0)
+    for (const note of anchors) {
+      expect(`${note.midi % 12} in [${note.chordPitchClasses}]`)
+        .toBe(`${note.midi % 12} in [${note.chordPitchClasses}]`)
+      expect(note.isChordTone).toBe(true)
+    }
+  })
+
+  it('moves mostly by step, the way a person would sing it', () => {
+    const plan = planLiveGeneration(input())
+    const melody = buildTargetMelody(plan, 'auto')
+    const leaps = melody.notes.slice(1).filter((note, index) =>
+      Math.abs(note.midi - melody.notes[index]!.midi) > 5)
+    // Under a fifth for the overwhelming majority: a line of constant leaps is
+    // not a melody anyone would sing.
+    expect(leaps.length / melody.notes.length).toBeLessThan(0.25)
+  })
+
+  it('is deterministic, like everything else the planner writes', () => {
+    const first = buildTargetMelody(planLiveGeneration(input()), 'male')
+    const second = buildTargetMelody(planLiveGeneration(input()), 'male')
+    expect(melodyPayload(second)).toEqual(melodyPayload(first))
+  })
+
+  it('writes no melody for an instrumental, and says why', () => {
+    const melody = buildTargetMelody(
+      planLiveGeneration(input({ instrumental: true, lyrics: '' })), 'auto')
+    expect(melody.notes).toHaveLength(0)
+    expect(melody.unavailable).toMatch(/instrumental/)
+  })
+
+  it('travels as a compact payload', () => {
+    const melody = buildTargetMelody(planLiveGeneration(input()), 'male')
+    const payload = melodyPayload(melody)
+    expect(payload.notes).toHaveLength(melody.notes.length)
+    // [start, end, midi, anchor] — four numbers, so a few hundred notes stay
+    // small enough to sit in an HTTP body beside a 4096-character lyric sheet.
+    expect(payload.notes[0]).toHaveLength(4)
+    expect(JSON.stringify(payload).length).toBeLessThan(64_000)
+  })
+
+  it('converts between notes and frequencies the way the Space does', () => {
+    expect(midiToHz(69)).toBeCloseTo(440, 9)
+    expect(hzToMidi(440)).toBeCloseTo(69, 9)
+    expect(centsBetween(880, 440)).toBeCloseTo(1200, 9)
+    // A4 to A3 is an octave down.
+    expect(midiToHz(57)).toBeCloseTo(220, 6)
   })
 })
 

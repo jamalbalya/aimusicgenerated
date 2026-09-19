@@ -220,7 +220,8 @@ def _deny(error: guard.AuthError):
 
 
 @spaces.GPU(duration=DECLARED_DURATION, size=GPU_SIZE)
-def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, duration):
+def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, duration,
+                     bpm=None, keyscale="", timesignature="", seed=-1, melody=""):
     """One request in, one complete song out.
 
     Only reached once the caller has been authenticated, authorised and their
@@ -262,6 +263,20 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
         instrumental=instrumental,
         vocal_language=language,
         duration=duration,
+        # ACE-Step 1.5's real metadata fields. inference.py reads these into
+        # the metadata handed to the model and only lets its own LM fill in
+        # the ones left empty:
+        #
+        #   if (not params.bpm or params.bpm <= 0) and bpm and int(bpm) > 0:
+        #       params.cot_bpm = bpm
+        #
+        # so a stated value is never overwritten by the model's estimate. None
+        # and "" are the documented "you choose" values, which is the right
+        # thing to send when the caller stated nothing — an invented tempo
+        # would be worse than the model's own.
+        bpm=bpm if bpm else None,
+        keyscale=keyscale or "",
+        timesignature=timesignature or "",
         # The 5 Hz LM is what turns a backing track into singing.
         thinking=not instrumental,
         # Off, both of them: these let the LM rewrite the caption and the lyric
@@ -271,11 +286,17 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
         # The language was stated explicitly; nothing should re-detect it.
         use_cot_language=False,
     )
+    # A stated seed makes the generation reproducible; -1 keeps ACE-Step's own
+    # behaviour of drawing one. `use_random_seed` has to follow it, or the
+    # config would draw over the seed the params carry.
+    requested_seed = int(seed) if seed is not None else -1
     config = GenerationConfig(
         batch_size=1,          # ACE-Step defaults to 2, which doubles the GPU bill
         audio_format="wav",
-        use_random_seed=True,
+        use_random_seed=requested_seed < 0,
     )
+    if requested_seed >= 0:
+        params.seed = requested_seed
 
     generation_started = time.perf_counter()
     result = generate_music(dit, llm, params, config, save_dir=tempfile.mkdtemp())
@@ -292,7 +313,56 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
     # Unique path per request: handlers run concurrently on ZeroGPU.
     out = Path(tempfile.mkdtemp()) / "bos-toxic.wav"
     import soundfile as sf
-    sf.write(str(out), tensor.T.cpu().numpy() if tensor.dim() > 1 else tensor.cpu().numpy(), sample_rate)
+
+    # ---- the vocal pitch pipeline, inside this same request -----------------
+    #
+    # Everything below runs on the song ACE-Step just made. It never calls the
+    # model again: one press of Generate is one generation, and correction is
+    # processing, not another roll of the dice. A song it cannot process comes
+    # back exactly as generated, which is what this Space returned every time
+    # before this stage existed — so the worst case is the old behaviour.
+    samples_np = tensor.cpu().numpy()
+    mono = samples_np.mean(axis=0) if samples_np.ndim > 1 else samples_np
+    pitch_report = {"ran": False, "reason": "no melody supplied"}
+    if melody and not instrumental:
+        try:
+            import json as _json
+
+            import vocal_pitch
+
+            plan = _json.loads(melody)
+            targets = [
+                vocal_pitch.TargetNote(float(a), float(b), int(c), bool(d))
+                for a, b, c, d in plan.get("notes", [])
+            ]
+            pitch_started = time.perf_counter()
+            corrected, report = vocal_pitch.process_song(mono, sample_rate, targets)
+            pitch_report = {
+                "ran": True,
+                "seconds": round(time.perf_counter() - pitch_started, 3),
+                "targets": len(targets),
+                "notes_examined": report.notes_examined,
+                "notes_corrected": report.notes_corrected,
+                "notes_left_alone": report.notes_left_alone,
+                "anchors_examined": report.anchors_examined,
+                "anchors_in_tune_before": report.anchors_within_tolerance_before,
+                "anchors_in_tune_after": report.anchors_within_tolerance_after,
+                "median_deviation_before_cents": round(report.median_deviation_before_cents, 1),
+                "median_deviation_after_cents": round(report.median_deviation_after_cents, 1),
+                "largest_correction_cents": round(report.largest_correction_cents, 1),
+                "unavailable": report.unavailable,
+            }
+            if report.notes_corrected > 0 and corrected.size:
+                # Mono in, mono out: the correction works on the sum, so the
+                # song is written back as mono rather than pretending the
+                # stereo image survived a process that never saw it.
+                samples_np = corrected
+        except Exception as error:
+            # A failure here must not lose a song that has already been paid
+            # for in GPU seconds. Report it and hand over what ACE-Step made.
+            pitch_report = {"ran": False, "reason": f"{type(error).__name__}: {error}"}
+
+    sf.write(str(out), samples_np.T if samples_np.ndim > 1 else samples_np, sample_rate)
 
     metadata = {
         "poc_version": POC_VERSION,
@@ -314,6 +384,20 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
         "total_generation_time_s": round(generation_time, 3),
         "total_request_time_s": round(time.perf_counter() - request_started, 3),
         "requested_audio_duration_s": duration,
+        # Echoed so the client can check what was actually asked for against
+        # what it sent, the same way it already checks the models and the
+        # lyric line count. A parameter that silently failed to arrive would
+        # otherwise look identical to one the model chose to ignore.
+        "vocal_pitch": pitch_report,
+        "requested_bpm": params.bpm,
+        "requested_keyscale": params.keyscale,
+        "requested_timesignature": params.timesignature,
+        "requested_seed": requested_seed,
+        # What the model settled on, whether from the caller or from its own
+        # chain-of-thought. cot_* is populated only for fields left empty.
+        "resolved_bpm": params.bpm or params.cot_bpm,
+        "resolved_keyscale": params.keyscale or params.cot_keyscale,
+        "resolved_timesignature": params.timesignature or params.cot_timesignature,
         "audio_duration_s": round(samples / sample_rate, 3),
         "wav_sample_rate": sample_rate,
         "wav_channels": int(channels),
@@ -333,7 +417,9 @@ def _generate_on_gpu(style, lyrics, language, vocal_gender, instrumental, durati
 STYLE = (SPACE_ROOT / "fixtures" / "bos-toxic-style.txt").read_text(encoding="utf8").strip()
 LYRICS = (SPACE_ROOT / "fixtures" / "bos-toxic-lyrics.txt").read_text(encoding="utf8")
 
-def generate(style, lyrics, language, vocal_gender, instrumental, duration, request: gr.Request):
+def generate(style, lyrics, language, vocal_gender, instrumental, duration,
+             bpm=None, keyscale="", timesignature="", seed=-1, melody="",
+             request: gr.Request = None):
     """The generation endpoint, and the second half of the boundary.
 
     `authorize_request` has already refused unauthenticated callers at the HTTP
@@ -343,14 +429,15 @@ def generate(style, lyrics, language, vocal_gender, instrumental, duration, requ
     change away from not existing.
 
     `request` is built by Gradio from the actual HTTP request. It is not part of
-    the six inputs and cannot be supplied by the caller, which is what makes it
+    the declared inputs and cannot be supplied by the caller, which is what makes it
     usable as the source of identity. The body is never consulted for who the
     caller is.
     """
     try:
         caller = guard.caller_for(request)
         checked = guard.validate_request(
-            style, lyrics, language, vocal_gender, instrumental, duration
+            style, lyrics, language, vocal_gender, instrumental, duration,
+            bpm, keyscale, timesignature, seed, melody,
         )
         RATE_LIMITER.check(caller)
     except guard.AuthError as error:
@@ -360,6 +447,8 @@ def generate(style, lyrics, language, vocal_gender, instrumental, duration, requ
     return _generate_on_gpu(
         checked["style"], checked["lyrics"], checked["language"],
         checked["vocal_gender"], checked["instrumental"], checked["duration"],
+        checked["bpm"], checked["keyscale"], checked["timesignature"], checked["seed"],
+        checked["melody"],
     )
 
 
@@ -383,6 +472,19 @@ with gr.Blocks(title="ACE-Step 1.5 full-song POC") as demo:
             with gr.Row():
                 instrumental = gr.Checkbox(label="instrumental", value=False)
                 duration = gr.Number(label="duration (s)", value=271, precision=0)
+            # ACE-Step 1.5's metadata parameters. Every one is optional and
+            # every one has a documented "you choose" value, so a caller that
+            # states nothing gets exactly the behaviour this Space had before.
+            with gr.Row():
+                bpm = gr.Number(label="bpm (blank = model decides)", value=None, precision=0)
+                keyscale = gr.Textbox(label='keyscale (e.g. "C Major")', value="")
+            with gr.Row():
+                timesignature = gr.Textbox(label="timesignature (2/3/4/6)", value="")
+                seed = gr.Number(label="seed (-1 = random)", value=-1, precision=0)
+            # The target melody the studio planned, as JSON. Optional: without
+            # it the song is returned exactly as generated, because there is
+            # nothing to correct the vocal *toward*.
+            melody = gr.Textbox(label="melody (JSON target, optional)", value="", lines=2)
             run = gr.Button("Generate", variant="primary")
         with gr.Column():
             audio_out = gr.Audio(label="generated audio", type="filepath")
@@ -390,7 +492,8 @@ with gr.Blocks(title="ACE-Step 1.5 full-song POC") as demo:
 
     run.click(
         generate,
-        inputs=[style, lyrics, language, vocal_gender, instrumental, duration],
+        inputs=[style, lyrics, language, vocal_gender, instrumental, duration,
+                bpm, keyscale, timesignature, seed, melody],
         outputs=[audio_out, meta_out],
         api_name="generate_music",
     )
