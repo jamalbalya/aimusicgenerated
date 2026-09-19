@@ -122,6 +122,26 @@ octave above the plan, corrected from +900.1 cents to −0.0.
 That is the harness working: it refused to claim anything about a song it could
 not measure, and the single correction it did make landed.
 
+## The payload is checked against the real gate
+
+The eleven fields go out in the order `app.py` binds them and
+`space-info.json` declares them: style, lyrics, language, vocal_gender,
+instrumental, duration, bpm, keyscale, timesignature, seed, melody. Verified by
+running the built payload through `guard.validate_request` — the same function
+the Space runs — in both modes:
+
+```
+210 seconds            ACCEPTED   duration=210.0 bpm=72 keyscale='D# Major' melody=7912 chars
+Auto (no --duration)   ACCEPTED   duration=-1.0  bpm=72 keyscale='D# Major' melody=7912 chars
+duration 0.0           REFUSED    ACE-Step makes songs from 10 to 600 seconds long, ...
+```
+
+That third line is a defect this harness had. With no `--duration` it sent
+`0.0`, the default of a `.get()`. Zero is not Auto: the guard reads it as a
+length, finds it under the ten-second minimum, and refuses. Auto is `-1`, which
+is ACE-Step choosing for itself, and it is what the browser sends. The bug would
+have spent the one real generation on a 400.
+
 ## Readiness
 
 ```

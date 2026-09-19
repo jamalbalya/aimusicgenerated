@@ -49,6 +49,10 @@ HERE = Path(__file__).parent
 REPO = HERE.parent.parent
 API_NAME = "generate_music"
 
+#: ACE-Step's own "you choose the length". Must match `guard.AUTO_DURATION` and
+#: `ACE_STEP_AUTO_DURATION` in the browser, or Auto becomes an illegal length.
+AUTO_DURATION = -1
+
 sys.path.insert(0, str(HERE))
 
 
@@ -448,11 +452,23 @@ def main() -> int:
         print(render(record))
         return 3
 
+    # Eleven fields, in the order `app.py` binds them and `space-info.json`
+    # declares them: style, lyrics, language, vocal_gender, instrumental,
+    # duration, bpm, keyscale, timesignature, seed, melody.
+    #
+    # `duration` is -1 for Auto, which is ACE-Step choosing the length, and a
+    # whole number of seconds otherwise. Sending 0 — which this did first, as
+    # the default of a `.get()` — is not Auto: the guard reads it as a length,
+    # finds it below the ten-second minimum, and refuses the request. That would
+    # have spent the one real generation on a 400.
+    duration = request.get("duration")
+    duration_field = AUTO_DURATION if not duration else int(round(float(duration)))
     payload = {"data": [
         request["style"], request["lyrics"], request["language"], request["vocalGender"],
-        request["instrumental"], request.get("duration", 0.0),
-        request["bpm"], request["keyscale"], "4", -1, request["melody"],
+        request["instrumental"], duration_field,
+        int(request["bpm"]), request["keyscale"], "4", -1, request["melody"],
     ]}
+    record["request_summary"]["duration_sent"] = duration_field
 
     wall = time.perf_counter()
     try:
