@@ -13,7 +13,9 @@ import { describe, expect, it, beforeEach } from 'vitest'
 import {
   planLiveGeneration, planSeed, compilePrompt, directionsFor,
   mintRequestTicket, resetRequestTickets, RequestTicketSpentError, MissingRequestTicketError,
-  verifyLiveResult, planLyrics, parseLyricScript, CONSTRAINTS, constraintsOf,
+  verifyLiveResult, planLyrics, parseLyricScript, CONSTRAINTS, constraintsOf, constraint,
+  parameterControls, descriptiveControls, channelOf, aceStepKeyscale, aceStepBpm,
+  ACE_STEP_BPM_RANGE,
   MAX_SUSTAINED_SYLLABLES_PER_SECOND,
   type LiveGenerationInput,
 } from '../../src/engine/live'
@@ -387,12 +389,36 @@ describe('the caption compiler works inside ACE-Step 512 characters', () => {
     expect(compiled.caption.startsWith(style)).toBe(true)
   })
 
-  it('refuses rather than truncating a style that is already too long', () => {
-    const style = 'y'.repeat(ACE_STEP_TEXT_LIMITS.style + 1)
-    const compiled = compilePrompt(planLiveGeneration(input({ style })), style)
-    expect(compiled.refusal).toBeTruthy()
-    // Nothing is sent, and no word of theirs was edited to make it fit.
-    expect(compiled.caption).toBe(style)
+  it('compresses a Style that is too long, and never edits or refuses it', () => {
+    // A model limit is not a user limit. A 900-character description of a song
+    // is somebody describing their song, and telling them to shorten it is the
+    // product asking the user to work around the implementation.
+    const long = 'A sweeping cinematic orchestral piece with solo piano, strings, brass and a '
+      + 'full choir, telling the story of a long journey home across mountains and rivers, '
+      + 'with a sense of loss in the middle section and a triumphant but bittersweet arrival '
+      + 'at the end, recorded as though in a large hall with natural reverb and a wide stereo '
+      + 'image, in the manner of a film score written for the closing credits of a historical '
+      + 'drama about a family separated by war and reunited decades later in a country neither '
+      + 'of them recognises any more, warm analog master, emotional and restrained throughout'
+    expect(long.length).toBeGreaterThan(ACE_STEP_TEXT_LIMITS.style)
+
+    const plan = planLiveGeneration(input({ style: long }))
+    expect(plan.valid).toBe(true)
+
+    const compiled = compilePrompt(plan, long)
+    expect(compiled.caption.length).toBeLessThanOrEqual(ACE_STEP_TEXT_LIMITS.style)
+    expect(compiled.style.compressed).toBe(true)
+    // The original survives untouched, and is what the editor keeps.
+    expect(compiled.style.original).toBe(long)
+    // Every kept clause is the person's own wording, never a paraphrase.
+    for (const clause of compiled.style.kept) {
+      expect(long).toContain(clause.text)
+    }
+    // The musical clauses beat the narrative ones.
+    const keptText = compiled.style.kept.map((clause) => clause.text).join(' ')
+    expect(keptText).toMatch(/piano|strings|brass|choir|orchestral/i)
+    // And what was dropped is reported, not lost.
+    expect(compiled.style.dropped.length).toBeGreaterThan(0)
   })
 
   it('records what the budget dropped instead of pretending the model was told', () => {
@@ -690,11 +716,57 @@ describe('every requirement is filed under what can actually hold it', () => {
     }
   })
 
-  it('files tempo, key, chords, melody and seed as things ACE-Step does not control', () => {
+  it('files only what ACE-Step genuinely cannot take as uncontrollable', () => {
+    // This assertion used to say the opposite, and it was wrong. Read against
+    // ACE-Step 1.5's own GenerationParams — not against this project's Gradio
+    // wrapper, which declares six inputs and passes no metadata — tempo, key,
+    // time signature and seed are all real fields. What remains genuinely
+    // uncontrollable is note-level: there is no chord, melody or MIDI input on
+    // any task type.
     const uncontrolled = constraintsOf('NOT_CONTROLLED_BY_ACE_STEP').map((entry) => entry.id)
-    for (const id of ['exact-bpm', 'exact-key', 'chord-progression', 'melody-contour', 'seed']) {
+    for (const id of ['chord-progression', 'melody-contour', 'lyric-adherence']) {
       expect(uncontrolled).toContain(id)
     }
+    for (const id of ['exact-bpm', 'exact-key', 'time-signature', 'seed']) {
+      expect(`${id} uncontrollable: ${uncontrolled.includes(id)}`).toBe(`${id} uncontrollable: false`)
+    }
+
+    // And each correction carries the evidence, so nobody has to take it on
+    // trust that the classification changed for a reason.
+    for (const id of ['exact-bpm', 'exact-key', 'seed']) {
+      expect(constraint(id)!.evidence).toMatch(/GenerationParams/)
+    }
+  })
+
+  it('states, in the channel map, how each control actually reaches the model', () => {
+    const parameters = parameterControls().map((entry) => entry.id)
+    for (const id of ['bpm', 'keyscale', 'timesignature', 'duration', 'seed', 'lyrics']) {
+      expect(parameters).toContain(id)
+    }
+    // Genre and mood are prose, and are not dressed up as anything more.
+    const descriptive = descriptiveControls().map((entry) => entry.id)
+    expect(descriptive).toContain('genre')
+    expect(descriptive).toContain('section-direction')
+    // The melody is still nobody's parameter, and that is the honest gap.
+    expect(channelOf('melody')!.channel).toBe('none')
+  })
+
+  it('spells a key the way ACE-Step\'s own field spells one', () => {
+    // keyscale documents "A-G, #/♭, major/minor" and nothing else, so a modal
+    // scale is sent as its parent quality rather than as a word the field
+    // cannot parse. The mode's colour still travels in the caption.
+    expect(aceStepKeyscale(0, 'major')).toBe('C Major')
+    expect(aceStepKeyscale(9, 'minor')).toBe('A Minor')
+    expect(aceStepKeyscale(2, 'dorian')).toBe('D Minor')
+    expect(aceStepKeyscale(4, 'phrygian')).toBe('E Minor')
+    expect(aceStepKeyscale(7, 'mixolydian')).toBe('G Major')
+    expect(aceStepKeyscale(10, 'harmonicMinor')).toBe('A# Minor')
+  })
+
+  it('keeps a tempo inside the range the parameter accepts', () => {
+    expect(aceStepBpm(72)).toBe(72)
+    expect(aceStepBpm(10)).toBe(ACE_STEP_BPM_RANGE.min)
+    expect(aceStepBpm(500)).toBe(ACE_STEP_BPM_RANGE.max)
   })
 
   it('files the single-request rule as a hard pre-render constraint', () => {

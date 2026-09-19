@@ -514,18 +514,6 @@ export default function StudioPage() {
     // -------------------------------------------------------- 3: compile ---
     const compiled = compilePrompt(plan, style)
     setCompiledPrompt(compiled)
-    if (compiled.refusal) {
-      setLiveStage('rejected')
-      setEngineError({
-        stage: 'request',
-        code: 'STYLE_TOO_LONG',
-        message: compiled.refusal,
-        details: { field: 'style', characters: compiled.characters, limit: compiled.limit },
-        retryable: false,
-      })
-      return
-    }
-
     const controller = new AbortController()
     // The controller is this generation's identity from here on: every write
     // below is addressed to it, so a write that arrives after it has been

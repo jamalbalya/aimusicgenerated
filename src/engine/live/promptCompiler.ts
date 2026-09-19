@@ -37,7 +37,8 @@
  * ACE-Step has no parameter for, which is nearly all of them.
  */
 
-import { ACE_STEP_TEXT_LIMITS, aceStepTextTooLong } from '../providers/aceStepRequest'
+import { ACE_STEP_TEXT_LIMITS } from '../providers/aceStepRequest'
+import { compileStyle, type CompiledStyle } from './styleCompiler'
 import type { LivePlan, MusicalPlan } from './plan'
 
 /** One direction competing for caption space. */
@@ -55,8 +56,14 @@ export interface CompiledPrompt {
   dropped: string[]
   characters: number
   limit: number
-  /** Set when even the user's own words do not fit; nothing may be sent. */
-  refusal?: string
+  /**
+   * How the Style was fitted, when it did not fit on its own.
+   *
+   * Present whenever the style was longer than the caption. `compressed` says
+   * it happened; `dropped` names the clauses that did not survive. The original
+   * is never edited and is always available on `style.original`.
+   */
+  style: CompiledStyle
 }
 
 /** Joins with ", " while collapsing the separators an empty part would leave. */
@@ -119,7 +126,11 @@ export function directionsFor(plan: LivePlan): Direction[] {
     })
   }
   directions.push({ id: 'mood', text: music.emotion })
-  directions.push({ id: 'tempo', text: `${music.targetBpm} BPM` })
+  // No tempo and no key here. ACE-Step 1.5 takes both as real GenerationParams
+  // fields — bpm and keyscale — so stating them in the caption as well spends
+  // characters to repeat, less precisely, something the model has already been
+  // told through the field built for it. The groove stays, because how the beat
+  // *sits* is not a number and has no parameter.
   directions.push({ id: 'groove', text: music.groove })
 
   if (music.instrumental) {
@@ -133,7 +144,6 @@ export function directionsFor(plan: LivePlan): Direction[] {
     })
   }
 
-  directions.push({ id: 'key', text: `key of ${music.keyName}` })
   directions.push({ id: 'harmony', text: music.chordDirection })
 
   if (!music.instrumental) {
@@ -167,32 +177,20 @@ export function directionsFor(plan: LivePlan): Direction[] {
  */
 export function compilePrompt(plan: LivePlan, userStyle: string): CompiledPrompt {
   const limit = ACE_STEP_TEXT_LIMITS.style
-  const base = userStyle.trim().replace(/[,;\s]+$/, '')
+  const directions = directionsFor(plan)
 
-  // One sentence for this in the whole codebase, borrowed from the provider
-  // that used to be the only place it was said. Two wordings for one refusal is
-  // how the interface ends up contradicting itself about the same number.
-  const tooLong = aceStepTextTooLong('style', base)
-  if (tooLong) {
-    return {
-      caption: base,
-      included: [],
-      dropped: directionsFor(plan).map((direction) => direction.id),
-      characters: base.length,
-      limit,
-      refusal: tooLong,
-    }
-  }
-
+  // Lay the user's own words down first, compressing them only if they alone
+  // exceed the caption. Nothing here refuses: a long Style is a person
+  // describing their song, not a person making a mistake, and a model limit is
+  // not a user limit.
+  const style = compileStyle(userStyle, [])
   const included: string[] = []
   const dropped: string[] = []
-  let caption = base
+  let caption = style.caption
 
-  for (const direction of directionsFor(plan)) {
+  for (const direction of directions) {
     const text = direction.text.trim().replace(/[,;\s]+$/, '')
-    // A direction the person already wrote is not repeated. Matching on the
-    // whole phrase, case-insensitively: "112 BPM" in the style means the tempo
-    // direction adds nothing, and a caption that says it twice reads as noise.
+    // A direction the person already wrote is not repeated.
     if (caption.toLowerCase().includes(text.toLowerCase())) {
       included.push(direction.id)
       continue
@@ -206,5 +204,5 @@ export function compilePrompt(plan: LivePlan, userStyle: string): CompiledPrompt
     included.push(direction.id)
   }
 
-  return { caption, included, dropped, characters: caption.length, limit }
+  return { caption, included, dropped, characters: caption.length, limit, style }
 }

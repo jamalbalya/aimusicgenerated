@@ -43,6 +43,18 @@ export {
 } from './promptCompiler'
 
 export {
+  compileStyle, splitClauses, scoreClause,
+  type CompiledStyle, type StyleClause,
+} from './styleCompiler'
+
+export {
+  CONTROL_CHANNELS, channelOf, parameterControls, descriptiveControls,
+  aceStepKeyscale, aceStepBpm, ACE_STEP_BPM_RANGE, ACE_STEP_TIME_SIGNATURES,
+  type MusicControlSpec, type ControlChannel, type ControlSection,
+  type ControlSource, type ControlValue, type ChannelEntry,
+} from './musicControlSpec'
+
+export {
   mintRequestTicket, resetRequestTickets,
   MissingRequestTicketError, RequestTicketSpentError,
   type RequestTicket,

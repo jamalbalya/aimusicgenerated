@@ -13,6 +13,57 @@ The offline procedural engine is a separate thing and is documented in
 [`musical-quality-gate.md`](./musical-quality-gate.md). It is never substituted
 for this path: a neural request that fails, fails.
 
+## 0. Correction: ACE-Step 1.5 has metadata parameters
+
+Everything this document previously said about tempo, key and seed being
+uncontrollable was **wrong**, and the error is worth stating before anything
+else because it shaped the whole architecture.
+
+The claim was "the endpoint takes six inputs and none of them is a tempo, a key
+or a seed". That is true of **this project's own Gradio wrapper**
+(`poc/zerogpu-space/app.py`), which declares six inputs and passes no metadata.
+It is false of ACE-Step. Read from `acestep/inference.py` in
+`github.com/ACE-Step/ACE-Step-1.5`, `GenerationParams` declares:
+
+```python
+bpm: Optional[int] = None        # "e.g., 120. Set to None for automatic estimation. 30 ~ 300"
+keyscale: str = ""               # "e.g., \"C Major\", \"Am\". Leave empty for auto-detection."
+timesignature: str = ""          # "2 for '2/4', 3 for '3/4', 4 for '4/4', 6 for '6/8'"
+seed: int = -1                   # "Integer seed for reproducibility. -1 means random"
+duration: float = -1.0
+enable_normalization: bool = True
+normalization_db: float = -1.0
+```
+
+And the precedence is the right way round. `inference.py` reads these into the
+metadata handed to the model, then:
+
+```python
+if (not params.bpm or params.bpm <= 0) and bpm and int(bpm) > 0:
+    params.cot_bpm = bpm          # the LM's estimate only fills an empty field
+if not params.keyscale:
+    params.cot_keyscale = key_scale
+```
+
+A caller-supplied value is **never** overwritten by the model's own guess.
+
+So tempo, key and time signature are a real conditioning channel, not prose in a
+caption — categorically different from writing "72 BPM" into free text and
+hoping. They move from *not controlled* to *requested through the field built
+for it, and measured afterwards*: conditioning is not a contract, and a
+generative model can still land off a requested tempo. What changed is that the
+request is now made properly.
+
+The limitation was ours, not ACE-Step's. `constraints.ts` carries the corrected
+classification with the evidence for each entry.
+
+### What is still genuinely uncontrollable
+
+Note-level control. There is no chord, melody or MIDI input on `text2music` —
+`task_type` offers `cover`, `repaint`, `lego`, `extract` and `complete`, none of
+which accepts a melody. That gap is real and is what a post-generation vocal
+pipeline would have to close.
+
 ## A. The execution flow
 
 ```

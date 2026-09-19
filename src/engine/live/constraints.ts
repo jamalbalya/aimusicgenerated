@@ -172,13 +172,29 @@ export const CONSTRAINTS: readonly ConstraintEntry[] = [
   // ------------------------------------------- not controlled by ACE-Step ---
   {
     id: 'exact-bpm', label: 'Generating at an exact BPM',
-    classification: 'NOT_CONTROLLED_BY_ACE_STEP',
-    evidence: 'The endpoint has no tempo input. A BPM in the caption is prose the model may follow or ignore; a real song came back 17.8 BPM from the number it was given.',
+    classification: 'POST_RENDER_MEASUREMENT_ONLY',
+    evidence: 'CORRECTED. ACE-Step 1.5 does have a tempo parameter: GenerationParams.bpm, an int '
+      + 'in the range 30-300, documented as "Set to None for automatic estimation". inference.py '
+      + 'passes it to the model as metadata and only lets its own LM fill it in when the caller '
+      + 'left it empty, so a stated tempo is never overwritten by the model\'s guess. This project '
+      + 'previously filed BPM as uncontrollable; that was true of the Space\'s Gradio wrapper, '
+      + 'which declares six inputs and passes no tempo, and false of ACE-Step. Conditioning is '
+      + 'still not a contract — the model can land off it — so adherence is measured afterwards '
+      + 'rather than assumed.',
   },
   {
     id: 'exact-key', label: 'Generating in an exact key',
-    classification: 'NOT_CONTROLLED_BY_ACE_STEP',
-    evidence: 'No key, scale or chord input exists. The caption is the only channel.',
+    classification: 'POST_RENDER_MEASUREMENT_ONLY',
+    evidence: 'CORRECTED, same as BPM. GenerationParams.keyscale takes a string such as "C Major" '
+      + 'or "Am", documented "Leave empty for auto-detection", with the same precedence rule. '
+      + 'Modal scales have no spelling in that field and are sent as their parent major or minor, '
+      + 'with the mode\'s colour left to the caption.',
+  },
+  {
+    id: 'time-signature', label: 'Generating in a stated time signature',
+    classification: 'POST_RENDER_MEASUREMENT_ONLY',
+    evidence: 'GenerationParams.timesignature — "2" for 2/4, "3" for 3/4, "4" for 4/4, "6" for '
+      + '6/8. Same precedence rule as BPM and key.',
   },
   {
     id: 'chord-progression', label: 'A specified chord progression',
@@ -192,8 +208,12 @@ export const CONSTRAINTS: readonly ConstraintEntry[] = [
   },
   {
     id: 'seed', label: 'A chosen seed',
-    classification: 'NOT_CONTROLLED_BY_ACE_STEP',
-    evidence: 'The Space hardcodes GenerationConfig(use_random_seed=True) and declares no seed input. The seed it drew comes back in the result metadata, after the fact.',
+    classification: 'PRE_RENDER_HARD_CONSTRAINT',
+    evidence: 'CORRECTED. GenerationParams.seed is an int field, -1 for random, documented '
+      + '"Integer seed for reproducibility". The reason seeds were unavailable here is that this '
+      + 'project\'s own Space hardcodes GenerationConfig(use_random_seed=True) and declares no '
+      + 'seed input — a limitation we imposed, not one ACE-Step imposes. Exposing it makes a '
+      + 'generation reproducible.',
   },
   {
     id: 'lyric-adherence', label: 'Every written word actually sung',
@@ -203,7 +223,10 @@ export const CONSTRAINTS: readonly ConstraintEntry[] = [
   {
     id: 'mix-mastering', label: 'Mixing and mastering decisions',
     classification: 'NOT_CONTROLLED_BY_ACE_STEP',
-    evidence: 'ACE-Step returns one mixed, mastered stereo file. There are no stems, no bus controls and no loudness target.',
+    evidence: 'Partly corrected. There are still no stems on text2music and no per-instrument or '
+      + 'bus control, so the mix itself is not directable. ACE-Step does expose '
+      + 'enable_normalization, normalization_db, fade_in_duration and fade_out_duration, which are '
+      + 'real mastering parameters — a loudness target is available, a mix is not.',
   },
   {
     id: 'section-boundaries', label: 'Where each section starts in the audio',
