@@ -255,8 +255,18 @@ test.describe('one press, one ZeroGPU request', () => {
       const sent = space.metadata()
       expect(sent.bpm, 'the stated tempo must reach the bpm parameter').toBe(72)
       expect(String(sent.keyscale)).toMatch(/^[A-G][#b]? (Major|Minor)$/)
-      // And it is not also repeated in the caption.
-      expect(space.caption()).not.toMatch(/\d+ BPM,/)
+
+      // The caption does contain "at 72 BPM" — because that is what the person
+      // typed, and their words go through untouched. My first version of this
+      // assertion forbade any BPM in the caption at all, which would have made
+      // the compiler edit their sentence to satisfy a test.
+      //
+      // What must hold is that the *compiler* adds no tempo of its own. So: the
+      // caption opens with their text verbatim, and the only mention of a tempo
+      // in it is theirs.
+      const caption = space.caption()
+      expect(caption.startsWith('melancholic ballad at 72 BPM')).toBe(true)
+      expect(caption.match(/BPM/gi) ?? []).toHaveLength(1)
     })
 
   test('a rapid double-click still sends exactly one request', async ({ page }) => {

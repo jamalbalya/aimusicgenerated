@@ -70,7 +70,10 @@ test.describe('vocal hints', () => {
       .toContain(BARITONE)
     const caption = (sent() as { data: string[] }).data[0]!
     expect(caption.startsWith(STYLE), 'the caption must begin with their own words').toBe(true)
-    expect((sent() as { data: unknown[] }).data).toHaveLength(6)
+    // Eleven inputs now: ACE-Step 1.5's metadata parameters and the target
+    // melody joined the six. The property this line is for is unchanged — the
+    // endpoint's shape is pinned, so a hint cannot quietly add a parameter.
+    expect((sent() as { data: unknown[] }).data).toHaveLength(11)
   })
 
   test('unticking removes only that hint', async ({ page }) => {
