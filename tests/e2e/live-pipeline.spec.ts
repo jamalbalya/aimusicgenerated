@@ -266,7 +266,12 @@ test.describe('one press, one ZeroGPU request', () => {
       // the bare style.
       expect(sent.length).toBeGreaterThan(STYLE.length)
       expect(sent.length).toBeLessThanOrEqual(512)
-      expect(sent).toMatch(/BPM/)
+      // Not a tempo: ACE-Step 1.5 takes bpm as a real GenerationParams field,
+      // so repeating it in the caption would spend characters to say, less
+      // precisely, something the model is already told properly. What the
+      // caption adds is the direction that has no parameter.
+      expect(sent).not.toMatch(/\d+ BPM/)
+      expect(sent.toLowerCase()).toMatch(/vocal|mood|straight|swung|structure/)
     })
 
   test('a failed generation does not start another one', async ({ page }) => {

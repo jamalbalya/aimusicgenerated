@@ -955,27 +955,29 @@ export default function StudioPage() {
                 action={
                   <div className="flex items-center gap-3">
                     {/*
-                      ACE-Step takes a caption of at most 512 characters and the
-                      Space refuses a longer one outright. Showing the count here
-                      means a style that will be refused says so while it is being
-                      written, rather than after the queue. The offline engine has
-                      no such limit, so the count only appears in Neural Mode, and
-                      only once it is close enough to matter.
+                      ACE-Step's caption holds 512 characters. That is a model
+                      limit, and a model limit is not a user limit: a longer
+                      Style is compiled down to a caption rather than refused,
+                      and the text here is kept whole. So this says what will
+                      happen to it, not that something is wrong with it — a
+                      counter shouting "945 over the limit" at somebody who has
+                      done nothing wrong is the implementation leaking into the
+                      product. It appears only in Neural Mode and only once the
+                      compiler will have work to do.
                     */}
                     {engineMode === 'neural' && composedStyle.length > ACE_STEP_TEXT_LIMITS.style - 96 && (
                       <span className="flex items-center">
                         <span
-                          className={`t-num text-[11px] ${
-                            composedStyle.length > ACE_STEP_TEXT_LIMITS.style
-                              ? 'text-[var(--danger)]'
-                              : 'text-[var(--text-dim)]'}`}
+                          className="t-num text-[11px] text-[var(--text-dim)]"
                           data-testid="style-length"
                           // "1457 slash 512" is not a sentence. The digits are
                           // for the eye; the span below says the same thing in
                           // words, and is the one a screen reader reads.
                           aria-hidden="true"
                         >
-                          {composedStyle.length}/{ACE_STEP_TEXT_LIMITS.style}
+                          {composedStyle.length > ACE_STEP_TEXT_LIMITS.style
+                            ? `${composedStyle.length} → ${ACE_STEP_TEXT_LIMITS.style}`
+                            : `${composedStyle.length}/${ACE_STEP_TEXT_LIMITS.style}`}
                         </span>
                         {/*
                           Deliberately not an aria-label on the element above:
@@ -986,9 +988,10 @@ export default function StudioPage() {
                         <span className="sr-only" role="status" aria-live="polite"
                           data-testid="style-length-detail">
                           {composedStyle.length > ACE_STEP_TEXT_LIMITS.style
-                            ? `${composedStyle.length} characters, `
-                              + `${composedStyle.length - ACE_STEP_TEXT_LIMITS.style} over the `
-                              + `${ACE_STEP_TEXT_LIMITS.style} ACE-Step allows`
+                            ? `${composedStyle.length} characters. Your text is kept in full; a `
+                              + `${ACE_STEP_TEXT_LIMITS.style} character caption will be compiled `
+                              + 'from it for the model, and the studio will show you which parts '
+                              + 'of it were sent.'
                             : `${composedStyle.length} of ${ACE_STEP_TEXT_LIMITS.style} characters`}
                         </span>
                       </span>

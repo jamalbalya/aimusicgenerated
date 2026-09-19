@@ -64,37 +64,40 @@ test.describe('a style too long for ACE-Step', () => {
     await page.getByLabel('Style').fill('b'.repeat(500))
     await expect(counter(page)).toHaveText('500/512')
 
-    // ...and states the overshoot in words, not just in digits.
+    // ...and over the limit it says what will HAPPEN, not that something is
+    // wrong. A long Style is somebody describing their song; the caption is
+    // compiled from it and their text is kept whole.
     await page.getByLabel('Style').fill(OVER_LIMIT)
-    await expect(counter(page)).toHaveText('1457/512')
+    await expect(counter(page)).toHaveText('1457 → 512')
     await expect(page.getByTestId('style-length-detail'))
-      .toHaveText('1457 characters, 945 over the 512 ACE-Step allows')
+      .toHaveText(/1457 characters\. Your text is kept in full/)
     await expect(page.getByTestId('style-length-detail')).toHaveRole('status')
     // The digits must not also answer to "Style": one control per name.
     await expect(page.getByLabel('Style')).toHaveCount(1)
   })
 
-  test('is refused with the overshoot named, and nothing is sent to the Space', async ({ page }) => {
+  test('is compiled down to a caption and sent, never refused', async ({ page }) => {
+    // This test used to assert the opposite. Refusing a 1457-character Style
+    // made a model limit into a user limit: the person is told their song
+    // description is wrong and asked to rewrite it to suit ACE-Step. The
+    // caption is ours to build; the Style is theirs to write.
     const joins = await countingSpace(page)
     await openNeuralStudio(page)
 
     await page.getByLabel('Style').fill(OVER_LIMIT)
     await page.getByLabel('Lyrics').fill('[Verse 1]\nPerlawanan akan menyala')
     await generateButton(page).click()
+    await expect(generateButton(page)).toBeEnabled({ timeout: 120_000 })
 
-    // The report is the panel, which names the stage and the code and stays
-    // put. It is deliberately not also a toast: that would be the same sentence
-    // twice, with the transient copy covering the panel's own buttons.
-    await expect(page.getByTestId('engine-error-message'))
-      .toHaveText(/ACE-Step takes at most 512\. Shorten it by 945\./)
-    await expect(page.getByTestId('engine-error-code')).toHaveText('STYLE_TOO_LONG')
-    // One take was asked for, so nothing should imply there were others.
-    await expect(page.getByText(/^Take \d+:/)).toHaveCount(0)
-    // The whole point: the allowance is untouched.
-    expect(joins(), 'a refused style must not reach the Space').toBe(0)
-    // And the studio is ready to try again rather than stuck mid-generation.
-    await expect(generateButton(page)).toBeEnabled()
-    await expect(generateButton(page)).toHaveText('Generate song')
+    // It was sent, once. That is the whole point: the request reached the
+    // Space instead of being stopped at the door for being wordy.
+    expect(joins(), 'a long style must be compiled, not refused').toBe(1)
+    // This harness serves no stream, so the generation fails afterwards — a
+    // limitation of the fake, not of the product. What matters is that the
+    // failure is not about the length of the style.
+    await expect(page.getByTestId('engine-error-code')).not.toHaveText('STYLE_TOO_LONG')
+    // And their text is still in the box, all 1457 characters of it.
+    await expect(page.getByLabel('Style')).toHaveValue(OVER_LIMIT)
   })
 
   test('says nothing about a limit the offline engine does not have', async ({ page }) => {

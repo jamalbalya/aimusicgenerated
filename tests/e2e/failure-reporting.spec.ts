@@ -129,18 +129,21 @@ test.describe('a failed generation is reportable', () => {
     await expect(page.getByTestId('engine-error-retry')).toBeVisible()
   })
 
-  test('offers no retry for a style that would be too long every time', async ({ page }) => {
+  test('does not treat a long style as a failure at all', async ({ page }) => {
+    // Previously this asserted a STYLE_TOO_LONG panel with no retry button,
+    // on the reasoning that a style too long is too long however many times it
+    // is sent. True — but the premise went: it is no longer too long, because
+    // the caption is compiled from it rather than being it. There is nothing
+    // to report, so nothing is reported.
     const joins = await failingSpace(page, { msg: 'close_stream' })
     await studio(page)
     await page.getByLabel('Style').fill('a'.repeat(1457))
     await page.getByLabel('Lyrics').fill(RINDU_LYRICS)
     await generateButton(page).click()
+    await expect(generateButton(page)).toBeEnabled({ timeout: 120_000 })
 
-    await expect(page.getByTestId('engine-error-code')).toHaveText('STYLE_TOO_LONG')
-    await expect(page.getByTestId('engine-error')).toContainText('Checking the request')
-    await expect(page.getByTestId('engine-error-details')).toContainText('1457')
-    await expect(page.getByTestId('engine-error-retry')).toHaveCount(0)
-    expect(joins(), 'a request refused here must never reach the Space').toBe(0)
+    await expect(page.getByTestId('engine-error-code')).not.toHaveText('STYLE_TOO_LONG')
+    expect(joins(), 'a long style is compiled and sent, not refused').toBe(1)
   })
 
   test('the retry button starts a new generation', async ({ page }) => {
