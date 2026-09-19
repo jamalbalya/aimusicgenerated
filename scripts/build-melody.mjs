@@ -41,6 +41,11 @@ try {
   const durationSeconds = durationRaw ? Number(durationRaw) : undefined
   const vocalGender = flag('vocal-gender', 'male')
   const language = flag('language', 'auto')
+  // 'bare' sends the person's Style and nothing else. See promptCompiler.
+  const captionMode = flag('caption-mode', 'compiled')
+  if (captionMode !== 'compiled' && captionMode !== 'bare') {
+    throw new Error(`--caption-mode must be 'compiled' or 'bare', got '${captionMode}'`)
+  }
 
   const input = {
     style, lyrics, instrumental: false, vocalGender, language,
@@ -49,7 +54,7 @@ try {
   const plan = planLiveGeneration(input)
   const melody = buildTargetMelody(plan, vocalGender)
   const check = checkTargetMelody(melody)
-  const compiled = compilePrompt(plan, style)
+  const compiled = compilePrompt(plan, style, captionMode)
   const sung = melody.notes.filter((note) => note.role !== 'rest')
 
   // The melody is sent only when it passed its own checks. Correcting a vocal
@@ -78,7 +83,13 @@ try {
       bpmStated: plan.music.bpmStated,
       sections: plan.music.form.map((section) => section.label),
       syllables: plan.lyrics.syllables,
+      captionMode,
       captionChars: compiled.caption.length,
+      // What the planner derived and, in bare mode, did not send. Recorded so
+      // the report can say what the model was not told.
+      captionIncluded: compiled.included,
+      captionDropped: compiled.dropped,
+      captionWithheld: compiled.withheld,
       lyricChars: plan.lyrics.text.length,
       terminator: plan.lyrics.script.terminator,
     },

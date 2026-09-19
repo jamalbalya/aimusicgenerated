@@ -54,6 +54,18 @@ export interface CompiledPrompt {
   included: string[]
   /** Direction ids the budget could not take. */
   dropped: string[]
+  /**
+   * Direction ids deliberately kept out of the caption, with their text.
+   *
+   * Only ever non-empty in `bare` mode. These are not failures and not
+   * omissions: the planner derived them exactly as it always does and they are
+   * listed here so a report can say precisely what the model was *not* told.
+   * A withheld direction that went unrecorded would make a bare caption
+   * indistinguishable from a planner that derived nothing.
+   */
+  withheld: { id: string; text: string }[]
+  /** Which caption this is: the user's Style alone, or Style plus directions. */
+  captionMode: CaptionMode
   characters: number
   limit: number
   /**
@@ -175,7 +187,11 @@ export function directionsFor(plan: LivePlan): Direction[] {
  * a lowercasing normaliser on its way to genre detection, and the caption has
  * to carry the person's own capitalisation and punctuation.
  */
-export function compilePrompt(plan: LivePlan, userStyle: string): CompiledPrompt {
+export type CaptionMode = 'compiled' | 'bare'
+
+export function compilePrompt(
+  plan: LivePlan, userStyle: string, mode: CaptionMode = 'compiled',
+): CompiledPrompt {
   const limit = ACE_STEP_TEXT_LIMITS.style
   const directions = directionsFor(plan)
 
@@ -186,7 +202,34 @@ export function compilePrompt(plan: LivePlan, userStyle: string): CompiledPrompt
   const style = compileStyle(userStyle, [])
   const included: string[] = []
   const dropped: string[] = []
+  const withheld: { id: string; text: string }[] = []
   let caption = style.caption
+
+  if (mode === 'bare') {
+    // The forensic mode. The caption is the person's Style and nothing else,
+    // so that a real generation answers one question cleanly: does ACE-Step
+    // follow the Style, the bpm field, the lyrics and the melody, or does it
+    // follow the planner's paraphrase of the Style?
+    //
+    // With derived tags appended, a song that came back "Pop" told us nothing:
+    // the caption said Pop. Every direction is still derived above and is
+    // recorded in `withheld`; nothing about MusicControlSpec, the semantic
+    // analysis or the planner changes. This decides one thing only — what
+    // reaches the model's text field.
+    for (const direction of directions) {
+      const text = direction.text.trim().replace(/[,;\s]+$/, '')
+      if (caption.toLowerCase().includes(text.toLowerCase())) {
+        // Already the person's own word, so it is theirs and not appended.
+        included.push(direction.id)
+        continue
+      }
+      withheld.push({ id: direction.id, text })
+    }
+    return {
+      caption, included, dropped, withheld, captionMode: mode,
+      characters: caption.length, limit, style,
+    }
+  }
 
   for (const direction of directions) {
     const text = direction.text.trim().replace(/[,;\s]+$/, '')
@@ -204,5 +247,8 @@ export function compilePrompt(plan: LivePlan, userStyle: string): CompiledPrompt
     included.push(direction.id)
   }
 
-  return { caption, included, dropped, characters: caption.length, limit, style }
+  return {
+    caption, included, dropped, withheld, captionMode: mode,
+    characters: caption.length, limit, style,
+  }
 }

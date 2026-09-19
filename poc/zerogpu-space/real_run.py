@@ -57,14 +57,29 @@ sys.path.insert(0, str(HERE))
 
 
 def build_request(style_file: Path, lyrics_file: Path, duration: float | None,
-                  vocal_gender: str, language: str) -> dict:
-    """Compiles the request with the engine's own code, through Node."""
+                  vocal_gender: str, language: str,
+                  caption_mode: str = "bare") -> dict:
+    """Compiles the request with the engine's own code, through Node.
+
+    `caption_mode` decides what reaches ACE-Step's text field, and nothing
+    else. `bare` sends the person's Style exactly as authored; `compiled`
+    appends the planner's derived directions, which is what the Studio does.
+
+    Bare is the default here because this harness exists to find out what the
+    *model* does. With the derived tags appended, a song that comes back "Pop"
+    has told us nothing — the caption said Pop. The planner still derives every
+    one of them, `MusicControlSpec` is untouched, and the withheld directions
+    are listed in the report; they simply are not sent.
+    """
+    if caption_mode not in ("bare", "compiled"):
+        raise ValueError(f"caption_mode must be 'bare' or 'compiled', got {caption_mode!r}")
     command = [
         "node", str(REPO / "scripts" / "build-melody.mjs"),
         "--style-file", str(style_file),
         "--lyrics-file", str(lyrics_file),
         "--vocal-gender", vocal_gender,
         "--language", language,
+        "--caption-mode", caption_mode,
     ]
     if duration is not None:
         command += ["--duration", str(duration)]
@@ -443,6 +458,14 @@ def render(record: dict) -> str:
                 "            octaves — one recording, two readings, not two tempi.\n")
 
     lines = [
+        "Caption (what reached ACE-Step's text field):",
+        f"  mode:                    {request.get('caption_mode', 'not recorded')}",
+        f"  caption === user Style:  {request.get('caption_is_exactly_the_user_style')}",
+        f"  characters sent:         {request.get('caption_chars', '-')}",
+        f"  derived directions withheld: "
+        f"{len(request.get('caption_withheld', []) or [])}",
+        *[f"    - {item['text']}" for item in (request.get("caption_withheld") or [])],
+        "",
         "Tempo (all four values, always):",
         f"  1. requested BPM:        {four('requested_bpm')}",
         f"  2. raw detected BPM:     {four('raw_bpm')}",
@@ -545,6 +568,14 @@ def main() -> int:
              "zero is a length, it is below the ten-second minimum, and the "
              "Space refuses it.")
     parser.add_argument("--vocal-gender", default="male")
+    parser.add_argument(
+        "--caption-mode", default="bare", choices=("bare", "compiled"),
+        help="What reaches ACE-Step's text field. 'bare' is the Style exactly "
+             "as authored, which is what a forensic run needs: it is the only "
+             "way to tell whether the model followed the person's words or the "
+             "planner's paraphrase of them. 'compiled' appends the planner's "
+             "derived directions, as the Studio does. Neither setting changes "
+             "what the planner derives.")
     parser.add_argument("--language", default="auto")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--out", default="./real-run")
@@ -571,7 +602,8 @@ def main() -> int:
     raw_duration = str(arguments.duration).strip().lower()
     duration = None if raw_duration in ("auto", "", "0", "-1") else float(raw_duration)
     built = build_request(Path(arguments.style_file), Path(arguments.lyrics_file),
-                          duration, arguments.vocal_gender, arguments.language)
+                          duration, arguments.vocal_gender, arguments.language,
+                          caption_mode=arguments.caption_mode)
     record["melody"] = built["melody"]
     record["plan"] = built["plan"]
     if not built["valid"]:
@@ -583,6 +615,11 @@ def main() -> int:
 
     request = built["request"]
     record["request_summary"] = {
+        "caption_mode": arguments.caption_mode,
+        "caption_is_exactly_the_user_style": (
+            request["style"] == Path(arguments.style_file).read_text(
+                encoding="utf-8").strip()),
+        "caption_withheld": built["plan"].get("captionWithheld", []),
         "caption_chars": len(request["style"]),
         "lyric_chars": len(request["lyrics"]),
         "melody_chars": len(request["melody"]),

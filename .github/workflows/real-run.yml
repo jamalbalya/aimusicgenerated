@@ -30,6 +30,10 @@ on:
         description: "Lyrics fixture to send verbatim. Never rewritten, never translated."
         required: false
         default: "poc/zerogpu-space/fixtures/tetap-memilihmu-lyrics.txt"
+      caption_mode:
+        description: "bare = send the Style exactly as authored (the forensic run). compiled = append the planner's derived directions, as the Studio does."
+        required: false
+        default: "bare"
       demucs:
         description: "Install torchaudio for Hybrid Demucs (slower setup, better separation)"
         required: false
@@ -164,6 +168,7 @@ jobs:
             --style-file "${{ inputs.style_file }}" \
             --lyrics-file "${{ inputs.lyrics_file }}" \
             --vocal-gender "${{ inputs.vocal_gender }}" \
+            --caption-mode "${{ inputs.caption_mode }}" \
             $duration_arg | tee ./real-run/console.txt
 
       - name: Put the report in the run summary

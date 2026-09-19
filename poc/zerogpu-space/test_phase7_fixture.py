@@ -51,6 +51,16 @@ LYRICS_SHA256 = "b652eb567013a1af9a34ede2b7be14f75421dd73a4ef8ca1f8266714a2c0199
 #: reads it from, so this is the number that must survive into the payload.
 REQUESTED_BPM = 72
 
+#: What reaches ACE-Step's text field on the forensic run.
+#:
+#: `bare` means the caption is the person's Style byte for byte. The planner
+#: still derives its directions and `MusicControlSpec` is untouched — they are
+#: simply not appended, so that the generation answers one question: does the
+#: model follow the Style, the bpm field, the lyrics and the melody, or does it
+#: follow the planner's paraphrase? A caption reading "Pop" makes a song that
+#: comes back Pop unfalsifiable.
+CAPTION_MODE = "bare"
+
 #: Lines that identify this sheet and no other. The title line is the hook and
 #: appears in both choruses; the opening image appears once.
 SIGNATURE_LINES = [
@@ -69,6 +79,15 @@ FOREIGN_LINES = [
     "Bawa pulang semua yang hilang",
     "Seperti dulu, seperti dulu",
     "Kopi dingin di atas meja",
+]
+
+#: The planner's derived vocabulary. None of it may reach the caption in bare
+#: mode unless the person happened to write the same word themselves.
+DERIVED_TAGS = [
+    "popular", "muted and measured", "straight", "steady time",
+    "sung lead vocal", "baritone", "warm lower-mid range",
+    "verse-chorus structure", "synth bass", "saw lead", "warm pad",
+    "no robotic delivery", "major-key lift",
 ]
 
 PASSED = 0
@@ -140,6 +159,10 @@ def main() -> int:
           "--lyrics-file" in workflow)
     check("the run step passes the style through",
           "--style-file" in workflow)
+    check("the run step passes the caption mode through",
+          "--caption-mode" in workflow)
+    check(f"and the forensic run defaults to {CAPTION_MODE!r}",
+          f'default: "{CAPTION_MODE}"' in workflow)
     check("and it still cannot start itself",
           "workflow_dispatch:" in workflow
           and not re.search(r"^\s*(push|schedule|workflow_run):", workflow, re.M))
@@ -155,6 +178,9 @@ def main() -> int:
         "--vocal-gender", "male",
         "--language", "auto",
         "--duration", "210",
+        # The forensic run's mode. Checking `compiled` here would prove the
+        # wrong thing: what matters is what the one real generation sends.
+        "--caption-mode", CAPTION_MODE,
     ]
     try:
         finished = subprocess.run(command, cwd=REPO, capture_output=True,
@@ -214,12 +240,38 @@ def main() -> int:
                   == "Dan aku tetap memilihmu",
                   [line for line in sent_lyrics.splitlines() if line.strip()][-1])
 
-            check("the owner's style text survives verbatim inside the caption",
-                  style_text.strip() in request["style"],
+            # The whole point of the forensic mode, stated as an identity
+            # rather than a containment: not "the Style is in there somewhere"
+            # but "the caption IS the Style". Containment passed happily while
+            # 116 characters of derived tags rode along behind it.
+            check("sent_caption === original_user_style",
+                  request["style"] == style_text.strip(),
                   f"{len(request['style'])} chars sent, "
-                  f"{len(style_text.strip())} of them the owner's")
-            check("the owner's text is the start of the caption, not buried",
-                  request["style"].startswith(style_text.strip()))
+                  f"{len(style_text.strip())} authored")
+            check("  ... and not one character more",
+                  len(request["style"]) == len(style_text.strip()),
+                  f"{len(request['style'])} against {len(style_text.strip())}")
+            check("the caption mode is recorded, not assumed",
+                  built["plan"].get("captionMode") == CAPTION_MODE,
+                  str(built["plan"].get("captionMode")))
+            # None of the planner's derived vocabulary may appear unless the
+            # person wrote that word themselves.
+            derived_only = [tag for tag in DERIVED_TAGS
+                            if tag.lower() not in style_text.lower()]
+            leaked = [tag for tag in derived_only
+                      if tag.lower() in request["style"].lower()]
+            check("no derived semantic tag was appended to the caption",
+                  not leaked, str(leaked))
+            # And the planner must still have derived them. A bare caption that
+            # came from a planner deriving nothing would pass every check above
+            # and mean something entirely different.
+            withheld = built["plan"].get("captionWithheld") or []
+            check("the planner still derived its directions, and they are "
+                  "recorded as withheld rather than silently absent",
+                  len(withheld) > 0, f"{len(withheld)} withheld")
+            print(f"       withheld from the caption ({len(withheld)}):")
+            for item in withheld:
+                print(f"         - {item['text']}")
 
             check(f"bpm reaches the payload as the integer {REQUESTED_BPM}",
                   request["bpm"] == REQUESTED_BPM
