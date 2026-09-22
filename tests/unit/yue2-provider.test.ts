@@ -302,6 +302,83 @@ describe('a failure says what actually happened', () => {
     expect(server.downloads()).toBe(0)
   })
 
+  /*
+   * The refusal the first real run actually came back with, reproduced from
+   * the observed message. `STARTS` is in every one of these streams on
+   * purpose: Gradio emits `process_starts` when it dequeues the event, and
+   * `spaces` only then calls `client.schedule()` from inside the decorated
+   * function — so the live refusal really does arrive after a start message,
+   * with no GPU ever allocated.
+   */
+  const ILLEGAL_DURATION = 'The requested GPU duration (192s) is larger than the maximum allowed'
+
+  it('an illegal duration is not a generation failure', async () => {
+    const { provider } = yue2({
+      stream: sse([STARTS, failed('ZeroGPU illegal duration', ILLEGAL_DURATION), CLOSE]),
+    })
+    const error = await failure(provider.generate(REQUEST, { ticket: press() })) as Yue2Error
+    expect(error).toBeInstanceOf(Yue2Error)
+    expect(error.code).toBe('illegal-duration')
+    expect(error.code).not.toBe('generation-failed')
+    expect(describeFailure(error).code).toBe('UNSUPPORTED_DURATION')
+    expect(describeFailure(error).stage).toBe('request')
+  })
+
+  it('an illegal duration does not claim the GPU ran, even after process_starts', async () => {
+    // The whole point of the flag. `started` is true by the time the refusal
+    // lands, and reporting it would say a song was attempted when the
+    // scheduler turned the request away before any worker existed.
+    const { provider } = yue2({
+      stream: sse([STARTS, failed('ZeroGPU illegal duration', ILLEGAL_DURATION), CLOSE]),
+    })
+    const error = await failure(provider.generate(REQUEST, { ticket: press() })) as Yue2Error
+    expect(error.generationStarted).toBe(false)
+    expect(describeFailure(error).details.generationStarted).toBe(false)
+  })
+
+  it('an illegal duration keeps ZeroGPU\'s own words and numbers', async () => {
+    const { provider } = yue2({
+      stream: sse([STARTS, failed('ZeroGPU illegal duration', ILLEGAL_DURATION), CLOSE]),
+    })
+    const error = await failure(provider.generate(REQUEST, { ticket: press() })) as Yue2Error
+    // Verbatim, because the number is the only thing that bounds the cap: the
+    // message never states the maximum, only what was refused.
+    expect(error.message).toContain(ILLEGAL_DURATION)
+    expect(error.message).toContain('192s')
+  })
+
+  it('an illegal duration keeps the Space response and the request id', async () => {
+    const { provider } = yue2({
+      stream: sse([STARTS, failed('ZeroGPU illegal duration', ILLEGAL_DURATION), CLOSE]),
+    })
+    const described = describeFailure(
+      await failure(provider.generate(REQUEST, { ticket: press() })))
+    expect(described.details.spaceResponse).toBe('ZeroGPU illegal duration')
+    expect(described.details.requestId).toBe(YUE2_EVENT_ID)
+  })
+
+  it('an illegal duration is never offered as a retry, and never retried here', async () => {
+    // Waiting cannot help: the scheduler returns a negative wait precisely
+    // because no allowance reset would ever cover the request.
+    const { server, provider } = yue2({
+      stream: sse([STARTS, failed('ZeroGPU illegal duration', ILLEGAL_DURATION), CLOSE]),
+    })
+    const error = await failure(provider.generate(REQUEST, { ticket: press() }))
+    expect(describeFailure(error).retryable).toBe(false)
+    expect(server.joins()).toBe(1)
+    expect(server.downloads()).toBe(0)
+  })
+
+  it('an unrelated ZeroGPU title is still a generation failure', async () => {
+    // The new branch is keyed on the exact title and must not swallow others.
+    const { provider } = yue2({
+      stream: sse([STARTS, failed('ZeroGPU worker error', 'GPU task aborted'), CLOSE]),
+    })
+    const error = await failure(provider.generate(REQUEST, { ticket: press() })) as Yue2Error
+    expect(error.code).toBe('generation-failed')
+    expect(describeFailure(error).code).toBe('INFERENCE_FAILED')
+  })
+
   it('a handler failure after the job started is a generation failure', async () => {
     const { provider } = yue2({
       stream: sse([STARTS, failed('RuntimeError', 'CUDA out of memory'), CLOSE]),

@@ -146,6 +146,7 @@ export const YUE2_CAPACITY_UNKNOWN: Yue2Capacity = {
 export type Yue2ErrorCode =
   | 'contract-mismatch'
   | 'http-error'
+  | 'illegal-duration'
   | 'generation-failed'
   | 'ambiguous-outcome'
   | 'bad-result'
@@ -529,6 +530,34 @@ export class Yue2Provider implements NeuralMusicProvider {
         return new QuotaExceededError(this.id,
           `The free GPU allowance on Hugging Face is used up for now. ${text || 'Try again later.'}`,
           parseQuotaNotice(text))
+      }
+      if (error.title === 'ZeroGPU illegal duration') {
+        // Not a generation that failed, and not an allowance that ran out.
+        // `spaces` raises both from the same branch of `client.schedule()` and
+        // tells them apart by the sign of the scheduler's `wait`: a negative
+        // wait means no reset will ever cover this request, so the Space asked
+        // for more GPU time than the visitor's tier can ever be granted. The
+        // call is refused before a worker is spawned, so nothing ran.
+        //
+        // `generationStarted` is forced false rather than carried from
+        // `context`. Gradio emits `process_starts` when it dequeues the event,
+        // and `client.schedule()` is the first thing the decorated function
+        // does — so `started` is true here while no GPU was ever allocated.
+        // Reporting that as a started generation is exactly the lie the flag
+        // exists to prevent.
+        //
+        // Sending the same request again cannot work; the stage says `request`
+        // so that no retry is offered for it.
+        return new Yue2Error('illegal-duration',
+          `Hugging Face would not give this request enough GPU time. ${text}`.trim(),
+          { ...base, cause: error, stage: 'request',
+            failureCode: 'UNSUPPORTED_DURATION',
+            generationStarted: false,
+            details: {
+              ...base.details,
+              generationStarted: false,
+              ...(error.title ? { spaceResponse: error.title } : {}),
+            } })
       }
       return new Yue2Error('generation-failed',
         [error.title, text].filter(Boolean).join(': ') || 'The Space reported a failure.',

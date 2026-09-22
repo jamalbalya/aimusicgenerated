@@ -213,7 +213,14 @@ export function describeFailure(error: unknown): GenerationFailure {
         generationStarted: error.generationStarted,
         ...(error.details ?? {}),
       },
-      retryable: error.code === 'ambiguous-outcome' ? false : error.stage !== 'request',
+      // `ambiguous-outcome` may already be running on the Space, so a second
+      // request would spend the allowance twice; `illegal-duration` is refused
+      // by the scheduler for the duration the Space declares, which this side
+      // does not vary, so the same request is refused the same way forever.
+      // Neither is worth offering a retry for.
+      retryable: error.code === 'ambiguous-outcome' || error.code === 'illegal-duration'
+        ? false
+        : error.stage !== 'request',
     }
   }
   if (error instanceof ZeroGpuError) {
