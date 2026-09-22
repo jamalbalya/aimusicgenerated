@@ -211,6 +211,33 @@ export function isExcluded(text: string, term: string): boolean {
   )
 }
 
+/** The words of a genre's name, without the punctuation that joins them. */
+function labelWords(label: string): string[] {
+  return label.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 1)
+}
+
+/**
+ * True when the text refused this genre, by any of the names it goes by.
+ *
+ * Matching the label alone is not enough and the reported bug proves it: the
+ * genre is labelled "EDM / Festival", so "no EDM" matched nothing and the
+ * refusal was silently dropped while "no jazz" — whose genre happens to be
+ * labelled exactly "Jazz" — worked. A person refusing a genre names it however
+ * they know it, so a refusal is checked against the label's words and every tag
+ * the genre answers to.
+ */
+export function genreIsRefused(text: string, genre: GenreDef): boolean {
+  const refused = parseExclusions(text.toLowerCase())
+  if (refused.length === 0) return false
+  const names = new Set([
+    genre.label.toLowerCase(), ...labelWords(genre.label), ...genre.tags,
+  ])
+  return refused.some((phrase) => {
+    if (names.has(phrase)) return true
+    return phrase.split(/\s+/).some((word) => names.has(word))
+  })
+}
+
 function scoreTags(text: string, tags: readonly string[]): number {
   let score = 0
   for (const tag of tags) {
@@ -288,10 +315,12 @@ export function detectGenre(text: string): GenreDef | null {
     scoreTags(visible, genre.tags) + scoreTags(visible, [genre.label.toLowerCase()])
 
   const named = GENRES.filter((genre) => visible.includes(genre.label.toLowerCase()))
-  const pool = (named.length > 0 ? named : GENRES)
-    // A refused genre is never the answer, even if some tag of it survives
-    // elsewhere in the sentence.
-    .filter((genre) => !isExcluded(text, genre.label))
+  // A refused genre is never the answer, even if some tag of it survives
+  // elsewhere in the sentence. Filtered before the fallback to the full list,
+  // so a refusal cannot be reintroduced by falling back.
+  const allowed = GENRES.filter((genre) => !genreIsRefused(text, genre))
+  const namedAllowed = named.filter((genre) => !genreIsRefused(text, genre))
+  const pool = namedAllowed.length > 0 ? namedAllowed : allowed
 
   let best: GenreDef | null = null
   let bestScore = 0
@@ -354,7 +383,17 @@ export function buildSpec(prompt: string, overrides: PromptOverrides = {}): Song
   const seed = overrides.seed ?? `${prompt}|${Date.now()}`
   const rng = new Rng(seed)
 
-  const genre = overrides.genreId ? getGenre(overrides.genreId) : (detectGenre(text) ?? getGenre('pop'))
+  // The fallback has to respect a refusal too. "no pop" with nothing else
+  // detectable would otherwise land on Pop — the one genre the person ruled
+  // out — because the default was chosen before anyone read their refusals.
+  const fallbackGenre = (): GenreDef => {
+    const pop = getGenre('pop')
+    if (!genreIsRefused(text, pop)) return pop
+    return GENRES.find((genre) => !genreIsRefused(text, genre)) ?? pop
+  }
+  const genre = overrides.genreId
+    ? getGenre(overrides.genreId)
+    : (detectGenre(text) ?? fallbackGenre())
   const mood = overrides.mood ? getMood(overrides.mood) : (detectMood(text) ?? inferMoodFromGenre(genre, rng))
 
   const [bpmLow, bpmHigh] = genre.bpm

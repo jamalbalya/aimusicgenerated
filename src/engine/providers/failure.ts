@@ -92,11 +92,74 @@ const ZERO_GPU_CODES: Record<string, { stage: GenerationStage; code: GenerationE
  * refused the job or a file that would not download, and only the thrower knows
  * which.
  */
+/**
+ * Everything the thrown object knows, including what wrapped it.
+ *
+ * Reported from the live site: the interface said "The generation request
+ * failed. Nothing was retried automatically." and nothing else. The stage and
+ * code were on screen, but the HTTP status, the Space's own response and the
+ * job's id were either folded into a sentence or thrown away entirely, and any
+ * error that did not match one of the branches below became `UNKNOWN` with an
+ * empty `details` — the original exception gone.
+ *
+ * An error nobody can look up is an error nobody can fix. So this walks the
+ * `cause` chain and collects the fields that identify a failure wherever they
+ * appear on it, and every branch merges the result. Nothing is invented: a
+ * field absent from the chain is absent from the report.
+ */
+function diagnose(
+  error: unknown, options: { includeName?: boolean } = {},
+): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {}
+  const seen = new Set<unknown>()
+  let current: unknown = error
+  let depth = 0
+  while (current !== null && current !== undefined && !seen.has(current) && depth < 8) {
+    seen.add(current)
+    depth += 1
+    if (current instanceof Error) {
+      // Only where the code does not already name the class. On a branch that
+      // reports QUOTA_EXCEEDED, "errorName: QuotaExceededError" is a second
+      // copy of the same fact taking up a row in a panel someone reads while
+      // something is broken. The innermost name is the most specific, so an
+      // outer wrapper never overwrites it.
+      if (options.includeName === true && out.errorName === undefined
+          && current.name && current.name !== 'Error') {
+        out.errorName = current.name
+      }
+      const record = current as unknown as Record<string, unknown>
+      if (out.httpStatus === undefined && typeof record.status === 'number') {
+        out.httpStatus = record.status
+      }
+      if (out.spaceResponse === undefined && typeof record.detail === 'string' && record.detail) {
+        // Bounded: a Space that answers with an HTML error page should not push
+        // the code and the status off the screen.
+        out.spaceResponse = record.detail.slice(0, 400)
+      }
+      if (out.requestId === undefined && typeof record.requestId === 'string' && record.requestId) {
+        out.requestId = record.requestId
+      }
+      if (out.cause === undefined && current.cause instanceof Error
+          && current.cause.message && current.cause.message !== current.message) {
+        out.cause = `${current.cause.name}: ${current.cause.message}`.slice(0, 300)
+      }
+      current = current.cause
+      continue
+    }
+    break
+  }
+  return out
+}
+
 export function describeFailure(error: unknown): GenerationFailure {
   const message = error instanceof Error ? error.message : String(error)
+  // The identifying fields — status, the Space's answer, the request id, the
+  // cause — are worth having on every branch. The class name is only worth
+  // having where nothing else names it, which is the unknown branch below.
+  const found = diagnose(error)
 
   if (error instanceof GenerationCancelledError) {
-    return { stage: 'cancelled', code: 'CANCELLED', message, details: {}, retryable: true }
+    return { stage: 'cancelled', code: 'CANCELLED', message, details: found, retryable: true }
   }
   if (error instanceof QuotaExceededError) {
     const quota = error.quota
@@ -105,6 +168,7 @@ export function describeFailure(error: unknown): GenerationFailure {
       // `null` in a quota reading means "the refusal did not say", which is a
       // different thing from a number and must not be shown as one.
       details: {
+        ...found,
         ...(typeof quota?.remainingSeconds === 'number' ? { remainingSeconds: quota.remainingSeconds } : {}),
         ...(typeof quota?.requestedSeconds === 'number' ? { requestedSeconds: quota.requestedSeconds } : {}),
         ...(typeof quota?.retryAt === 'number' ? { retryAt: quota.retryAt } : {}),
@@ -112,10 +176,16 @@ export function describeFailure(error: unknown): GenerationFailure {
     }
   }
   if (error instanceof AuthenticationRequiredError) {
-    return { stage: 'auth', code: 'AUTH_REQUIRED', message, details: { engine: error.engineId }, retryable: false }
+    return {
+      stage: 'auth', code: 'AUTH_REQUIRED', message,
+      details: { ...found, engine: error.engineId }, retryable: false,
+    }
   }
   if (error instanceof AccountNotAllowedError) {
-    return { stage: 'auth', code: 'ACCOUNT_NOT_ALLOWED', message, details: { engine: error.engineId }, retryable: false }
+    return {
+      stage: 'auth', code: 'ACCOUNT_NOT_ALLOWED', message,
+      details: { ...found, engine: error.engineId }, retryable: false,
+    }
   }
   if (error instanceof EngineUnavailableError) {
     // The Space not answering and the stream going quiet arrive as the same
@@ -125,7 +195,7 @@ export function describeFailure(error: unknown): GenerationFailure {
     return {
       stage: lost ? 'stream' : 'connect',
       code: lost ? 'SSE_CONNECTION_FAILED' : 'ENGINE_UNAVAILABLE',
-      message, details: { engine: error.engineId }, retryable: true,
+      message, details: { ...found, engine: error.engineId }, retryable: true,
     }
   }
   if (error instanceof ZeroGpuError) {
@@ -134,11 +204,16 @@ export function describeFailure(error: unknown): GenerationFailure {
     const code = error.failureCode ?? mapped?.code ?? 'UNKNOWN'
     return {
       stage, code, message,
-      details: error.details ?? {},
+      details: { ...found, ...(error.details ?? {}) },
       retryable: mapped?.retryable ?? true,
     }
   }
-  return { stage: 'unknown', code: 'UNKNOWN', message, details: {}, retryable: true }
+  // The last resort, and the one the report came from. It keeps whatever the
+  // chain knew rather than replacing it with a shrug.
+  return {
+    stage: 'unknown', code: 'UNKNOWN', message,
+    details: diagnose(error, { includeName: true }), retryable: true,
+  }
 }
 
 /** What each stage is called on screen. Short, because it sits beside the code. */

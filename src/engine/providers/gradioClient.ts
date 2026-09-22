@@ -36,7 +36,16 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 
 /** The app answered a request with an HTTP error. */
 export class GradioHttpError extends Error {
-  constructor(message: string, readonly status: number, readonly detail?: string) {
+  /**
+   * `requestId` is Gradio's `event_id` for the job, when the failure happened
+   * after one was issued. It is the only handle that ties a refusal on this
+   * page to a line in the Space's own log, so a report of "it failed" can be
+   * looked up rather than described.
+   */
+  constructor(
+    message: string, readonly status: number, readonly detail?: string,
+    readonly requestId?: string,
+  ) {
     super(message)
     this.name = 'GradioHttpError'
   }
@@ -432,7 +441,7 @@ export class GradioClient {
       if (!response.ok) {
         throw new GradioHttpError(
           `The app returned HTTP ${response.status} for the result stream.`,
-          response.status, await readDetail(response))
+          response.status, await readDetail(response), eventId)
       }
       if (!response.body) throw new GradioProtocolError('The result stream had no body.')
 

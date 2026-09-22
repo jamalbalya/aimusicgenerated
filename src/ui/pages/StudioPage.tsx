@@ -141,6 +141,30 @@ export const LIVE_STAGE_LABELS: Record<LiveStage, string> = {
 }
 
 /**
+ * Field names a person can read, for the failure panel.
+ *
+ * The keys are what the code carries; these are what they mean. An
+ * unrecognised key is shown as-is rather than hidden, because a detail nobody
+ * named is still evidence.
+ */
+export const DETAIL_LABELS: Record<string, string> = {
+  httpStatus: 'HTTP status',
+  spaceResponse: 'Space response',
+  requestId: 'Request ID',
+  errorName: 'Exception',
+  cause: 'Underlying cause',
+  engine: 'Engine',
+  remainingSeconds: 'GPU seconds left',
+  requestedSeconds: 'GPU seconds asked for',
+  retryAt: 'Allowance resets at',
+  detail: 'Space response',
+  checks: 'Failed checks',
+  syllables: 'Syllables',
+  syllablesPerSecond: 'Syllables per second',
+  minimumSeconds: 'Minimum seconds needed',
+}
+
+/**
  * A validation refusal, in the same shape as a failure from the Space.
  *
  * The person does not care which side of the network caught it; they care what
@@ -1325,13 +1349,24 @@ export default function StudioPage() {
                 </span>
               </div>
               <p className="text-[13px]" data-testid="engine-error-message">{engineError.message}</p>
+              {/*
+                Said in words, not left to be inferred from whether a button
+                appeared. "Nothing was retried automatically" tells a person
+                what did not happen; this tells them what to do next.
+              */}
+              <p className="text-[11.5px] text-[var(--text-faint)]"
+                data-testid="engine-error-retryable">
+                {engineError.retryable
+                  ? 'Pressing Generate again could work — this is worth one more attempt.'
+                  : 'Pressing Generate again would fail the same way. Change the request first.'}
+              </p>
               {Object.keys(engineError.details).length > 0 && (
                 <dl className="grid gap-0.5 text-[11.5px] text-[var(--text-faint)]"
                   data-testid="engine-error-details">
                   {Object.entries(engineError.details).map(([name, value]) => (
                     <div key={name} className="flex gap-2">
-                      <dt className="min-w-[9rem]">{name}</dt>
-                      <dd className="t-num">{String(value)}</dd>
+                      <dt className="min-w-[9rem]">{DETAIL_LABELS[name] ?? name}</dt>
+                      <dd className="t-num break-all">{String(value)}</dd>
                     </div>
                   ))}
                 </dl>
