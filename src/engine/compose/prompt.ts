@@ -28,7 +28,12 @@ export interface MoodDef {
 
 export const MOODS: MoodDef[] = [
   { id: 'happy', label: 'Happy', tags: ['happy', 'joyful', 'cheerful', 'fun', 'sunny', 'playful', 'feel good'], minorBias: 0.05, tempoScale: 1.05, energy: 0.7, brightness: 0.85 },
-  { id: 'sad', label: 'Sad', tags: ['sad', 'melancholy', 'heartbreak', 'lonely', 'crying', 'sorrow', 'blue'], minorBias: 0.95, tempoScale: 0.86, energy: 0.3, brightness: 0.35 },
+  // The inflections matter as much as the roots. Tags are matched as plain
+  // substrings, so 'melancholy' does not match "deeply melancholic" and
+  // 'lonely' does not match "quiet loneliness" — a style line that said both
+  // scored zero here and lost to Romantic on the single word "intimate",
+  // which put a song about a tired father into a major key.
+  { id: 'sad', label: 'Sad', tags: ['sad', 'sadness', 'melancholy', 'melancholic', 'melancholia', 'heartbreak', 'heartbroken', 'lonely', 'loneliness', 'crying', 'sorrow', 'sorrowful', 'grief', 'mournful', 'blue'], minorBias: 0.95, tempoScale: 0.86, energy: 0.3, brightness: 0.35 },
   { id: 'dark', label: 'Dark', tags: ['dark', 'sinister', 'evil', 'haunting', 'creepy', 'ominous', 'menacing'], minorBias: 0.98, tempoScale: 0.95, energy: 0.55, brightness: 0.22 },
   { id: 'epic', label: 'Epic', tags: ['epic', 'heroic', 'powerful', 'triumphant', 'grand', 'massive', 'battle'], minorBias: 0.7, tempoScale: 0.98, energy: 0.9, brightness: 0.6 },
   { id: 'chill', label: 'Chill', tags: ['chill', 'relaxed', 'laid back', 'mellow', 'calm', 'lazy', 'smooth'], minorBias: 0.45, tempoScale: 0.85, energy: 0.28, brightness: 0.45 },
@@ -137,6 +142,75 @@ function parseKey(text: string): { tonic: PitchClass; scale: ScaleName } | null 
   return { tonic, scale: map[raw] ?? 'major' }
 }
 
+/**
+ * The words that turn the phrase after them into a refusal.
+ *
+ * English and Indonesian, because the people using this write in both and a
+ * sheet in Indonesian with an English style line is the normal case here.
+ * `tanpa` is "without", `bukan` is "not/isn't", `jangan` is "don't".
+ */
+const EXCLUSION_WORDS = [
+  'no', 'not', 'non', 'without', 'avoid', 'avoiding', 'never', 'exclude',
+  'excluding', 'except', 'minus', 'anti', 'hindari', 'tanpa', 'bukan', 'jangan',
+]
+
+/**
+ * What the person asked NOT to have.
+ *
+ * "no jazz, no EDM" used to name jazz. `detectGenre` asks whether the text
+ * contains a genre's label, `text.includes('jazz')` is true of "no jazz", and
+ * the request came back a swung jazz track whose caption read
+ *
+ *     "...dignified sorrow, no jazz, no EDM., Jazz, roots, ... swung hard"
+ *
+ * — the refusal and its exact opposite in one sentence, with the plan choosing
+ * jazz progressions to match. A refusal is the strongest thing a person can say
+ * about a genre and it was being read as a request for it.
+ *
+ * Each exclusion runs from the refusing word to the next comma, semicolon,
+ * full stop, or "and"/"or", because that is where a listed refusal ends:
+ * "no jazz, no EDM" is two, and "without heavy drums or distorted guitar" is
+ * two as well. The spans are returned so a caller can both ignore them when
+ * detecting and refuse to append a direction that contradicts them.
+ */
+export function parseExclusions(text: string): string[] {
+  const found: string[] = []
+  const pattern = new RegExp(
+    String.raw`\b(?:${EXCLUSION_WORDS.join('|')})[\s-]+([^,;.]+?)(?=\s*(?:,|;|\.|\band\b|\bor\b|$))`,
+    'gu',
+  )
+  for (const match of text.matchAll(pattern)) {
+    const phrase = match[1]!.trim()
+    // "no" also appears in ordinary prose ("no more than", "not too bright").
+    // A refusal of nothing is not a refusal.
+    if (phrase.length >= 2) found.push(phrase)
+  }
+  return found
+}
+
+/**
+ * The text with every refusal blanked out, for detection to read.
+ *
+ * Blanked rather than deleted: removing the span would let the words either
+ * side become adjacent and form a phrase nobody wrote.
+ */
+export function withoutExclusions(text: string): string {
+  let out = text
+  for (const phrase of parseExclusions(text)) {
+    out = out.split(phrase).join(' '.repeat(phrase.length))
+  }
+  return out
+}
+
+/** True when `term` is something the text refused. */
+export function isExcluded(text: string, term: string): boolean {
+  const wanted = term.toLowerCase().trim()
+  if (!wanted) return false
+  return parseExclusions(text.toLowerCase()).some(
+    (phrase) => phrase === wanted || phrase.split(/\s+/).includes(wanted),
+  )
+}
+
 function scoreTags(text: string, tags: readonly string[]): number {
   let score = 0
   for (const tag of tags) {
@@ -176,8 +250,12 @@ export function genreIsConfident(detection: GenreDetection | null): boolean {
 export function detectGenreDetailed(text: string): GenreDetection | null {
   const genre = detectGenre(text)
   if (!genre) return null
-  const matches = genre.tags.filter((tag) => text.includes(tag)).length
-  return { genre, matches, namedDirectly: text.includes(genre.label.toLowerCase()) }
+  // Counted on the text with refusals blanked, so "no jazz" never contributes
+  // confidence to Jazz. Confidence is what decides whether the guess is written
+  // into the caption at all.
+  const visible = withoutExclusions(text)
+  const matches = genre.tags.filter((tag) => visible.includes(tag)).length
+  return { genre, matches, namedDirectly: visible.includes(genre.label.toLowerCase()) }
 }
 
 /**
@@ -202,11 +280,18 @@ export function detectGenreDetailed(text: string): GenreDetection | null {
  * description that names no genre at all, which is most of them.
  */
 export function detectGenre(text: string): GenreDef | null {
+  // Everything below reads the text with refusals blanked. "no jazz" is not a
+  // request for jazz, and before this it was the strongest one the detector
+  // could see: a named genre beats every tag score.
+  const visible = withoutExclusions(text)
   const score = (genre: GenreDef): number =>
-    scoreTags(text, genre.tags) + scoreTags(text, [genre.label.toLowerCase()])
+    scoreTags(visible, genre.tags) + scoreTags(visible, [genre.label.toLowerCase()])
 
-  const named = GENRES.filter((genre) => text.includes(genre.label.toLowerCase()))
-  const pool = named.length > 0 ? named : GENRES
+  const named = GENRES.filter((genre) => visible.includes(genre.label.toLowerCase()))
+  const pool = (named.length > 0 ? named : GENRES)
+    // A refused genre is never the answer, even if some tag of it survives
+    // elsewhere in the sentence.
+    .filter((genre) => !isExcluded(text, genre.label))
 
   let best: GenreDef | null = null
   let bestScore = 0
@@ -221,10 +306,11 @@ export function detectGenre(text: string): GenreDef | null {
 }
 
 export function detectMood(text: string): MoodDef | null {
+  const visible = withoutExclusions(text)
   let best: MoodDef | null = null
   let bestScore = 0
   for (const mood of MOODS) {
-    const score = scoreTags(text, mood.tags)
+    const score = scoreTags(visible, mood.tags)
     if (score > bestScore) {
       bestScore = score
       best = mood
