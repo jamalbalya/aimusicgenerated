@@ -20,6 +20,7 @@ import {
   GenerationCancelledError, QuotaExceededError,
 } from './types'
 import { ZeroGpuError } from './zeroGpuProvider'
+import { Yue2Error } from './yue2Provider'
 
 /** Where in one request a failure happened. */
 export type GenerationStage =
@@ -196,6 +197,23 @@ export function describeFailure(error: unknown): GenerationFailure {
       stage: lost ? 'stream' : 'connect',
       code: lost ? 'SSE_CONNECTION_FAILED' : 'ENGINE_UNAVAILABLE',
       message, details: { ...found, engine: error.engineId }, retryable: true,
+    }
+  }
+  if (error instanceof Yue2Error) {
+    // Same shape as the ZeroGPU branch below, plus the one fact that branch
+    // has no need of: whether the Space had begun generating. A quota refusal
+    // arrives before the decorated function runs, and a report that loses that
+    // distinction turns "nothing happened" into "your song failed".
+    return {
+      stage: error.stage ?? 'unknown',
+      code: error.failureCode ?? 'UNKNOWN',
+      message,
+      details: {
+        ...found,
+        generationStarted: error.generationStarted,
+        ...(error.details ?? {}),
+      },
+      retryable: error.code === 'ambiguous-outcome' ? false : error.stage !== 'request',
     }
   }
   if (error instanceof ZeroGpuError) {

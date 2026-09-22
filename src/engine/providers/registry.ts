@@ -125,7 +125,8 @@ export function resolveEngineMode(choice: EngineMode | null, neuralHasAnswered: 
 }
 
 /** The label shown against a finished song, so the engine is never in doubt. */
-export function engineLabel(engine: 'ace-step' | 'procedural'): string {
+export function engineLabel(engine: 'ace-step' | 'yue2' | 'procedural'): string {
+  if (engine === 'yue2') return 'YuE2'
   return engine === 'ace-step'
     ? 'Engine: ACE-Step 1.5 — Neural'
     : 'Engine: Resonant Procedural — Offline'

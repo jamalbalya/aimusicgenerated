@@ -9,6 +9,15 @@ export {
   type ZeroGpuVocalGender,
 } from './zeroGpuProvider'
 export {
+  Yue2Provider, Yue2Error,
+  YUE2_PROVIDER_ID, YUE2_SPACE, YUE2_API_NAME, YUE2_API_ROUTE, YUE2_CONTRACT_VERIFIED,
+  YUE2_INPUT_ORDER, YUE2_OUTPUT_MP3, YUE2_OUTPUT_FLAC,
+  YUE2_LIVE_GENERATION_DISABLED, YUE2_CAPACITY_UNKNOWN,
+  planYue2Request, yue2Config, yue2SpaceUrl,
+  type Yue2Capacity, type Yue2CapacityState, type Yue2Config, type Yue2ErrorCode,
+  type Yue2ProviderOptions, type Yue2RequestPlan,
+} from './yue2Provider'
+export {
   GradioClient, SseParser, GRADIO_PROTOCOL, DEFAULT_HEARTBEAT_TIMEOUT_MS,
   GradioAppError, GradioCancelledError, GradioConnectionLostError, GradioHttpError,
   GradioNetworkError, GradioProtocolError, GradioUnexpectedError,

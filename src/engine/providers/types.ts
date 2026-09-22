@@ -74,9 +74,27 @@ export interface MusicGenerationResult {
    * and a retry.
    */
   ticketId?: string
-  engine: 'ace-step' | 'procedural'
+  engine: 'ace-step' | 'yue2' | 'procedural'
+  /**
+   * The engine's own id for this job, when it issues one.
+   *
+   * Gradio calls it `event_id`. It is the only handle that ties a result — or
+   * a refusal — on this page to a line in the Space's log, so it is carried
+   * rather than dropped. Absent for an engine that issues nothing.
+   */
+  providerRequestId?: string
   /** Playable and downloadable; an object URL for a locally produced result. */
   audioUrl: string
+  /**
+   * The same song in the other formats the engine returned, when it returns
+   * more than one.
+   *
+   * `audioUrl` stays the one to play. An engine that hands back a lossless
+   * master alongside it should not have that master thrown away just because
+   * the field for audio is singular — but nor should a second rendering be
+   * mistaken for a second song: every entry here is the same generation.
+   */
+  alternateFormats?: { format: string; url: string }[]
   duration: number
   sampleRate?: number
   /**
