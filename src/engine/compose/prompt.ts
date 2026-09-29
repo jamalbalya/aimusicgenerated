@@ -126,13 +126,60 @@ function parseDuration(text: string): number | null {
   return null
 }
 
-/** Extracts an explicit key such as "in F# minor" or "key of Eb". */
+/** The modes a key can be written in, as one alternation. */
+const MODE_WORDS = 'major|minor|maj|min|dorian|lydian|mixolydian|phrygian|locrian|'
+  + 'harmonic minor|melodic minor|blues|pentatonic'
+
+/**
+ * Extracts an explicit key, however the person happened to write it.
+ *
+ * Three spellings, and the reason there are three is a real request that lost
+ * its key:
+ *
+ *     "...aggressive mature male vocal, dark F-minor tonal center, heavy..."
+ *
+ * The old pattern required the word "in" or "key of" in front of the note.
+ * Nothing here says either, so the key was read as absent, the planner fell
+ * through to `rng.pick([0, 2, 3, ...])`, and the song came back in A minor —
+ * a key nobody asked for, presented in the UI as if it had been planned.
+ *
+ * So the anchored form still works, and two more are accepted:
+ *
+ *   anchored    "in F# minor", "key of Eb", "tonality of C"
+ *   hyphenated  "F-minor", "Bb-major"      — unambiguous, needs no anchor
+ *   trailing    "F minor tonal center"     — the key word comes after
+ *
+ * The trailing form requires the note in upper case. That is how a key is
+ * written, and it is what keeps "a minor detail" from being read as the key of
+ * A minor — exactly the false positive that would make a looser pattern worse
+ * than the bug it fixes. The hyphenated form needs no such guard: a hyphen
+ * between a note and a mode is never anything but a key. Both read the
+ * *original* text, not the lower-cased copy the rest of the detection uses,
+ * because lower-casing first would throw away the only signal that separates
+ * them.
+ */
 function parseKey(text: string): { tonic: PitchClass; scale: ScaleName } | null {
-  const match = /(?:\bin\b|\bkey of\b)\s+([a-gA-G][#b]?)\s*(major|minor|maj|min|dorian|lydian|mixolydian|phrygian|locrian|harmonic minor|melodic minor|blues|pentatonic)?/.exec(text)
+  const anchored = new RegExp(
+    `(?:\\bin\\b|\\bkey of\\b|\\btonality of\\b)\\s+([a-gA-G][#b]?)\\s*(${MODE_WORDS})?`, 'i')
+  // "F-minor": a hyphen between a note and a mode is never anything else.
+  const hyphenated = new RegExp(`\\b([A-G][#b]?)-(${MODE_WORDS})\\b`, 'i')
+  // "F minor tonal center": the key word follows instead of leading. Matched
+  // case-insensitively so "F Minor" works, then the note's case is checked
+  // below — a regex cannot be case-sensitive in one group and not another.
+  const trailing = new RegExp(
+    `\\b([A-G][#b]?)\\s+(${MODE_WORDS})\\b\\s*(?:tonal\\s+cent(?:er|re)|tonality|tonic|key|scale)\\b`, 'i')
+
+  let match = hyphenated.exec(text)
+  if (!match) {
+    const found = trailing.exec(text)
+    // Upper case only, so "a minor key change" is not the key of A minor.
+    if (found && /^[A-G]/.test(found[1]!)) match = found
+  }
+  match ??= anchored.exec(text)
   if (!match) return null
   const tonic = parsePitchClass(match[1]!)
   if (tonic === null) return null
-  const raw = (match[2] ?? '').replace(/\s+/g, '')
+  const raw = (match[2] ?? '').toLowerCase().replace(/\s+/g, '')
   const map: Record<string, ScaleName> = {
     major: 'major', maj: 'major', minor: 'minor', min: 'minor',
     dorian: 'dorian', lydian: 'lydian', mixolydian: 'mixolydian',
@@ -238,10 +285,31 @@ export function genreIsRefused(text: string, genre: GenreDef): boolean {
   })
 }
 
+/**
+ * The same words, with hyphens and slashes read as spaces.
+ *
+ * Applied to *both* sides of every tag comparison, which is the point. A
+ * request opening "Hardcore conscious hip-hop / rap-rock" was detected as
+ * **Rock**: the Hip Hop label is written "hip hop", the text said "hip-hop",
+ * and the two never matched — while "rap-rock" happily contained the word
+ * "rock". So the genre nobody asked for won on a substring of the genre they
+ * did ask for, and the plan chose rock progressions and a sung vocal for a rap
+ * track.
+ *
+ * Normalising only the text would break the other direction: real tags include
+ * "lo-fi", "k-pop" and "8-bit". Normalising both makes "lo-fi" and "lo fi"
+ * the same phrase whichever side it is written on, which is what a reader
+ * would assume all along.
+ */
+function separatorless(text: string): string {
+  return text.replace(/[-/_]+/g, ' ').replace(/\s+/g, ' ')
+}
+
 function scoreTags(text: string, tags: readonly string[]): number {
+  const flat = separatorless(text)
   let score = 0
   for (const tag of tags) {
-    if (!text.includes(tag)) continue
+    if (!flat.includes(separatorless(tag))) continue
     // Longer, more specific phrases outweigh single common words.
     score += 1 + tag.length / 12
   }
@@ -280,9 +348,9 @@ export function detectGenreDetailed(text: string): GenreDetection | null {
   // Counted on the text with refusals blanked, so "no jazz" never contributes
   // confidence to Jazz. Confidence is what decides whether the guess is written
   // into the caption at all.
-  const visible = withoutExclusions(text)
-  const matches = genre.tags.filter((tag) => visible.includes(tag)).length
-  return { genre, matches, namedDirectly: visible.includes(genre.label.toLowerCase()) }
+  const visible = separatorless(withoutExclusions(text))
+  const matches = genre.tags.filter((tag) => visible.includes(separatorless(tag))).length
+  return { genre, matches, namedDirectly: visible.includes(separatorless(genre.label.toLowerCase())) }
 }
 
 /**
@@ -314,7 +382,10 @@ export function detectGenre(text: string): GenreDef | null {
   const score = (genre: GenreDef): number =>
     scoreTags(visible, genre.tags) + scoreTags(visible, [genre.label.toLowerCase()])
 
-  const named = GENRES.filter((genre) => visible.includes(genre.label.toLowerCase()))
+  // Separator-insensitive, so "hip-hop" names Hip Hop. `scoreTags` does the
+  // same on its own inputs; only the label test needs flattening here.
+  const flat = separatorless(visible)
+  const named = GENRES.filter((genre) => flat.includes(separatorless(genre.label.toLowerCase())))
   // A refused genre is never the answer, even if some tag of it survives
   // elsewhere in the sentence. Filtered before the fallback to the full list,
   // so a refusal cannot be reintroduced by falling back.
@@ -403,7 +474,9 @@ export function buildSpec(prompt: string, overrides: PromptOverrides = {}): Song
   )
   const bpm = clampBpm(overrides.bpm ?? parseBpm(text) ?? inferredBpm)
 
-  const explicitKey = parseKey(text)
+  // The original, not the lower-cased `text`: `parseKey` distinguishes a key
+  // from ordinary prose by the note's capital letter, and `text` has none.
+  const explicitKey = parseKey(prompt)
   let tonic: PitchClass
   let scale: ScaleName
   if (overrides.tonic !== undefined && overrides.scale) {
