@@ -163,13 +163,20 @@ function parseKey(text: string): { tonic: PitchClass; scale: ScaleName } | null 
     `(?:\\bin\\b|\\bkey of\\b|\\btonality of\\b)\\s+([a-gA-G][#b]?)\\s*(${MODE_WORDS})?`, 'i')
   // "F-minor": a hyphen between a note and a mode is never anything else.
   const hyphenated = new RegExp(`\\b([A-G][#b]?)-(${MODE_WORDS})\\b`, 'i')
+  // "..., A minor, intimate verses, ...": the key is its own clause in a
+  // comma-separated style line, with no key word anywhere near it. This is
+  // how most style boxes are actually written, and it was the remaining way
+  // to state a key and still be overruled by `rng.pick(...)`. Safe because a
+  // whole clause that is exactly a note and a mode is never ordinary prose —
+  // "a minor detail in the mix" is a clause, but it does not end at the mode.
+  const clause = new RegExp(`(?:^|,)\\s*([A-G][#b]?)\\s+(${MODE_WORDS})\\s*(?=,|$)`)
   // "F minor tonal center": the key word follows instead of leading. Matched
   // case-insensitively so "F Minor" works, then the note's case is checked
   // below — a regex cannot be case-sensitive in one group and not another.
   const trailing = new RegExp(
     `\\b([A-G][#b]?)\\s+(${MODE_WORDS})\\b\\s*(?:tonal\\s+cent(?:er|re)|tonality|tonic|key|scale)\\b`, 'i')
 
-  let match = hyphenated.exec(text)
+  let match = hyphenated.exec(text) ?? clause.exec(text)
   if (!match) {
     const found = trailing.exec(text)
     // Upper case only, so "a minor key change" is not the key of A minor.
@@ -502,12 +509,17 @@ export function buildSpec(prompt: string, overrides: PromptOverrides = {}): Song
   // whether there is a voice at all: a request for "lo-fi" is a request for a
   // sound, not an instruction to drop the vocal, and silently returning a
   // backing track is the single most confusing thing this could do.
+  // Refusals blanked, and whole words only. A pop ballad ending "no EDM, no
+  // trap, no excessive melisma" was planned with a *rapped* vocal: `includes`
+  // found "rap" inside "trap", and the refusal that put the word there was
+  // never read. Both halves were wrong — the substring and the ignored "no".
+  const rapText = withoutExclusions(text)
   let vocals: VocalStyle
   if (overrides.vocals) {
     vocals = overrides.vocals
   } else if (instrumental) {
     vocals = 'none'
-  } else if (RAP_WORDS.some((w) => text.includes(w))) {
+  } else if (RAP_WORDS.some((w) => new RegExp(`\\b${w}\\b`).test(rapText))) {
     vocals = 'rap'
   } else if (genre.vocalStyle === 'none') {
     vocals = 'sung'

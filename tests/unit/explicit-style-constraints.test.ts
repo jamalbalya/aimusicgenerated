@@ -34,6 +34,9 @@ import { planLiveGeneration, type LiveGenerationInput } from '../../src/engine/l
 import { compilePrompt } from '../../src/engine/live/promptCompiler'
 import { aceStepKeyscale } from '../../src/engine/live/musicControlSpec'
 import { buildSpec } from '../../src/engine/compose/prompt'
+import { resolveZeroGpuDuration } from '../../src/engine/providers/zeroGpuProvider'
+import { ACE_STEP_AUTO_DURATION, ACE_STEP_DURATION_RANGE } from '../../src/engine/providers/aceStepRequest'
+import { VERIFIED_ZEROGPU_DURATION } from '../../src/engine/providers/config'
 
 /** The style as reported from the live site, verbatim. */
 const STYLE = 'Hardcore conscious hip-hop / rap-rock, 112 BPM, aggressive mature male vocal, '
@@ -205,5 +208,100 @@ describe('the request that reaches ACE-Step', () => {
     const plan = planLiveGeneration(input())
     expect(plan.music.targetBpm).toBe(112)
     expect(aceStepKeyscale(plan.music.tonic, plan.music.scale)).toBe('F Minor')
+  })
+})
+
+/**
+ * The second report: a bittersweet cinematic pop ballad that states "84 BPM",
+ * "A minor" and ends "no EDM, no trap, no excessive melisma".
+ *
+ * Two more ways for an explicit request to be overruled, both reproduced
+ * against this exact style before anything was changed:
+ *
+ *   key      "A minor" sits in the style line as its own comma clause, with
+ *            no "in", no "key of", no hyphen and no trailing "tonal center".
+ *            Every spelling the parser knew needed one of those, so the key
+ *            read as absent and `rng.pick(...)` returned D# major.
+ *
+ *   vocals   `RAP_WORDS.some((w) => text.includes(w))` found "rap" inside
+ *            "trap", and read it from "no trap" — a refusal. A piano ballad
+ *            was planned with a rapped lead.
+ */
+const BALLAD = 'Bittersweet cinematic pop ballad, 84 BPM, 4/4, mature male baritone-tenor, '
+  + 'A minor, intimate melancholic verses, warm uplifting chorus, piano, acoustic guitar, '
+  + 'warm strings, melodic bass, gentle live drums, airy pads, memorable stepwise melody, '
+  + 'controlled vibrato, stable pitch, natural Indonesian phrasing, gradual dynamic build, '
+  + 'emotional final chorus, polished organic production, no EDM, no trap, no excessive melisma.'
+
+describe('a key written as its own clause is still a key', () => {
+  const spec = () => buildSpec(BALLAD, { seed: 'ballad-fixed' })
+
+  it('keeps A minor, which used to come back D# major', () => {
+    expect(`${NOTES[spec().key.tonic]} ${spec().key.scale}`).toBe('A minor')
+  })
+
+  it('keeps the rest of the stated plan', () => {
+    expect(spec().bpm).toBe(84)
+    expect(spec().genre.label).toBe('Pop')
+  })
+
+  it('reads a clause key in other style lines too', () => {
+    const keyOf = (t: string): string => {
+      const s = buildSpec(t, { seed: 'fx' })
+      return `${NOTES[s.key.tonic]} ${s.key.scale}`
+    }
+    expect(keyOf('pop ballad, A minor, warm strings')).toBe('A minor')
+    expect(keyOf('hip-hop track, 100 BPM, Bb minor, heavy drums')).toBe('A# minor')
+  })
+
+  it('still refuses prose that merely contains a note and a mode', () => {
+    const keyOf = (t: string): string => {
+      const s = buildSpec(t, { seed: 'fx' })
+      return `${NOTES[s.key.tonic]} ${s.key.scale}`
+    }
+    // A clause that does not *end* at the mode is not a key.
+    expect(keyOf('warm ballad, a minor detail in the mix')).not.toBe('A minor')
+    expect(keyOf('A minor adjustment was made to the drums')).not.toBe('A minor')
+  })
+})
+
+describe('a refused genre does not choose the vocal delivery', () => {
+  it('does not rap a piano ballad because it says "no trap"', () => {
+    expect(buildSpec(BALLAD, { seed: 'ballad-fixed' }).vocals).toBe('sung')
+    expect(buildSpec('pop ballad, no trap, no EDM', { seed: 'fx' }).vocals).toBe('sung')
+    expect(buildSpec('soft ballad, no rap', { seed: 'fx' }).vocals).toBe('sung')
+  })
+
+  it('still raps when rap is actually asked for', () => {
+    expect(buildSpec('hardcore rap track, aggressive bars', { seed: 'fx' }).vocals).toBe('rap')
+    expect(buildSpec('boom bap hip-hop, rapping over drums', { seed: 'fx' }).vocals).toBe('rap')
+  })
+})
+
+describe('the reference melody length is not the length asked of ACE-Step', () => {
+  const config = { autoDuration: undefined, maxDuration: undefined }
+
+  it('sends the Auto sentinel, not a length, when nothing is asked for', () => {
+    // 124 bars of 4/4 at 84 BPM is 354.29s of *reference melody*. Auto sends
+    // no length at all, so that figure cannot be refused as a duration.
+    expect(resolveZeroGpuDuration(undefined, config)).toBe(ACE_STEP_AUTO_DURATION)
+    expect(resolveZeroGpuDuration(0, config)).toBe(ACE_STEP_AUTO_DURATION)
+    expect(ACE_STEP_AUTO_DURATION).toBe(-1)
+  })
+
+  it('would accept 354 seconds even if it were stated', () => {
+    expect(354).toBeGreaterThanOrEqual(ACE_STEP_DURATION_RANGE.min)
+    expect(354).toBeLessThanOrEqual(ACE_STEP_DURATION_RANGE.max)
+    expect(resolveZeroGpuDuration(354, config)).toBe(354)
+  })
+
+  it('treats the verified 271 seconds as a measurement, never a ceiling', () => {
+    expect(VERIFIED_ZEROGPU_DURATION).toBe(271)
+    // Nothing enforces it: a longer request is sent as asked.
+    expect(resolveZeroGpuDuration(VERIFIED_ZEROGPU_DURATION + 83, config)).toBe(354)
+  })
+
+  it('still refuses a length outside ACE-Step\'s own range', () => {
+    expect(() => resolveZeroGpuDuration(900, config)).toThrow(/600 seconds/)
   })
 })
